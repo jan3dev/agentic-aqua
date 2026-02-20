@@ -309,11 +309,12 @@ class WalletManager:
 
         # Build transaction
         builder = net.tx_builder()
-        
+        lwk_address = lwk.Address(address)
+
         if asset_id:
-            builder.add_recipient(address, amount, asset_id)
+            builder.add_recipient(lwk_address, amount, asset_id)
         else:
-            builder.add_lbtc_recipient(address, amount)
+            builder.add_lbtc_recipient(lwk_address, amount)
 
         unsigned_pset = builder.finish(wollet)
         signed_pset = signer.sign(unsigned_pset)
