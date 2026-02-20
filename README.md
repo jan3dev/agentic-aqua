@@ -20,7 +20,7 @@ MCP server for managing Liquid Network wallets through AI assistants like Claude
 ### Clone and install
 
 ```bash
-git clone https://github.com/andycreed0x/mcp-liquid-wallet.git
+git clone https://github.com/jan3dev/mcp-liquid-wallet.git
 cd mcp-liquid-wallet
 uv sync
 ```

@@ -41,9 +41,9 @@ dev = [
 liquid-wallet = "liquid_wallet.server:main"
 
 [project.urls]
-Homepage = "https://github.com/andycreed0x/mcp-liquid-wallet"
-Repository = "https://github.com/andycreed0x/mcp-liquid-wallet"
-Documentation = "https://github.com/andycreed0x/mcp-liquid-wallet#readme"
+Homepage = "https://github.com/jan3dev/mcp-liquid-wallet"
+Repository = "https://github.com/jan3dev/mcp-liquid-wallet"
+Documentation = "https://github.com/jan3dev/mcp-liquid-wallet#readme"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/liquid_wallet"]
