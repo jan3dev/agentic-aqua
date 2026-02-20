@@ -339,6 +339,17 @@ def lw_tx_status(tx: str) -> dict[str, Any]:
         result["block_height"] = block_height
         if block_time:
             result["block_time"] = block_time
+        # Fetch current tip to calculate confirmations
+        tip_url = f"{ESPLORA_URLS[network]}/blocks/tip/height"
+        tip_req = urllib.request.Request(tip_url, headers={"User-Agent": "mcp-liquid-wallet"})
+        try:
+            with urllib.request.urlopen(tip_req, timeout=15) as resp:
+                tip_height = int(resp.read().decode().strip())
+            result["confirmations"] = tip_height - block_height + 1
+        except Exception:
+            result["confirmations"] = None
+    else:
+        result["confirmations"] = 0
 
     return result
 
