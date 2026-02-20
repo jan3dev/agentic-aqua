@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Optional
 import lwk
 
+from .assets import lookup_asset, resolve_asset_name
 from .storage import Storage, WalletData
 
 
@@ -12,14 +13,28 @@ class Balance:
     """Wallet balance."""
     asset_id: str
     asset_name: str
-    amount: int  # In satoshis
-    
+    ticker: str
+    amount: int  # In satoshis (smallest unit)
+    precision: int = 8  # Decimal places
+    logo: Optional[str] = None
+
+    @property
+    def value(self) -> float:
+        """Human-readable amount (e.g. 100_000_000 sats with precision=8 -> 1.0)."""
+        return self.amount / (10 ** self.precision)
+
     def to_dict(self) -> dict:
-        return {
+        d = {
             "asset_id": self.asset_id,
             "asset_name": self.asset_name,
-            "amount": self.amount,
+            "ticker": self.ticker,
+            "amount_sats": self.amount,
+            "precision": self.precision,
+            "value": self.value,
         }
+        if self.logo:
+            d["logo"] = self.logo
+        return d
 
 
 @dataclass
@@ -219,11 +234,24 @@ class WalletManager:
         balances = []
         
         for asset_id, amount in raw_balance.items():
-            name = "L-BTC" if asset_id == policy_asset else asset_id[:8] + "..."
+            info = lookup_asset(asset_id, wallet.network)
+            if info:
+                name = info.name
+                ticker = info.ticker
+                logo = info.logo
+                precision = info.precision
+            else:
+                name = "L-BTC" if asset_id == policy_asset else asset_id[:8] + "..."
+                ticker = "L-BTC" if asset_id == policy_asset else asset_id[:8] + "..."
+                logo = None
+                precision = 8  # Default for Liquid assets
             balances.append(Balance(
                 asset_id=asset_id,
                 asset_name=name,
+                ticker=ticker,
                 amount=amount,
+                precision=precision,
+                logo=logo,
             ))
 
         return balances
@@ -263,7 +291,8 @@ class WalletManager:
         for tx in txs:
             balance = {}
             for asset_id, amount in tx.balance().items():
-                balance[asset_id] = amount
+                ticker = resolve_asset_name(asset_id, wallet.network)
+                balance[ticker] = {"asset_id": asset_id, "amount": amount}
             
             result.append(Transaction(
                 txid=str(tx.txid()),
