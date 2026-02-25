@@ -1,4 +1,4 @@
-# 🌊 Liquid Wallet MCP
+# 💧 AQUA MCP
 
 MCP server for managing Liquid Network wallets through AI assistants like Claude.
 
@@ -20,8 +20,8 @@ MCP server for managing Liquid Network wallets through AI assistants like Claude
 ### Clone and install
 
 ```bash
-git clone https://github.com/jan3dev/mcp-liquid-wallet.git
-cd mcp-liquid-wallet
+git clone https://github.com/jan3dev/aqua-mcp.git
+cd aqua-mcp
 uv sync
 ```
 
@@ -49,7 +49,7 @@ Add to your MCP client configuration (e.g., Claude Desktop `~/.claude/claude_des
   "mcpServers": {
     "liquid-wallet": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/mcp-liquid-wallet", "python", "-m", "liquid_wallet.server"]
+      "args": ["run", "--directory", "/path/to/aqua-mcp", "python", "-m", "liquid_wallet.server"]
     }
   }
 }
@@ -160,7 +160,7 @@ All private key operations happen locally. Only blockchain sync uses Blockstream
 
 ```bash
 # Install with dev dependencies
-uv sync --dev
+uv sync --extra dev
 
 # Run tests
 uv run pytest

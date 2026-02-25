@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mcp-liquid-wallet"
+name = "aqua-mcp"
 version = "0.1.0"
 description = "MCP server for Liquid Network wallet operations"
 readme = "README.md"
@@ -35,15 +35,16 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "black>=24.0.0",
     "ruff>=0.2.0",
+    "pytest-cov>=7.0.0",
 ]
 
 [project.scripts]
 liquid-wallet = "liquid_wallet.server:main"
 
 [project.urls]
-Homepage = "https://github.com/jan3dev/mcp-liquid-wallet"
-Repository = "https://github.com/jan3dev/mcp-liquid-wallet"
-Documentation = "https://github.com/jan3dev/mcp-liquid-wallet#readme"
+Homepage = "https://github.com/jan3dev/aqua-mcp"
+Repository = "https://github.com/jan3dev/aqua-mcp"
+Documentation = "https://github.com/jan3dev/aqua-mcp#readme"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/liquid_wallet"]

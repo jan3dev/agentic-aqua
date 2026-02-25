@@ -2,6 +2,7 @@
 
 import os
 import stat
+import sys
 import tempfile
 from pathlib import Path
 
@@ -109,6 +110,7 @@ class TestWalletNameValidation:
         "a" * 65,
         "hello world",
         "/absolute",
+        "wallet\x00evil",
     ])
     def test_invalid_names(self, name):
         """Invalid wallet names should raise ValueError."""
@@ -139,6 +141,7 @@ class TestWalletNameValidation:
 class TestFilePermissions:
     """Tests for restrictive file permissions."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix mode bits")
     def test_wallet_file_permissions(self, temp_storage):
         """Wallet files should be created with 0600 permissions."""
         wallet = WalletData(name="secure", network="mainnet", descriptor="ct(...)")
@@ -148,6 +151,7 @@ class TestFilePermissions:
         mode = stat.S_IMODE(os.stat(path).st_mode)
         assert mode == 0o600, f"Expected 0600, got {oct(mode)}"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix mode bits")
     def test_config_file_permissions(self, temp_storage):
         """Config file should be created with 0600 permissions."""
         config = Config(network="testnet")
@@ -156,6 +160,7 @@ class TestFilePermissions:
         mode = stat.S_IMODE(os.stat(temp_storage.config_path).st_mode)
         assert mode == 0o600, f"Expected 0600, got {oct(mode)}"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix mode bits")
     def test_directory_permissions(self):
         """Directories should be created with 0700 permissions."""
         with tempfile.TemporaryDirectory() as tmpdir:

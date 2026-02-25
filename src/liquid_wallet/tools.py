@@ -35,7 +35,7 @@ def get_manager() -> WalletManager:
 
 # Tool implementations
 
-def lw_generate_mnemonic(**_kwargs) -> dict[str, Any]:
+def lw_generate_mnemonic() -> dict[str, Any]:
     """
     Generate a new BIP39 mnemonic phrase (12 words).
 
@@ -292,7 +292,7 @@ def lw_tx_status(tx: str) -> dict[str, Any]:
     txid, network = _parse_tx_input(tx)
     api_url = f"{ESPLORA_URLS[network]}/tx/{txid}"
 
-    req = urllib.request.Request(api_url, headers={"User-Agent": "mcp-liquid-wallet"})
+    req = urllib.request.Request(api_url, headers={"User-Agent": "aqua-mcp"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode())
@@ -338,7 +338,7 @@ def lw_tx_status(tx: str) -> dict[str, Any]:
             result["block_time"] = block_time
         # Fetch current tip to calculate confirmations
         tip_url = f"{ESPLORA_URLS[network]}/blocks/tip/height"
-        tip_req = urllib.request.Request(tip_url, headers={"User-Agent": "mcp-liquid-wallet"})
+        tip_req = urllib.request.Request(tip_url, headers={"User-Agent": "aqua-mcp"})
         try:
             with urllib.request.urlopen(tip_req, timeout=15) as resp:
                 tip_height = int(resp.read().decode().strip())

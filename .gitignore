@@ -56,3 +56,5 @@ htmlcov/
 
 # AI
 .claude/
+.cursor/
+.aider/

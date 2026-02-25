@@ -118,10 +118,30 @@ class Storage:
         return Config()
 
     def save_config(self, config: Config):
-        """Save global configuration."""
-        fd = os.open(self.config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(config.to_dict(), f, indent=2)
+        temp_path = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(config.to_dict(), f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            if hasattr(os, "chmod"):
+                try:
+                    os.chmod(temp_path, 0o600)
+                except OSError:
+                    pass
+            os.replace(temp_path, self.config_path)
+            if hasattr(os, "chmod"):
+                try:
+                    os.chmod(self.config_path, 0o600)
+                except OSError:
+                    pass
+        except Exception:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+            raise
 
     # Wallet operations
 
@@ -150,11 +170,31 @@ class Storage:
             return WalletData.from_dict(json.load(f))
 
     def save_wallet(self, wallet: WalletData):
-        """Save wallet data."""
         path = self._wallet_path(wallet.name)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(wallet.to_dict(), f, indent=2)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(wallet.to_dict(), f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            if hasattr(os, "chmod"):
+                try:
+                    os.chmod(tmp_path, 0o600)
+                except OSError:
+                    pass
+            os.replace(tmp_path, path)
+            if hasattr(os, "chmod"):
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+        except Exception:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+            raise
 
     def delete_wallet(self, name: str) -> bool:
         """Delete wallet."""

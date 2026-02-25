@@ -297,7 +297,7 @@ class WalletManager:
                 height=tx.height(),
                 timestamp=tx.timestamp(),
                 balance=balance,
-                fee=tx.fee(policy_asset) if tx.fee(policy_asset) else 0,
+                fee=tx.fee(policy_asset) or 0,
             ))
 
         return result
