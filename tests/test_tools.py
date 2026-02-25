@@ -291,9 +291,9 @@ class TestBalance:
         ):
             result = lw_balance(wallet_name="label_test")
 
-        lbtc = [b for b in result["balances"] if b["asset_name"] == "L-BTC"]
+        lbtc = [b for b in result["balances"] if b["ticker"] == "L-BTC"]
         assert len(lbtc) == 1
-        assert lbtc[0]["amount"] == 5000
+        assert lbtc[0]["amount_sats"] == 5000
 
     def test_balance_non_lbtc_asset_truncated_name(self, isolated_manager):
         """Non-L-BTC assets get a truncated name (first 8 chars + '...')."""
@@ -311,7 +311,7 @@ class TestBalance:
 
         asset_entry = result["balances"][0]
         assert asset_entry["asset_name"] == "abcdef12..."
-        assert asset_entry["amount"] == 100
+        assert asset_entry["amount_sats"] == 100
 
     def test_balance_nonexistent_wallet_raises(self):
         """Balance for non-existent wallet raises."""  # Significance: 4
@@ -366,7 +366,8 @@ class TestTransactions:
         assert tx["height"] == 100
         assert tx["timestamp"] == 1700000000
         assert tx["fee"] == 250
-        assert policy_asset in tx["balance"]
+        assert "L-BTC" in tx["balance"]
+        assert tx["balance"]["L-BTC"]["asset_id"] == policy_asset
 
     def test_transactions_respects_limit(self, isolated_manager):
         """Only `limit` transactions are returned."""
@@ -653,7 +654,7 @@ class TestWalletManagerInternals:
 
 class TestToolRegistry:
     def test_all_tools_registered(self):
-        """All 10 MCP tools are in the TOOLS registry."""
+        """All 11 MCP tools are in the TOOLS registry."""
         from liquid_wallet.tools import TOOLS
 
         expected = {
@@ -667,6 +668,7 @@ class TestToolRegistry:
             "lw_send",
             "lw_send_asset",
             "lw_list_wallets",
+            "lw_tx_status",
         }
         assert set(TOOLS.keys()) == expected
 

@@ -26,14 +26,7 @@ TOOL_SCHEMAS = {
         "description": "Generate a new BIP39 mnemonic phrase for creating a Liquid wallet",
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "words": {
-                    "type": "integer",
-                    "description": "Number of words (12 or 24)",
-                    "default": 12,
-                    "enum": [12, 24],
-                },
-            },
+            "properties": {},
         },
     },
     "lw_import_mnemonic": {
@@ -43,7 +36,7 @@ TOOL_SCHEMAS = {
             "properties": {
                 "mnemonic": {
                     "type": "string",
-                    "description": "BIP39 mnemonic phrase (12 or 24 words)",
+                    "description": "BIP39 mnemonic phrase (12 words)",
                 },
                 "wallet_name": {
                     "type": "string",

@@ -53,3 +53,6 @@ htmlcov/
 
 # Wallet data (never commit!)
 .liquid-wallet/
+
+# AI
+.claude/

@@ -100,10 +100,8 @@ class WalletManager:
 
     # Mnemonic operations
 
-    def generate_mnemonic(self, words: int = 12) -> str:
-        """Generate a new BIP39 mnemonic."""
-        # LWK uses Signer.random() which generates 12 words
-        # For now, we'll use that
+    def generate_mnemonic(self) -> str:
+        """Generate a new BIP39 mnemonic (12 words)."""
         network = lwk.Network.mainnet()  # Network doesn't matter for mnemonic gen
         signer = lwk.Signer.random(network)
         return str(signer.mnemonic())

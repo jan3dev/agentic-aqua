@@ -35,18 +35,15 @@ def get_manager() -> WalletManager:
 
 # Tool implementations
 
-def lw_generate_mnemonic(words: int = 12) -> dict[str, Any]:
+def lw_generate_mnemonic(**_kwargs) -> dict[str, Any]:
     """
-    Generate a new BIP39 mnemonic phrase.
-    
-    Args:
-        words: Number of words (12 or 24). Default: 12
-        
+    Generate a new BIP39 mnemonic phrase (12 words).
+
     Returns:
         mnemonic: The generated mnemonic phrase
     """
     manager = get_manager()
-    mnemonic = manager.generate_mnemonic(words)
+    mnemonic = manager.generate_mnemonic()
     return {
         "mnemonic": mnemonic,
         "words": len(mnemonic.split()),
@@ -346,8 +343,9 @@ def lw_tx_status(tx: str) -> dict[str, Any]:
             with urllib.request.urlopen(tip_req, timeout=15) as resp:
                 tip_height = int(resp.read().decode().strip())
             result["confirmations"] = tip_height - block_height + 1
-        except Exception:
+        except Exception as e:
             result["confirmations"] = None
+            result["warning"] = f"Could not fetch current block height to calculate confirmations: {e}"
     else:
         result["confirmations"] = 0
 
