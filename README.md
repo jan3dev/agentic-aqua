@@ -73,7 +73,7 @@ Configure Claude Desktop. Use the **full path** to `uv` (e.g. `which uv`) so the
 
 ## Quick Start
 
-### 3. Use with Claude
+### Use with Claude
 
 Once connected, you can ask Claude to:
 

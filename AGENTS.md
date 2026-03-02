@@ -217,15 +217,6 @@ uv sync
 uv run python -m aqua_mcp.server
 ```
 
-## Roadmap
-
-- [x] v0.1 - Basic wallet operations (generate, import, balance, address)
-- [x] v0.2 - Send transactions (Liquid)
-- [x] v0.3 - Asset support (L-BTC, USDT, etc. in balance/send)
-- [x] v0.4 - Multi-wallet support
-- [x] Bitcoin onchain (BDK) - unified wallet, one mnemonic two networks
-- [ ] v0.5 - Hardware wallet integration (Jade)
-
 ---
 
 *Last updated: 2026-02-26*

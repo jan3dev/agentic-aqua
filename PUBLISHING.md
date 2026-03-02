@@ -41,14 +41,14 @@ uv build
 ```
 
 This creates:
-- `dist/aqua_mcp-0.1.0-py3-none-any.whl`
-- `dist/aqua_mcp-0.1.0.tar.gz`
+- `dist/aqua_mcp-0.1.1-py3-none-any.whl`
+- `dist/aqua_mcp-0.1.1.tar.gz`
 
 ### 3. Test Locally (Optional)
 
 ```bash
 # Install from local build
-uv pip install dist/aqua_mcp-0.1.0-py3-none-any.whl
+uv pip install dist/aqua_mcp-0.1.1-py3-none-any.whl
 
 # Test the command
 aqua-mcp --help
