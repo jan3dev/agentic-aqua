@@ -12,12 +12,43 @@ MCP server for managing Liquid Network wallets through AI assistants like Claude
 
 ## Installation
 
-### Prerequisites
+### For End Users (Easiest!)
 
-- Python 3.10+
-- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+If you don't have `uvx` installed:
 
-### Clone and install
+```bash
+# macOS/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Then configure Claude Desktop (`~/.claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "aqua-mcp": {
+      "command": "/full/path/to/uvx",
+      "args": ["aqua-mcp"]
+    }
+  }
+}
+```
+
+**Important:** You can use the full path to `uvx` because Claude Desktop (macOS GUI app) doesn't inherit your shell's PATH. Find it with:
+
+```bash
+which uvx
+# Example output: /Users/yourname/.local/bin/uvx
+```
+
+Restart Claude Desktop and you're ready to use Liquid wallets.
+
+### For Developers
+
+Clone and install from source:
 
 ```bash
 git clone https://github.com/jan3dev/aqua-mcp.git
@@ -25,37 +56,22 @@ cd aqua-mcp
 uv sync
 ```
 
-This creates a virtual environment and installs all dependencies.
-
-## Quick Start
-
-### 1. Run the MCP server
-
-```bash
-# Using uv
-uv run python -m liquid_wallet.server
-
-# Or activate venv first
-source .venv/bin/activate
-python -m liquid_wallet.server
-```
-
-### 2. Configure your MCP client
-
-Add to your MCP client configuration (e.g., Claude Desktop `~/.claude/claude_desktop_config.json`):
+Configure Claude Desktop:
 
 ```json
 {
   "mcpServers": {
-    "liquid-wallet": {
+    "aqua-mcp": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/aqua-mcp", "python", "-m", "liquid_wallet.server"]
+      "args": ["run", "--directory", "/absolute/path/to/aqua-mcp", "python", "-m", "aqua_mcp.server"]
     }
   }
 }
 ```
 
-### 3. Use with Claude
+## Quick Start
+
+### Use with Claude
 
 Once connected, you can ask Claude to:
 
@@ -122,7 +138,7 @@ Fee: 250 sats
 
 ## Configuration
 
-Default config location: `~/.liquid-wallet/config.json`
+Default config location: `~/.aqua-mcp/config.json`
 
 ```json
 {
@@ -185,13 +201,6 @@ uv run ruff check src/
                                                 └─────────────────┘
 ```
 
-## Contributing
-
-PRs welcome! Please read `AGENTS.md` for specs and conventions.
-
-## License
-
-MIT
 
 ## Credits
 
@@ -199,6 +208,3 @@ Built with:
 - [LWK](https://github.com/Blockstream/lwk) - Liquid Wallet Kit by Blockstream
 - [MCP](https://modelcontextprotocol.io/) - Model Context Protocol
 
----
-
-⚡ Built for the Liquid Network

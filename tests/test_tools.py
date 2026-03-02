@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 import lwk
 import pytest
 
-from liquid_wallet.storage import Storage, WalletData
-from liquid_wallet.tools import (
+from aqua_mcp.storage import Storage, WalletData
+from aqua_mcp.tools import (
     _manager,
     get_manager,
     lw_address,
@@ -22,7 +22,7 @@ from liquid_wallet.tools import (
     lw_send_asset,
     lw_transactions,
 )
-from liquid_wallet.wallet import WalletManager
+from aqua_mcp.wallet import WalletManager
 
 # Test mnemonic (well-known, NOT real funds)
 TEST_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
@@ -31,7 +31,7 @@ TEST_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon
 @pytest.fixture(autouse=True)
 def isolated_manager():
     """Replace the global manager with one using a temp directory for every test."""
-    import liquid_wallet.tools as tools_module
+    import aqua_mcp.tools as tools_module
 
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = Storage(Path(tmpdir))
@@ -655,7 +655,7 @@ class TestWalletManagerInternals:
 class TestToolRegistry:
     def test_all_tools_registered(self):
         """All 11 MCP tools are in the TOOLS registry."""
-        from liquid_wallet.tools import TOOLS
+        from aqua_mcp.tools import TOOLS
 
         expected = {
             "lw_generate_mnemonic",
@@ -674,7 +674,7 @@ class TestToolRegistry:
 
     def test_all_tools_are_callable(self):
         """Every registered tool is a callable."""
-        from liquid_wallet.tools import TOOLS
+        from aqua_mcp.tools import TOOLS
 
         for name, fn in TOOLS.items():
             assert callable(fn), f"Tool {name} is not callable"

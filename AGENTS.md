@@ -1,8 +1,8 @@
-# Liquid Wallet MCP - Specification
+# AQUA MCP - Specification
 
 ## Overview
 
-MCP (Model Context Protocol) server for interacting with the Liquid Network. Enables AI assistants to manage Liquid wallets, check balances, generate addresses, and send transactions.
+MCP (Model Context Protocol) server for interacting with the Liquid Network. Enables AI assistants to manage Liquid wallets through AQUA.
 
 Built on top of **LWK (Liquid Wallet Kit)** Python bindings from Blockstream.
 
@@ -54,9 +54,9 @@ All tools use the `lw_` prefix.
 
 ## Data Storage
 
-Wallet data stored in `~/.liquid-wallet/`:
+Wallet data stored in `~/.aqua-mcp/`:
 ```
-~/.liquid-wallet/
+~/.aqua-mcp/
 ├── config.json          # Network settings, defaults
 ├── wallets/
 │   ├── default.json     # Encrypted wallet data
@@ -154,13 +154,13 @@ All tools return structured errors:
 ### Project Structure
 
 ```
-liquid-wallet/
+aqua-mcp/
 ├── AGENTS.md           # This file (specs)
 ├── claude.md           # Symlink to AGENTS.md
 ├── README.md           # User documentation
 ├── pyproject.toml      # Python package config
 ├── src/
-│   └── liquid_wallet/
+│   └── aqua_mcp/
 │       ├── __init__.py
 │       ├── server.py   # MCP server entry point
 │       ├── tools.py    # Tool implementations
@@ -180,7 +180,7 @@ pytest tests/
 
 ```bash
 pip install -e ".[dev]"
-python -m liquid_wallet.server
+python -m aqua_mcp.server
 ```
 
 ## Roadmap

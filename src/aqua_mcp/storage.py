@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
 
 
-DEFAULT_DIR = Path.home() / ".liquid-wallet"
+DEFAULT_DIR = Path.home() / ".aqua-mcp"
 
 
 @dataclass

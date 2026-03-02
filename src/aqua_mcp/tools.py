@@ -1,4 +1,4 @@
-"""MCP tool definitions for Liquid Wallet."""
+"""MCP tool definitions for AQUA."""
 
 import json
 import re

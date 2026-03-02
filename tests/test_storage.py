@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from liquid_wallet.storage import Storage, WalletData, Config, _validate_wallet_name
+from aqua_mcp.storage import Storage, WalletData, Config, _validate_wallet_name
 
 
 @pytest.fixture

@@ -1,4 +1,4 @@
-"""MCP server for Liquid Wallet."""
+"""MCP server for AQUA."""
 
 import asyncio
 import json
@@ -220,7 +220,7 @@ TOOL_SCHEMAS = {
 
 def create_server() -> Server:
     """Create and configure the MCP server."""
-    server = Server("liquid-wallet")
+    server = Server("aqua-mcp")
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -279,7 +279,7 @@ async def run_server():
     server = create_server()
     
     async with stdio_server() as (read_stream, write_stream):
-        logger.info(f"Liquid Wallet MCP v{__version__} starting...")
+        logger.info(f"AQUA MCP v{__version__} starting...")
         await server.run(
             read_stream,
             write_stream,

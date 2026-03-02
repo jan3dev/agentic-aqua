@@ -52,7 +52,8 @@ htmlcov/
 .env.local
 
 # Wallet data (never commit!)
-.liquid-wallet/
+.liquid-wallet/  # Legacy, will be removed
+.aqua-mcp/
 
 # AI
 .claude/
