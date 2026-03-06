@@ -561,8 +561,9 @@ def lbtc_pay_lightning_invoice(
         swap_id, lockup_txid, status, expected_amount, timeout_block_height
     """
     # Step 1: Validate invoice format
-    if not invoice or not invoice.startswith("lnbc"):
-        raise ValueError("Invalid invoice: must be a BOLT11 Lightning invoice starting with 'lnbc'")
+    valid_prefixes = ("lnbc", "lntb")
+    if not invoice or not any(invoice.startswith(p) for p in valid_prefixes):
+        raise ValueError("Invalid invoice: must be a BOLT11 Lightning invoice starting with 'lnbc' (mainnet) or 'lntb' (testnet)")
 
     manager = get_manager()
 
@@ -580,7 +581,7 @@ def lbtc_pay_lightning_invoice(
 
     network = wallet_data.network
 
-    # Step 2: Get pair info and create swap
+    # Step 2: Get pair info (pre-flight check before creating swap)
     client = BoltzClient(network=network)
     pairs = client.get_submarine_pairs()
 
@@ -627,20 +628,7 @@ def lbtc_pay_lightning_invoice(
     )
     manager.storage.save_swap(swap)
 
-    # Step 6: Check balance
-    balances = manager.get_balance(wallet_name)
-    lbtc_balance = 0
-    for b in balances:
-        if b.ticker == "L-BTC":
-            lbtc_balance = b.amount
-            break
-
-    if lbtc_balance < expected_amount:
-        raise ValueError(
-            f"Insufficient L-BTC balance: have {lbtc_balance} sats, need {expected_amount} sats"
-        )
-
-    # Step 7: Send L-BTC to lockup address
+    # Step 6: Send L-BTC to lockup address (send() validates balance internally)
     lockup_txid = manager.send(
         wallet_name, swap.address, expected_amount, passphrase=passphrase
     )
@@ -697,8 +685,8 @@ def lbtc_swap_lightning_status(swap_id: str) -> dict[str, Any]:
             claim = client.get_claim_details(swap_id)
             result["preimage"] = claim.get("preimage")
             result["claim_txid"] = claim.get("transactionHash")
-        except Exception:
-            pass
+        except Exception as e:
+            result["claim_details_warning"] = f"Could not fetch claim details: {e}"
 
     # If failed, provide refund info
     FAILURE_STATUSES = {"invoice.failedToPay", "swap.expired", "transaction.lockupFailed"}
