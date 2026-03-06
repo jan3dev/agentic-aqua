@@ -2,6 +2,8 @@
 
 Manual test prompts for validating Aqua MCP read-only functionality using a real wallet. These prompts test operations that don't consume coins or require broadcasting transactions.
 
+Use an agent with Haiku model to run these promts
+
 ## Prerequisites
 
 - A `.env` file must exist in the project root with the required variables.
@@ -15,10 +17,8 @@ Manual test prompts for validating Aqua MCP read-only functionality using a real
 
 ### 1. Import Wallet
 
-Import the mnemonic and confirm the wallet is created on both networks (Liquid + Bitcoin).
-
 ```
-Import this wallet and tell me the general balance:
+Import this wallet, name it promt_wallet_<DATETIME> and tell me the general balance:
 SIGNER_MNEMONIC=${SIGNER_MNEMONIC}
 ```
 
@@ -30,8 +30,6 @@ SIGNER_MNEMONIC=${SIGNER_MNEMONIC}
 ---
 
 ### 2. Generate Receive Addresses
-
-Request a Liquid address and a Bitcoin on-chain address for receiving funds.
 
 ```
 Give me a Liquid address and a Bitcoin on-chain address to receive funds.
@@ -77,8 +75,6 @@ Show me my Bitcoin transaction history.
 
 ### 5. View Liquid Transaction History
 
-Show the transaction history for the Liquid wallet.
-
 ```
 Show me my Liquid transaction history.
 ```
@@ -93,8 +89,6 @@ Show me my Liquid transaction history.
 
 ### 6. List All Wallets
 
-Show all wallets currently stored in the system.
-
 ```
 List all my wallets.
 ```
@@ -106,8 +100,6 @@ List all my wallets.
 ---
 
 ### 7. Check Lightning Swap Status
-
-Check the status of a Boltz submarine swap (Lightning payment via L-BTC).
 
 ```
 Check the status of my Lightning swap wneeB76Iu5k2
@@ -123,10 +115,8 @@ Check the status of my Lightning swap wneeB76Iu5k2
 
 ### 8. Export Descriptor (Watch-Only)
 
-Export the Confidential Transactions descriptor for watch-only usage.
-
 ```
-Export the CT descriptor for my default wallet.
+Export the CT descriptor for my lastests imported wallet.
 ```
 
 **Expected behavior:**
