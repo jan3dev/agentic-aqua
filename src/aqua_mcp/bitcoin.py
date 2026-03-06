@@ -258,11 +258,14 @@ class BitcoinWalletManager:
         for tx in txs:
             txid = tx.transaction.compute_txid().serialize()[::-1].hex()
             height = _extract_confirmation_height(tx)
-            received = getattr(tx, "received", 0) or 0
-            sent = getattr(tx, "sent", 0) or 0
-            fee = getattr(tx, "fee", None)
-            if fee is not None and hasattr(fee, "to_sat"):
-                fee = fee.to_sat()
+            # Use wallet methods to get sent/received/fee (bdkpython 2.2+ API)
+            sr = wallet.sent_and_received(tx.transaction)
+            received = sr.received.to_sat()
+            sent = sr.sent.to_sat()
+            try:
+                fee = wallet.calculate_fee(tx.transaction).to_sat()
+            except Exception:
+                fee = None
             result.append(
                 BitcoinTransaction(
                     txid=txid,
