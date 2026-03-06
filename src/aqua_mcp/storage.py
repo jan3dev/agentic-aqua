@@ -5,7 +5,7 @@ import os
 import re
 import shutil
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Optional
 
@@ -28,7 +28,7 @@ class WalletData:
     btc_change_descriptor: Optional[str] = None  # BIP84 change descriptor (Bitcoin)
     encrypted_mnemonic: Optional[str] = None  # Encrypted, if full wallet
     watch_only: bool = False
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -215,8 +215,6 @@ class Storage:
         if cache_path.is_dir():
             shutil.rmtree(cache_path)
         return True
-
-    # Cache operations
 
     # Swap operations
 

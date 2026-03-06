@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 from .assets import resolve_asset_name
 from .bitcoin import BitcoinWalletManager
-from .boltz import BoltzClient, SwapInfo, generate_keypair, verify_preimage
+from .boltz import BoltzClient, SwapInfo, generate_keypair
 from .wallet import WalletManager
 
 
@@ -610,7 +610,7 @@ def lbtc_pay_lightning_invoice(
         )
 
     # Step 5: Build SwapInfo and persist BEFORE sending
-    from datetime import datetime
+    from datetime import datetime, UTC
 
     swap = SwapInfo(
         swap_id=swap_resp["id"],
@@ -624,7 +624,7 @@ def lbtc_pay_lightning_invoice(
         invoice=invoice,
         status="swap.created",
         network=network,
-        created_at=datetime.utcnow().isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
     )
     manager.storage.save_swap(swap)
 

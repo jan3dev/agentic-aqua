@@ -15,7 +15,6 @@ from mcp.types import (
     PromptArgument,
     GetPromptResult,
     Resource,
-    ResourceTemplate,
 )
 
 from . import __version__
