@@ -145,31 +145,35 @@ class Storage:
                 return Config.from_dict(json.load(f))
         return Config()
 
-    def save_config(self, config: Config):
-        temp_path = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
+    def _atomic_write_json(self, path: Path, data: dict) -> None:
+        """Atomically write JSON data to a file with restricted permissions."""
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
         try:
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(config.to_dict(), f, indent=2)
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
             if hasattr(os, "chmod"):
                 try:
-                    os.chmod(temp_path, 0o600)
+                    os.chmod(tmp_path, 0o600)
                 except OSError:
                     pass
-            os.replace(temp_path, self.config_path)
+            os.replace(tmp_path, path)
             if hasattr(os, "chmod"):
                 try:
-                    os.chmod(self.config_path, 0o600)
+                    os.chmod(path, 0o600)
                 except OSError:
                     pass
         except Exception:
-            if temp_path.exists():
+            if tmp_path.exists():
                 try:
-                    temp_path.unlink()
+                    tmp_path.unlink()
                 except OSError:
                     pass
             raise
+
+    def save_config(self, config: Config):
+        self._atomic_write_json(self.config_path, config.to_dict())
 
     # Wallet operations
 
@@ -199,30 +203,7 @@ class Storage:
 
     def save_wallet(self, wallet: WalletData):
         path = self._wallet_path(wallet.name)
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(wallet.to_dict(), f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            if hasattr(os, "chmod"):
-                try:
-                    os.chmod(tmp_path, 0o600)
-                except OSError:
-                    pass
-            os.replace(tmp_path, path)
-            if hasattr(os, "chmod"):
-                try:
-                    os.chmod(path, 0o600)
-                except OSError:
-                    pass
-        except Exception:
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
-            raise
+        self._atomic_write_json(path, wallet.to_dict())
 
     def delete_wallet(self, name: str) -> bool:
         """Delete wallet and its cache directory."""
@@ -239,39 +220,25 @@ class Storage:
 
     # Swap operations
 
+    def _swap_path(self, swap_id: str) -> Path:
+        """Get path to swap file, validating the ID to prevent path traversal."""
+        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', swap_id):
+            raise ValueError(
+                f"Invalid swap ID '{swap_id}'. "
+                "Use only letters, numbers, hyphens and underscores (max 128 chars)."
+            )
+        return self.swaps_dir / f"{swap_id}.json"
+
     def save_swap(self, swap) -> None:
         """Save swap data for recovery."""
-        path = self.swaps_dir / f"{swap.swap_id}.json"
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(swap.to_dict(), f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            if hasattr(os, "chmod"):
-                try:
-                    os.chmod(tmp_path, 0o600)
-                except OSError:
-                    pass
-            os.replace(tmp_path, path)
-            if hasattr(os, "chmod"):
-                try:
-                    os.chmod(path, 0o600)
-                except OSError:
-                    pass
-        except Exception:
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
-            raise
+        path = self._swap_path(swap.swap_id)
+        self._atomic_write_json(path, swap.to_dict())
 
     def load_swap(self, swap_id: str):
         """Load swap data. Returns SwapInfo or None."""
         from .boltz import SwapInfo
 
-        path = self.swaps_dir / f"{swap_id}.json"
+        path = self._swap_path(swap_id)
         if not path.exists():
             return None
         with open(path) as f:
@@ -279,7 +246,10 @@ class Storage:
 
     def list_swaps(self) -> list[str]:
         """List all swap IDs."""
-        return [p.stem for p in self.swaps_dir.glob("*.json")]
+        return [
+            p.stem for p in self.swaps_dir.glob("*.json")
+            if re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', p.stem)
+        ]
 
     # Cache operations
 
