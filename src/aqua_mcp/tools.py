@@ -6,6 +6,7 @@ import re
 import urllib.request
 import urllib.error
 from typing import Any
+from datetime import datetime, UTC
 
 logger = logging.getLogger(__name__)
 
@@ -592,7 +593,7 @@ def lbtc_pay_lightning_invoice(
     limits = pair["limits"]
 
     # Step 3: Generate ephemeral keypair
-    refund_privkey, refund_pubkey = generate_keypair()
+    refund_privkey, refund_pubkey = generate_keypair() # Next PR will change how this works
 
     # Step 4: Create submarine swap
     swap_resp = client.create_submarine_swap(invoice, refund_pubkey)
@@ -610,7 +611,6 @@ def lbtc_pay_lightning_invoice(
         )
 
     # Step 5: Build SwapInfo and persist BEFORE sending
-    from datetime import datetime, UTC
 
     swap = SwapInfo(
         swap_id=swap_resp["id"],
