@@ -123,10 +123,7 @@ class WalletManager:
         signer = lwk.Signer(lwk_mnemonic, net)
         descriptor = str(signer.wpkh_slip77_descriptor())
 
-        # Encrypt mnemonic if passphrase provided
-        encrypted = None
-        if passphrase:
-            encrypted = self.storage.encrypt_mnemonic(mnemonic, passphrase)
+        encrypted = self.storage.store_mnemonic(mnemonic, passphrase)
 
         # Create and save wallet
         wallet = WalletData(
@@ -179,14 +176,15 @@ class WalletManager:
         if not wallet:
             raise ValueError(f"Wallet '{wallet_name}' not found")
 
-        # Load signer if mnemonic available
-        if wallet.encrypted_mnemonic and passphrase:
-            mnemonic = self.storage.decrypt_mnemonic(
-                wallet.encrypted_mnemonic, passphrase
-            )
-            net = self._get_network(wallet.network)
-            lwk_mnemonic = lwk.Mnemonic(mnemonic)
-            self._signers[wallet_name] = lwk.Signer(lwk_mnemonic, net)
+        if wallet.encrypted_mnemonic:
+            needs_passphrase = self.storage.is_mnemonic_encrypted(wallet.encrypted_mnemonic)
+            if not needs_passphrase or passphrase:
+                mnemonic = self.storage.retrieve_mnemonic(
+                    wallet.encrypted_mnemonic, passphrase
+                )
+                net = self._get_network(wallet.network)
+                lwk_mnemonic = lwk.Mnemonic(mnemonic)
+                self._signers[wallet_name] = lwk.Signer(lwk_mnemonic, net)
 
         return wallet
 
@@ -279,7 +277,6 @@ class WalletManager:
 
         self.sync_wallet(wallet_name)
         wollet = self._get_wollet(wallet_name)
-        policy_asset = self._get_policy_asset(wallet.network)
 
         txs = wollet.transactions()
         if limit:
@@ -297,7 +294,7 @@ class WalletManager:
                 height=tx.height(),
                 timestamp=tx.timestamp(),
                 balance=balance,
-                fee=tx.fee(policy_asset) or 0,
+                fee=tx.fee() or 0,
             ))
 
         return result
@@ -318,11 +315,14 @@ class WalletManager:
         if wallet.watch_only:
             raise ValueError("Cannot sign with watch-only wallet")
 
-        # Ensure we have the signer
+        if amount <= 0:
+            raise ValueError("Amount must be positive")
+
         if wallet_name not in self._signers:
             if not wallet.encrypted_mnemonic:
                 raise ValueError("No mnemonic available for signing")
-            if not passphrase:
+            needs_passphrase = self.storage.is_mnemonic_encrypted(wallet.encrypted_mnemonic)
+            if needs_passphrase and not passphrase:
                 raise ValueError("Passphrase required to decrypt mnemonic")
             self.load_wallet(wallet_name, passphrase)
 

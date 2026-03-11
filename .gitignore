@@ -59,3 +59,7 @@ htmlcov/
 .claude/
 .cursor/
 .aider/
+.tldr/
+.tldrignore
+.mcp.json
+

@@ -28,6 +28,7 @@ name = "aqua-mcp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "bdkpython" },
     { name = "cryptography" },
     { name = "lwk" },
     { name = "mcp" },
@@ -44,6 +45,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "bdkpython", specifier = ">=2.2.0" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=24.0.0" },
     { name = "cryptography", specifier = ">=42.0.0" },
     { name = "lwk", specifier = ">=0.8.0" },
@@ -62,6 +64,17 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/6b/5c/685e6633917e101e5dcb62b9dd76946cbb57c26e133bae9e0cd36033c0a9/attrs-25.4.0.tar.gz", hash = "sha256:16d5969b87f0859ef33a48b35d55ac1be6e42ae49d5e853b597db70c35c57e11", size = 934251, upload-time = "2025-10-06T13:54:44.725Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3a/2a/7cc015f5b9f5db42b7d48157e23356022889fc354a2813c15934b7cb5c0e/attrs-25.4.0-py3-none-any.whl", hash = "sha256:adcf7e2a1fb3b36ac48d97835bb6d8ade15b8dcce26aba8bf1d14847b57a3373", size = 67615, upload-time = "2025-10-06T13:54:43.17Z" },
+]
+
+[[package]]
+name = "bdkpython"
+version = "2.2.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2f/91/b3dffe17f7dd2fcb692c8f989ea8f170814c6f399802ab6949868abadb8e/bdkpython-2.2.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:be730cef7f7008a1b86a52feab306a65667cc11c0972bd2596dd808f1da6db6e", size = 4358222, upload-time = "2025-11-04T20:33:04.083Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/b9/7b1180e11cf85b2fa0e29f7f6a3dacd608897b6b40399f825142e4a122c3/bdkpython-2.2.0-cp313-cp313-macosx_11_0_x86_64.whl", hash = "sha256:1b0ea06552e380884a9bb43d5d7f23f6c7532997134e6c2bccb98196c065d316", size = 4411782, upload-time = "2025-11-04T20:33:10.19Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/4b/e7acc1189344a6f6425f23cb1b61280ad91a15fc49a68bef81bef769fff1/bdkpython-2.2.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:24ca0b94f4b40813802ce68c2fb2a5e1a47828d8531ee91059fec90c096d0ba5", size = 4615712, upload-time = "2025-11-04T20:33:15.519Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/19/c89e7d6a027681fb585eb525d95810df8ec01fadf5cb9d14a8a0a4492315/bdkpython-2.2.0-cp313-cp313-win_amd64.whl", hash = "sha256:225fd1ead7688d2f2b42d684dc3d8344679299dfe7ba01bd6a27f84d47d42858", size = 4003523, upload-time = "2025-11-04T20:33:22.558Z" },
 ]
 
 [[package]]

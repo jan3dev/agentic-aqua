@@ -25,6 +25,7 @@ dependencies = [
     "lwk>=0.8.0",
     "mcp>=1.0.0",
     "cryptography>=42.0.0",
+    "bdkpython>=2.2.0",
 ]
 
 [project.optional-dependencies]

@@ -68,10 +68,23 @@ class TestStorage:
         """Test deleting wallet."""
         wallet = WalletData(name="todelete", network="mainnet", descriptor="ct")
         temp_storage.save_wallet(wallet)
-        
+
         assert temp_storage.wallet_exists("todelete")
         assert temp_storage.delete_wallet("todelete")
         assert not temp_storage.wallet_exists("todelete")
+
+    def test_delete_wallet_removes_cache(self, temp_storage):
+        """Deleting a wallet also removes its cache directory."""
+        wallet = WalletData(name="withcache", network="mainnet", descriptor="ct")
+        temp_storage.save_wallet(wallet)
+        cache_path = temp_storage.get_cache_path("withcache")
+        # Create a dummy file inside the cache to verify rmtree
+        (cache_path / "dummy.db").touch()
+        assert cache_path.exists()
+
+        temp_storage.delete_wallet("withcache")
+        assert not temp_storage.wallet_exists("withcache")
+        assert not cache_path.exists()
 
     def test_mnemonic_encryption(self, temp_storage):
         """Test mnemonic encryption/decryption."""
