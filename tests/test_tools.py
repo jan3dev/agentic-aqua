@@ -37,8 +37,10 @@ def isolated_manager():
         storage = Storage(Path(tmpdir))
         manager = WalletManager(storage=storage)
         tools_module._manager = manager
+        tools_module._btc_manager = None  # so get_btc_manager() uses same storage
         yield manager
         tools_module._manager = None
+        tools_module._btc_manager = None
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +485,18 @@ class TestSend:
         with pytest.raises(ValueError, match="not found"):
             lw_send(wallet_name="ghost", address=self.DEST_ADDRESS, amount=100)
 
+    def test_send_zero_amount_raises(self):
+        """Sending zero satoshis raises ValueError."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="zero_send")
+        with pytest.raises(ValueError, match="Amount must be positive"):
+            lw_send(wallet_name="zero_send", address=self.DEST_ADDRESS, amount=0)
+
+    def test_send_negative_amount_raises(self):
+        """Sending negative satoshis raises ValueError."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="neg_send")
+        with pytest.raises(ValueError, match="Amount must be positive"):
+            lw_send(wallet_name="neg_send", address=self.DEST_ADDRESS, amount=-100)
+
     def test_send_without_passphrase_when_encrypted_raises(self):
         """Encrypted wallet requires passphrase for send."""  # Significance: 4
         lw_import_mnemonic(
@@ -573,6 +587,28 @@ class TestSendAsset:
         assert call_args[1] == 100
         assert call_args[2] == self.FAKE_ASSET_ID
 
+    def test_send_asset_zero_amount_raises(self):
+        """Sending zero satoshis of an asset raises ValueError."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="zero_asset")
+        with pytest.raises(ValueError, match="Amount must be positive"):
+            lw_send_asset(
+                wallet_name="zero_asset",
+                address=self.DEST_ADDRESS,
+                amount=0,
+                asset_id=self.FAKE_ASSET_ID,
+            )
+
+    def test_send_asset_negative_amount_raises(self):
+        """Sending negative satoshis of an asset raises ValueError."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="neg_asset")
+        with pytest.raises(ValueError, match="Amount must be positive"):
+            lw_send_asset(
+                wallet_name="neg_asset",
+                address=self.DEST_ADDRESS,
+                amount=-50,
+                asset_id=self.FAKE_ASSET_ID,
+            )
+
     def test_send_asset_from_watch_only_raises(self):
         """Cannot send asset from watch-only wallet."""  # Significance: 4
         net = lwk.Network.mainnet()
@@ -631,20 +667,17 @@ class TestWalletManagerInternals:
         isolated_manager.load_wallet("restore_test", passphrase="mypass")
         assert "restore_test" in isolated_manager._signers
 
-    def test_send_no_mnemonic_no_passphrase_raises(self, isolated_manager):
-        """Wallet without stored mnemonic and no passphrase cannot sign."""  # Significance: 4
+    def test_send_no_passphrase_uses_plaintext_mnemonic(self, isolated_manager):
+        """Wallet imported without passphrase stores mnemonic as plaintext and can sign."""
         lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="no_sign")
-        # Simulate: wallet saved without encrypted mnemonic but signer lost
         isolated_manager._signers.pop("no_sign", None)
         wallet = isolated_manager.storage.load_wallet("no_sign")
-        assert wallet.encrypted_mnemonic is None
+        assert wallet.encrypted_mnemonic is not None
+        assert wallet.encrypted_mnemonic.startswith("plain:")
+        assert not isolated_manager.storage.is_mnemonic_encrypted(wallet.encrypted_mnemonic)
 
-        with pytest.raises(ValueError, match="No mnemonic available"):
-            isolated_manager.send(
-                "no_sign",
-                "lq1qqvxk052kf3qtkxmrakx50a9gc3smqad2ync54hzntjt980kfej9kkfe0247rp5h4yzmdftsahhw64uy8pzfe7cpg4fgykm7cv",
-                100,
-            )
+        isolated_manager.load_wallet("no_sign")
+        assert "no_sign" in isolated_manager._signers
 
 
 # ---------------------------------------------------------------------------
@@ -669,6 +702,11 @@ class TestToolRegistry:
             "lw_send_asset",
             "lw_list_wallets",
             "lw_tx_status",
+            "btc_balance",
+            "btc_address",
+            "btc_transactions",
+            "btc_send",
+            "unified_balance",
         }
         assert set(TOOLS.keys()) == expected
 

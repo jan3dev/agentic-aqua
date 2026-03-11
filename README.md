@@ -1,12 +1,14 @@
 # 💧 AQUA MCP
 
-MCP server for managing Liquid Network wallets through AI assistants like Claude.
+MCP server for managing **Liquid Network** and **Bitcoin** wallets through AI assistants like Claude. One mnemonic can back both networks (unified wallet).
 
 ## Features
 
 - 🔑 **Generate & Import** - Create new wallets or import existing mnemonics
+- 🔗 **Unified Wallet** - One mnemonic for Liquid and Bitcoin; `unified_balance` shows both
+- ₿ **Bitcoin (onchain)** - BIP84 wallets, balance and send via `btc_*` tools (BDK)
 - 👀 **Watch-Only** - Import CT descriptors for balance monitoring
-- 💸 **Send & Receive** - Full transaction support with signing
+- 💸 **Send & Receive** - Full transaction support (L-BTC, BTC, and Liquid assets)
 - 🪙 **Assets** - Native support for L-BTC, USDT, and all Liquid assets
 - 🔒 **Secure** - Encrypted storage, no remote servers for keys
 
@@ -56,13 +58,13 @@ cd aqua-mcp
 uv sync
 ```
 
-Configure Claude Desktop:
+Configure Claude Desktop. Use the **full path** to `uv` (e.g. `which uv`) so the app finds it:
 
 ```json
 {
   "mcpServers": {
     "aqua-mcp": {
-      "command": "uv",
+      "command": "/full/path/to/uv",
       "args": ["run", "--directory", "/absolute/path/to/aqua-mcp", "python", "-m", "aqua_mcp.server"]
     }
   }
@@ -75,10 +77,11 @@ Configure Claude Desktop:
 
 Once connected, you can ask Claude to:
 
-- "Create a new Liquid wallet"
-- "Show me my L-BTC balance"
-- "Generate a new receive address"
-- "Send 0.001 L-BTC to lq1..."
+- "Create a new Liquid wallet" (also creates Bitcoin wallet from same mnemonic)
+- "Show me my L-BTC balance" / "What's my Bitcoin balance?"
+- "Show my unified balance (Bitcoin and Liquid)"
+- "Generate a new receive address" (Liquid or Bitcoin)
+- "Send 0.001 L-BTC to lq1..." / "Send 10,000 sats to bc1..."
 
 ## Usage Examples
 
@@ -123,18 +126,36 @@ Fee: 250 sats
 
 ## Available Tools
 
+**Liquid (lw_*)**
+
 | Tool | Description |
 |------|-------------|
 | `lw_generate_mnemonic` | Generate new BIP39 mnemonic |
-| `lw_import_mnemonic` | Import wallet from mnemonic |
+| `lw_import_mnemonic` | Import wallet from mnemonic (also creates Bitcoin wallet) |
 | `lw_import_descriptor` | Import watch-only wallet |
 | `lw_export_descriptor` | Export CT descriptor |
-| `lw_balance` | Get wallet balances |
-| `lw_address` | Generate receive address |
+| `lw_balance` | Get wallet balances (all assets) |
+| `lw_address` | Generate Liquid receive address |
 | `lw_send` | Send L-BTC |
 | `lw_send_asset` | Send any Liquid asset |
 | `lw_transactions` | Transaction history |
+| `lw_tx_status` | Get transaction status (txid or explorer URL) |
 | `lw_list_wallets` | List all wallets |
+
+**Bitcoin (btc_*)**
+
+| Tool | Description |
+|------|-------------|
+| `btc_balance` | Get Bitcoin balance (sats) |
+| `btc_address` | Generate Bitcoin receive address (bc1...) |
+| `btc_transactions` | Bitcoin transaction history |
+| `btc_send` | Send BTC |
+
+**Unified**
+
+| Tool | Description |
+|------|-------------|
+| `unified_balance` | Get balance for both Bitcoin and Liquid |
 
 ## Configuration
 
@@ -151,8 +172,8 @@ Default config location: `~/.aqua-mcp/config.json`
 
 ### Networks
 
-- `mainnet` - Liquid mainnet (real funds)
-- `testnet` - Liquid testnet (test funds)
+- **Liquid**: `mainnet` (real funds), `testnet` (test funds) — Electrum/Esplora (Blockstream)
+- **Bitcoin**: `mainnet`, `testnet` — Esplora (Blockstream)
 
 ## Security
 
@@ -176,10 +197,10 @@ All private key operations happen locally. Only blockchain sync uses Blockstream
 
 ```bash
 # Install with dev dependencies
-uv sync --extra dev
+uv sync --all-extras
 
 # Run tests
-uv run pytest
+uv run python -m pytest tests/
 
 # Format code
 uv run black src/
@@ -190,21 +211,17 @@ uv run ruff check src/
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  AI Assistant   │────▶│   MCP Server    │────▶│   LWK (Rust)    │
-│  (Claude, etc)  │     │   (Python)      │     │   via bindings  │
-└─────────────────┘     └─────────────────┘     └────────┬────────┘
-                                                         │
-                                                         ▼
-                                                ┌─────────────────┐
-                                                │ Electrum/Esplora│
-                                                │  (Blockstream)  │
-                                                └─────────────────┘
+│  AI Assistant   │────▶│   MCP Server    │────▶│   LWK (Liquid)  │───▶ Electrum/Esplora
+│  (Claude, etc)  │     │   (Python)      │     └─────────────────┘
+└─────────────────┘     └────────┬────────┘     ┌─────────────────┐
+                                 │              │   BDK (Bitcoin) │───▶ Esplora
+                                 └──────────────└─────────────────┘     (Blockstream)
 ```
-
 
 ## Credits
 
 Built with:
 - [LWK](https://github.com/Blockstream/lwk) - Liquid Wallet Kit by Blockstream
+- [BDK](https://github.com/bitcoindevkit/bdk-python) - Bitcoin Development Kit
 - [MCP](https://modelcontextprotocol.io/) - Model Context Protocol
 

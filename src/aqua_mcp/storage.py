@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -22,7 +23,9 @@ class WalletData:
     """Wallet data structure."""
     name: str
     network: str  # "mainnet" or "testnet"
-    descriptor: str  # CT descriptor
+    descriptor: str  # CT descriptor (Liquid)
+    btc_descriptor: Optional[str] = None  # BIP84 external descriptor (Bitcoin)
+    btc_change_descriptor: Optional[str] = None  # BIP84 change descriptor (Bitcoin)
     encrypted_mnemonic: Optional[str] = None  # Encrypted, if full wallet
     watch_only: bool = False
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
@@ -32,6 +35,10 @@ class WalletData:
 
     @classmethod
     def from_dict(cls, data: dict) -> "WalletData":
+        # Backward compatibility: old wallet files may not have btc_* fields
+        data = {**data}
+        data.setdefault("btc_descriptor", None)
+        data.setdefault("btc_change_descriptor", None)
         return cls(**data)
 
 
@@ -107,6 +114,24 @@ class Storage:
         key = self._derive_key(passphrase, salt)
         f = Fernet(key)
         return f.decrypt(encrypted_data).decode()
+
+    def store_mnemonic(self, mnemonic: str, passphrase: Optional[str] = None) -> str:
+        """Store mnemonic, encrypting only when a passphrase is provided."""
+        if passphrase:
+            return self.encrypt_mnemonic(mnemonic, passphrase)
+        return "plain:" + base64.b64encode(mnemonic.encode()).decode()
+
+    def retrieve_mnemonic(self, stored: str, passphrase: Optional[str] = None) -> str:
+        """Retrieve mnemonic stored by store_mnemonic."""
+        if stored.startswith("plain:"):
+            return base64.b64decode(stored[6:]).decode()
+        if not passphrase:
+            raise ValueError("Passphrase required to decrypt mnemonic")
+        return self.decrypt_mnemonic(stored, passphrase)
+
+    def is_mnemonic_encrypted(self, stored: str) -> bool:
+        """Check whether a stored mnemonic requires a passphrase."""
+        return not stored.startswith("plain:")
 
     # Config operations
 
@@ -197,12 +222,15 @@ class Storage:
             raise
 
     def delete_wallet(self, name: str) -> bool:
-        """Delete wallet."""
+        """Delete wallet and its cache directory."""
         path = self._wallet_path(name)
-        if path.exists():
-            path.unlink()
-            return True
-        return False
+        if not path.exists():
+            return False
+        path.unlink()
+        cache_path = self.cache_dir / name
+        if cache_path.is_dir():
+            shutil.rmtree(cache_path)
+        return True
 
     # Cache operations
 

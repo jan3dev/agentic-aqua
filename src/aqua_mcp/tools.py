@@ -1,12 +1,16 @@
 """MCP tool definitions for AQUA."""
 
 import json
+import logging
 import re
 import urllib.request
 import urllib.error
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 from .assets import resolve_asset_name
+from .bitcoin import BitcoinWalletManager
 from .wallet import WalletManager
 
 
@@ -23,6 +27,7 @@ EXPLORER_URLS = {
 
 # Global wallet manager instance
 _manager: WalletManager | None = None
+_btc_manager: BitcoinWalletManager | None = None
 
 
 def get_manager() -> WalletManager:
@@ -31,6 +36,14 @@ def get_manager() -> WalletManager:
     if _manager is None:
         _manager = WalletManager()
     return _manager
+
+
+def get_btc_manager() -> BitcoinWalletManager:
+    """Get or create Bitcoin wallet manager (shares storage with Liquid manager)."""
+    global _btc_manager
+    if _btc_manager is None:
+        _btc_manager = BitcoinWalletManager(storage=get_manager().storage)
+    return _btc_manager
 
 
 # Tool implementations
@@ -58,26 +71,32 @@ def lw_import_mnemonic(
     passphrase: str | None = None,
 ) -> dict[str, Any]:
     """
-    Import a wallet from a BIP39 mnemonic.
-    
+    Import a wallet from a BIP39 mnemonic. Creates both Liquid (LWK) and Bitcoin (BDK)
+    wallets from the same mnemonic (different derivation paths).
+
     Args:
         mnemonic: BIP39 mnemonic phrase
         wallet_name: Name for the wallet. Default: "default"
         network: "mainnet" or "testnet". Default: "mainnet"
         passphrase: Optional passphrase to encrypt the mnemonic at rest
-        
+
     Returns:
         wallet_name: Name of the created wallet
         network: Network the wallet is on
-        descriptor: CT descriptor (can be shared for watch-only)
+        descriptor: CT descriptor (Liquid, can be shared for watch-only)
+        btc_descriptor: BIP84 descriptor (Bitcoin)
         watch_only: False (this is a full wallet)
     """
     manager = get_manager()
     wallet = manager.import_mnemonic(mnemonic, wallet_name, network, passphrase)
+    btc_manager = get_btc_manager()
+    btc_manager.create_wallet(mnemonic, wallet_name, network, passphrase)
+    wallet_data = manager.storage.load_wallet(wallet_name)
     return {
         "wallet_name": wallet.name,
         "network": wallet.network,
         "descriptor": wallet.descriptor,
+        "btc_descriptor": wallet_data.btc_descriptor,
         "watch_only": wallet.watch_only,
     }
 
@@ -352,6 +371,150 @@ def lw_tx_status(tx: str) -> dict[str, Any]:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Bitcoin (btc_*) tools
+# ---------------------------------------------------------------------------
+
+
+def btc_balance(wallet_name: str = "default") -> dict[str, Any]:
+    """
+    Get Bitcoin wallet balance in satoshis.
+
+    Args:
+        wallet_name: Name of the wallet. Default: "default"
+
+    Returns:
+        wallet_name: Name of the wallet
+        balance_sats: Balance in satoshis
+        balance_btc: Human-readable balance in BTC
+    """
+    btc = get_btc_manager()
+    balance_sats = btc.get_balance(wallet_name)
+    return {
+        "wallet_name": wallet_name,
+        "balance_sats": balance_sats,
+        "balance_btc": round(balance_sats / 100_000_000, 8),
+    }
+
+
+def btc_address(
+    wallet_name: str = "default",
+    index: int | None = None,
+) -> dict[str, Any]:
+    """
+    Generate a Bitcoin receive address (bc1...).
+
+    Args:
+        wallet_name: Name of the wallet. Default: "default"
+        index: Specific address index. Default: next unused
+
+    Returns:
+        address: The Bitcoin address
+        index: Address index
+    """
+    btc = get_btc_manager()
+    addr = btc.get_address(wallet_name, index)
+    return addr.to_dict()
+
+
+def btc_transactions(
+    wallet_name: str = "default",
+    limit: int | None = 10,
+) -> dict[str, Any]:
+    """
+    Get Bitcoin transaction history.
+
+    Args:
+        wallet_name: Name of the wallet. Default: "default"
+        limit: Maximum number of transactions. Default: 10
+
+    Returns:
+        wallet_name: Name of the wallet
+        transactions: List of transactions
+        count: Number of transactions returned
+    """
+    btc = get_btc_manager()
+    txs = btc.get_transactions(wallet_name, limit)
+    return {
+        "wallet_name": wallet_name,
+        "transactions": [tx.to_dict() for tx in txs],
+        "count": len(txs),
+    }
+
+
+def btc_send(
+    wallet_name: str,
+    address: str,
+    amount: int,
+    fee_rate: int | None = None,
+    passphrase: str | None = None,
+) -> dict[str, Any]:
+    """
+    Send BTC to an address.
+
+    Args:
+        wallet_name: Name of the wallet
+        address: Destination Bitcoin address (bc1...)
+        amount: Amount in satoshis
+        fee_rate: Optional fee rate in sat/vB. Default: let BDK choose
+        passphrase: Passphrase to decrypt mnemonic (if encrypted)
+
+    Returns:
+        txid: Transaction ID
+        amount: Amount sent
+        address: Destination address
+    """
+    btc = get_btc_manager()
+    txid = btc.send(wallet_name, address, amount, fee_rate, passphrase)
+    return {
+        "txid": txid,
+        "amount": amount,
+        "address": address,
+    }
+
+
+def unified_balance(wallet_name: str = "default") -> dict[str, Any]:
+    """
+    Get balance for both Bitcoin and Liquid networks (unified wallet).
+
+    Args:
+        wallet_name: Name of the wallet. Default: "default"
+
+    Returns:
+        wallet_name: Name of the wallet
+        bitcoin: { balance_sats, balance_btc } or null if no BTC descriptors
+        bitcoin_error: Optional message when Bitcoin balance is unavailable (for agent to explain to user)
+        liquid: { balances: [...] }
+    """
+    manager = get_manager()
+    liquid_balances = manager.get_balance(wallet_name)
+    btc_sats: int | None = None
+    bitcoin_error: str | None = None
+    try:
+        btc = get_btc_manager()
+        btc_sats = btc.get_balance(wallet_name)
+    except ValueError as e:
+        bitcoin_error = str(e) or "This wallet has no Bitcoin descriptors (e.g. watch-only Liquid-only wallet)."
+        logger.info("unified_balance: Bitcoin balance unavailable for %s: %s", wallet_name, bitcoin_error)
+    except Exception as e:
+        bitcoin_error = f"Could not fetch Bitcoin balance: {e}"
+        logger.warning("unified_balance: %s", bitcoin_error, exc_info=True)
+
+    result: dict[str, Any] = {
+        "wallet_name": wallet_name,
+        "bitcoin": {
+            "balance_sats": btc_sats,
+            "balance_btc": round(btc_sats / 100_000_000, 8) if btc_sats is not None else None,
+        } if btc_sats is not None else None,
+        "liquid": {
+            "balances": [b.to_dict() for b in liquid_balances],
+        },
+    }
+    if bitcoin_error is not None:
+        result["bitcoin_error"] = bitcoin_error
+    return result
+
+
 def lw_list_wallets() -> dict[str, Any]:
     """
     List all wallets.
@@ -381,4 +544,9 @@ TOOLS = {
     "lw_send_asset": lw_send_asset,
     "lw_tx_status": lw_tx_status,
     "lw_list_wallets": lw_list_wallets,
+    "btc_balance": btc_balance,
+    "btc_address": btc_address,
+    "btc_transactions": btc_transactions,
+    "btc_send": btc_send,
+    "unified_balance": unified_balance,
 }
