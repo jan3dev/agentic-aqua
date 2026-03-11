@@ -5,7 +5,7 @@ import os
 import re
 import shutil
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Optional
 
@@ -28,7 +28,7 @@ class WalletData:
     btc_change_descriptor: Optional[str] = None  # BIP84 change descriptor (Bitcoin)
     encrypted_mnemonic: Optional[str] = None  # Encrypted, if full wallet
     watch_only: bool = False
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -75,6 +75,7 @@ class Storage:
         self.base_dir = base_dir or DEFAULT_DIR
         self.wallets_dir = self.base_dir / "wallets"
         self.cache_dir = self.base_dir / "cache"
+        self.swaps_dir = self.base_dir / "swaps"
         self.config_path = self.base_dir / "config.json"
         self._ensure_dirs()
 
@@ -86,6 +87,8 @@ class Storage:
         os.chmod(self.wallets_dir, 0o700)
         self.cache_dir.mkdir(exist_ok=True, mode=0o700)
         os.chmod(self.cache_dir, 0o700)
+        self.swaps_dir.mkdir(exist_ok=True, mode=0o700)
+        os.chmod(self.swaps_dir, 0o700)
 
     def _derive_key(self, passphrase: str, salt: bytes) -> bytes:
         """Derive encryption key from passphrase."""
@@ -142,31 +145,35 @@ class Storage:
                 return Config.from_dict(json.load(f))
         return Config()
 
-    def save_config(self, config: Config):
-        temp_path = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
+    def _atomic_write_json(self, path: Path, data: dict) -> None:
+        """Atomically write JSON data to a file with restricted permissions."""
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
         try:
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(config.to_dict(), f, indent=2)
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
             if hasattr(os, "chmod"):
                 try:
-                    os.chmod(temp_path, 0o600)
+                    os.chmod(tmp_path, 0o600)
                 except OSError:
                     pass
-            os.replace(temp_path, self.config_path)
+            os.replace(tmp_path, path)
             if hasattr(os, "chmod"):
                 try:
-                    os.chmod(self.config_path, 0o600)
+                    os.chmod(path, 0o600)
                 except OSError:
                     pass
         except Exception:
-            if temp_path.exists():
+            if tmp_path.exists():
                 try:
-                    temp_path.unlink()
+                    tmp_path.unlink()
                 except OSError:
                     pass
             raise
+
+    def save_config(self, config: Config):
+        self._atomic_write_json(self.config_path, config.to_dict())
 
     # Wallet operations
 
@@ -196,30 +203,7 @@ class Storage:
 
     def save_wallet(self, wallet: WalletData):
         path = self._wallet_path(wallet.name)
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(wallet.to_dict(), f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            if hasattr(os, "chmod"):
-                try:
-                    os.chmod(tmp_path, 0o600)
-                except OSError:
-                    pass
-            os.replace(tmp_path, path)
-            if hasattr(os, "chmod"):
-                try:
-                    os.chmod(path, 0o600)
-                except OSError:
-                    pass
-        except Exception:
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
-            raise
+        self._atomic_write_json(path, wallet.to_dict())
 
     def delete_wallet(self, name: str) -> bool:
         """Delete wallet and its cache directory."""
@@ -231,6 +215,39 @@ class Storage:
         if cache_path.is_dir():
             shutil.rmtree(cache_path)
         return True
+
+    # Swap operations
+
+    def _swap_path(self, swap_id: str) -> Path:
+        """Get path to swap file, validating the ID to prevent path traversal."""
+        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', swap_id):
+            raise ValueError(
+                f"Invalid swap ID '{swap_id}'. "
+                "Use only letters, numbers, hyphens and underscores (max 128 chars)."
+            )
+        return self.swaps_dir / f"{swap_id}.json"
+
+    def save_swap(self, swap) -> None:
+        """Save swap data for recovery."""
+        path = self._swap_path(swap.swap_id)
+        self._atomic_write_json(path, swap.to_dict())
+
+    def load_swap(self, swap_id: str):
+        """Load swap data. Returns SwapInfo or None."""
+        from .boltz import SwapInfo
+
+        path = self._swap_path(swap_id)
+        if not path.exists():
+            return None
+        with open(path) as f:
+            return SwapInfo(**json.load(f))
+
+    def list_swaps(self) -> list[str]:
+        """List all swap IDs."""
+        return [
+            p.stem for p in self.swaps_dir.glob("*.json")
+            if re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', p.stem)
+        ]
 
     # Cache operations
 

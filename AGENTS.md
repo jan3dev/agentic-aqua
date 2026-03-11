@@ -16,7 +16,7 @@ AI Assistant ←→ MCP Server (Python) ←→ LWK (Liquid) ──→ Electrum/E
 
 No local server required. Liquid uses Electrum/Esplora; Bitcoin uses Esplora only. All via Blockstream's public infrastructure.
 
-## Tools (16 total)
+## Tools (18 total)
 
 Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix.
 
@@ -61,6 +61,13 @@ Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix.
 |------|-------------|------------|
 | `unified_balance` | Get balance for both Bitcoin and Liquid | `wallet_name`: optional |
 
+### Lightning (via Boltz)
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `lbtc_pay_lightning_invoice` | Pay a Lightning invoice using L-BTC via Boltz submarine swap. Fees: ~0.1% + miner fees. Limits: 1,000 - 25,000,000 sats | `invoice`: BOLT11 string, `wallet_name`: optional, `passphrase`: optional |
+| `lbtc_swap_lightning_status` | Check status of a Boltz submarine swap | `swap_id`: string |
+
 ## Resources (3 total)
 
 MCP resources provide static documentation to AI assistants.
@@ -71,7 +78,7 @@ MCP resources provide static documentation to AI assistants.
 | `aqua://docs/networks` | Network Reference | Bitcoin and Liquid network details, address formats, explorers, common assets |
 | `aqua://docs/security` | Security Best Practices | Passphrase usage, encryption, backup, watch-only wallets, recovery |
 
-## Prompts (12 total)
+## Prompts (13 total)
 
 MCP prompts provide pre-built conversation starters for common workflows.
 
@@ -89,6 +96,7 @@ MCP prompts provide pre-built conversation starters for common workflows.
 | `transaction_status` | Check transaction status | `network`: optional (bitcoin/liquid) |
 | `list_wallets` | Show all wallets | (none) |
 | `export_descriptor` | Export descriptor for watch-only wallet | `wallet_name`: optional |
+| `pay_lightning` | Pay a Lightning invoice using Liquid Bitcoin | `wallet_name`: optional |
 
 ## Data Storage
 
@@ -99,6 +107,8 @@ Wallet data stored in `~/.aqua-mcp/`:
 ├── wallets/
 │   ├── default.json     # Encrypted wallet data
 │   └── work.json
+├── swaps/               # Boltz submarine swap data (for refund recovery)
+│   └── {swap_id}.json   # Contains swap details + refund private key
 └── cache/
     └── <wallet_name>/
         └── btc/
@@ -121,6 +131,30 @@ Wallet data stored in `~/.aqua-mcp/`:
 ```
 
 `btc_descriptor` and `btc_change_descriptor` (BIP84) are set when the wallet is imported from mnemonic (unified wallet). Omitted for watch-only or descriptor-only imports.
+
+### Swap File Structure (Boltz)
+
+```json
+{
+  "swap_id": "abc123",
+  "address": "lq1...",
+  "expected_amount": 50069,
+  "claim_public_key": "03...",
+  "swap_tree": {...},
+  "timeout_block_height": 2500000,
+  "refund_private_key": "...",
+  "refund_public_key": "...",
+  "invoice": "lnbc...",
+  "status": "transaction.claimed",
+  "network": "mainnet",
+  "created_at": "2026-03-06T12:00:00Z",
+  "lockup_txid": "...",
+  "preimage": "...",
+  "claim_txid": "..."
+}
+```
+
+File permissions: `0o600` (contains private refund key for recovery).
 
 ### Config Structure
 
@@ -164,6 +198,7 @@ Wallet data stored in `~/.aqua-mcp/`:
 - `bdkpython` - Bitcoin Development Kit Python bindings (>=2.2.0)
 - `mcp` - Model Context Protocol SDK
 - `cryptography` - For mnemonic encryption (PBKDF2 + Fernet)
+- `coincurve` - secp256k1 for Boltz swap keypair generation
 
 ## Bitcoin Implementation Details
 
@@ -276,15 +311,17 @@ aqua-mcp/
 │   └── aqua_mcp/
 │       ├── __init__.py
 │       ├── server.py   # MCP server entry point (tools, resources, prompts)
-│       ├── tools.py    # Tool implementations (lw_*, btc_*, unified_*)
+│       ├── tools.py    # Tool implementations (lw_*, btc_*, unified_*, lbtc_*)
 │       ├── wallet.py   # Liquid wallet (LWK)
 │       ├── bitcoin.py  # Bitcoin wallet (BDK)
+│       ├── boltz.py    # Boltz Exchange integration (submarine swaps)
 │       ├── assets.py   # Asset registry
 │       └── storage.py  # Persistence layer (encryption, config, wallet data)
 └── tests/
     ├── test_tools.py
     ├── test_storage.py
-    └── test_bitcoin.py
+    ├── test_bitcoin.py
+    └── test_boltz.py
 ```
 
 ### Running Tests
@@ -303,4 +340,21 @@ uv run python -m aqua_mcp.server
 
 ---
 
-*Last updated: 2026-03-03*
+## TLDR Integration
+
+For code exploration, PREFER these TLDR tools over raw Grep/Glob:
+
+| Tool | When to use |
+|------|-------------|
+| `mcp__tldr__semantic` | Find code by behavior ("validate tokens", "handle errors") |
+| `mcp__tldr__structure` | Get function/class map of project |
+| `mcp__tldr__context` | Get call graph from entry point (95% token savings) |
+| `mcp__tldr__impact` | Before refactoring, find all callers |
+| `mcp__tldr__arch` | Detect architectural layers |
+| `mcp__tldr__change_impact` | Find tests affected by changes |
+
+Use standard Grep/Glob only for: exact string matches, simple file lookups, config/env searches.
+
+---
+
+*Last updated: 2026-03-06*

@@ -62,4 +62,4 @@ htmlcov/
 .tldr/
 .tldrignore
 .mcp.json
-
+specs/
