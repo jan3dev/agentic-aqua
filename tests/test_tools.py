@@ -707,6 +707,8 @@ class TestToolRegistry:
             "btc_transactions",
             "btc_send",
             "unified_balance",
+            "lbtc_pay_lightning_invoice",
+            "lbtc_swap_lightning_status",
         }
         assert set(TOOLS.keys()) == expected
 

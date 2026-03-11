@@ -151,6 +151,89 @@ class TestWalletNameValidation:
             temp_storage.get_cache_path("../../tmp/evil")
 
 
+class TestSwapStorage:
+    """Tests for swap persistence (Layer 4)."""
+
+    def _make_swap(self, **overrides):
+        from aqua_mcp.boltz import SwapInfo
+
+        defaults = {
+            "swap_id": "test_swap_123",
+            "address": "lq1qqexampleaddress",
+            "expected_amount": 50069,
+            "claim_public_key": "03" + "ab" * 32,
+            "swap_tree": {"claimLeaf": {}, "refundLeaf": {}},
+            "timeout_block_height": 2500000,
+            "refund_private_key": "aa" * 32,
+            "refund_public_key": "03" + "cc" * 32,
+            "invoice": "lnbc500u1ptest...",
+            "status": "swap.created",
+            "network": "mainnet",
+            "created_at": "2026-03-05T12:00:00",
+        }
+        defaults.update(overrides)
+        return SwapInfo(**defaults)
+
+    def test_swaps_dir_created_on_init(self, temp_storage):
+        """Storage init creates swaps/ directory."""
+        assert temp_storage.swaps_dir.exists()
+
+    def test_save_and_load_swap(self, temp_storage):
+        """SwapInfo saved can be loaded back correctly."""
+        swap = self._make_swap()
+        temp_storage.save_swap(swap)
+
+        loaded = temp_storage.load_swap("test_swap_123")
+        assert loaded is not None
+        assert loaded.swap_id == swap.swap_id
+        assert loaded.address == swap.address
+        assert loaded.expected_amount == swap.expected_amount
+        assert loaded.status == swap.status
+        assert loaded.refund_private_key == swap.refund_private_key
+
+    def test_load_swap_not_found_returns_none(self, temp_storage):
+        """load_swap with nonexistent ID returns None."""
+        result = temp_storage.load_swap("nonexistent")
+        assert result is None
+
+    def test_list_swaps_empty(self, temp_storage):
+        """list_swaps returns empty list when no swaps."""
+        assert temp_storage.list_swaps() == []
+
+    def test_list_swaps_returns_ids(self, temp_storage):
+        """list_swaps returns all saved swap IDs."""
+        swap1 = self._make_swap(swap_id="swap_aaa")
+        swap2 = self._make_swap(swap_id="swap_bbb")
+        temp_storage.save_swap(swap1)
+        temp_storage.save_swap(swap2)
+
+        ids = temp_storage.list_swaps()
+        assert set(ids) == {"swap_aaa", "swap_bbb"}
+
+    def test_save_swap_updates_existing(self, temp_storage):
+        """Saving swap with same ID overwrites previous data."""
+        swap = self._make_swap(status="swap.created")
+        temp_storage.save_swap(swap)
+
+        swap.status = "transaction.mempool"
+        swap.lockup_txid = "dd" * 32
+        temp_storage.save_swap(swap)
+
+        loaded = temp_storage.load_swap("test_swap_123")
+        assert loaded.status == "transaction.mempool"
+        assert loaded.lockup_txid == "dd" * 32
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix mode bits")
+    def test_swap_file_permissions(self, temp_storage):
+        """Swap files are created with 0o600 permissions."""
+        swap = self._make_swap()
+        temp_storage.save_swap(swap)
+
+        swap_path = temp_storage.swaps_dir / "test_swap_123.json"
+        mode = stat.S_IMODE(os.stat(swap_path).st_mode)
+        assert mode == 0o600, f"Expected 0600, got {oct(mode)}"
+
+
 class TestFilePermissions:
     """Tests for restrictive file permissions."""
 

@@ -15,7 +15,6 @@ from mcp.types import (
     PromptArgument,
     GetPromptResult,
     Resource,
-    ResourceTemplate,
 )
 
 from . import __version__
@@ -311,6 +310,41 @@ TOOL_SCHEMAS = {
             },
         },
     },
+    "lbtc_pay_lightning_invoice": {
+        "description": "Pay a Lightning invoice using L-BTC via Boltz submarine swap. Sends L-BTC from a Liquid wallet to pay a BOLT11 Lightning invoice.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "invoice": {
+                    "type": "string",
+                    "description": "BOLT11 Lightning invoice (starts with lnbc...)",
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Liquid wallet to pay from",
+                    "default": "default",
+                },
+                "passphrase": {
+                    "type": "string",
+                    "description": "Passphrase to decrypt mnemonic (if encrypted)",
+                },
+            },
+            "required": ["invoice"],
+        },
+    },
+    "lbtc_swap_lightning_status": {
+        "description": "Check the status of a Boltz submarine swap (Lightning payment via L-BTC)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "swap_id": {
+                    "type": "string",
+                    "description": "Boltz swap ID returned from lbtc_pay_lightning_invoice",
+                },
+            },
+            "required": ["swap_id"],
+        },
+    },
 }
 
 
@@ -363,8 +397,17 @@ WHEN GENERATING NEW SEEDS:
 
 PASSPHRASE HANDLING:
 - Wallets with encrypted mnemonics require passphrase for signing
-- Ask user for passphrase when calling btc_send, lw_send, lw_send_asset
-- If operation fails with decryption error, wallet likely has passphrase""",
+- Ask user for passphrase when calling btc_send, lw_send, lw_send_asset, lbtc_pay_lightning_invoice
+- If operation fails with decryption error, wallet likely has passphrase
+
+LIGHTNING PAYMENTS (via Boltz):
+- Use lbtc_pay_lightning_invoice to pay BOLT11 invoices using L-BTC
+- This performs a submarine swap: L-BTC -> Boltz -> Lightning
+- Fees: ~0.1% + miner fees (~19 sats)
+- Limits: 1,000 - 25,000,000 sats
+- The tool may take 1-3 minutes to complete (waits for swap confirmation)
+- Use lbtc_swap_lightning_status to check status of existing swaps
+- If swap fails, L-BTC is locked until timeout then refundable (swap data saved locally)""",
     )
 
     @server.list_prompts()
@@ -461,6 +504,15 @@ PASSPHRASE HANDLING:
             Prompt(
                 name="export_descriptor",
                 description="Export descriptor for watch-only wallet",
+                arguments=[
+                    PromptArgument(name="wallet_name", description="Wallet name", required=False),
+                ],
+            ),
+
+            # Lightning
+            Prompt(
+                name="pay_lightning",
+                description="Pay a Lightning invoice using Liquid Bitcoin (via Boltz submarine swap)",
                 arguments=[
                     PromptArgument(name="wallet_name", description="Wallet name", required=False),
                 ],
@@ -687,6 +739,31 @@ Use lw_export_descriptor and explain:
 - What the descriptor is for
 - How to import it in another wallet as watch-only
 - That it does NOT provide access to sign transactions""",
+                ),
+            )])
+
+        elif name == "pay_lightning":
+            return GetPromptResult(messages=[PromptMessage(
+                role="user",
+                content=TextContent(
+                    type="text",
+                    text=f"""I want to pay a Lightning invoice using my Liquid wallet '{wallet_name}'.
+
+Please:
+1. Show my L-BTC balance first (lw_balance)
+2. Ask me for the Lightning invoice (BOLT11 format, starts with lnbc...)
+3. Explain the fee structure:
+   - Boltz fee: ~0.1% of amount
+   - Miner fee: ~19 sats
+   - Limits: 1,000 - 25,000,000 sats
+4. Show total cost (invoice amount + fees) and ask for confirmation
+5. Use lbtc_pay_lightning_invoice to execute the swap
+6. Wait for completion (may take 1-3 minutes)
+7. Show the result:
+   - Swap ID for reference
+   - Preimage (proof of payment)
+   - Explorer link for lockup transaction
+8. If swap fails, explain that L-BTC is locked until timeout and can be refunded""",
                 ),
             )])
 
