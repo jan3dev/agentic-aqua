@@ -18,7 +18,7 @@ Use an agent with Haiku model to run these prompts
 ### 1. Import Wallet
 
 ```
-Import this wallet, name it promt_wallet_<DATETIME> and tell me the general balance:
+Import this wallet, name it prompt_wallet_<DATETIME> and tell me the general balance:
 SIGNER_MNEMONIC=${SIGNER_MNEMONIC}
 ```
 
