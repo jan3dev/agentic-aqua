@@ -782,7 +782,7 @@ Please:
    - Miner fee: ~19 sats
    - Limits: 1,000 - 25,000,000 sats
 4. Show total cost (invoice amount + fees) and ask for confirmation
-5. Use lbtc_pay_lightning_invoice to execute the swap
+5. Use lightning_send to execute the swap
 6. Wait for completion (may take 1-3 minutes)
 7. Show the result:
    - Swap ID for reference
