@@ -336,7 +336,7 @@ TOOL_SCHEMAS = {
         },
     },
     "lightning_send": {
-        "description": "Pay a Lightning invoice using L-BTC from a Liquid wallet (submarine swap). Fees: ~0.1% + miner fees. Limits: 100 – 25,000,000 sats.",
+        "description": "Pay a Lightning invoice using L-BTC from a Liquid wallet (reverse submarine swap). Fees: ~0.1% + miner fees. Limits: 100 – 25,000,000 sats.",
         "inputSchema": {
             "type": "object",
             "properties": {
