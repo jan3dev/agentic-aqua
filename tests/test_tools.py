@@ -38,9 +38,11 @@ def isolated_manager():
         manager = WalletManager(storage=storage)
         tools_module._manager = manager
         tools_module._btc_manager = None  # so get_btc_manager() uses same storage
+        tools_module._lightning_manager = None
         yield manager
         tools_module._manager = None
         tools_module._btc_manager = None
+        tools_module._lightning_manager = None
 
 
 # ---------------------------------------------------------------------------
@@ -687,7 +689,7 @@ class TestWalletManagerInternals:
 
 class TestToolRegistry:
     def test_all_tools_registered(self):
-        """All 11 MCP tools are in the TOOLS registry."""
+        """All MCP tools are in the TOOLS registry."""
         from aqua_mcp.tools import TOOLS
 
         expected = {
@@ -707,8 +709,9 @@ class TestToolRegistry:
             "btc_transactions",
             "btc_send",
             "unified_balance",
-            "lbtc_pay_lightning_invoice",
-            "lbtc_swap_lightning_status",
+            "lightning_receive",
+            "lightning_send",
+            "lightning_transaction_status",
         }
         assert set(TOOLS.keys()) == expected
 

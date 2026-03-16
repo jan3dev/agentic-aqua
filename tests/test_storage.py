@@ -266,3 +266,129 @@ class TestFilePermissions:
             for d in [storage.base_dir, storage.wallets_dir, storage.cache_dir]:
                 mode = stat.S_IMODE(os.stat(d).st_mode)
                 assert mode == 0o700, f"Expected 0700 for {d}, got {oct(mode)}"
+
+
+class TestLightningSwapStorage:
+    """Tests for Lightning swap storage."""
+
+    def test_lightning_swaps_dir_created(self, temp_storage):
+        """Lightning swaps directory is created on init."""
+        assert temp_storage.lightning_swaps_dir.exists()
+        assert temp_storage.lightning_swaps_dir.is_dir()
+
+    def test_save_load_lightning_swap_receive(self, temp_storage):
+        """Test saving and loading a receive Lightning swap."""
+        from aqua_mcp.lightning import LightningSwap
+        from datetime import datetime, UTC
+
+        swap = LightningSwap(
+            swap_id="ankara_uuid_123",
+            swap_type="receive",
+            provider="ankara",
+            invoice="lnbc...",
+            amount=100000,
+            wallet_name="default",
+            status="pending",
+            network="mainnet",
+            created_at=datetime.now(UTC).isoformat(),
+            receive_address="lq1...",
+        )
+        temp_storage.save_lightning_swap(swap)
+
+        loaded = temp_storage.load_lightning_swap("ankara_uuid_123")
+        assert loaded is not None
+        assert loaded.swap_id == "ankara_uuid_123"
+        assert loaded.swap_type == "receive"
+        assert loaded.provider == "ankara"
+        assert loaded.receive_address == "lq1..."
+
+    def test_save_load_lightning_swap_send(self, temp_storage):
+        """Test saving and loading a send Lightning swap."""
+        from aqua_mcp.lightning import LightningSwap
+        from datetime import datetime, UTC
+
+        swap = LightningSwap(
+            swap_id="boltz_swap_456",
+            swap_type="send",
+            provider="boltz",
+            invoice="lnbc...",
+            amount=50069,
+            wallet_name="default",
+            status="processing",
+            network="mainnet",
+            created_at=datetime.now(UTC).isoformat(),
+            lockup_txid="abc123",
+            timeout_block_height=2500000,
+            refund_private_key="secret_key",
+        )
+        temp_storage.save_lightning_swap(swap)
+
+        loaded = temp_storage.load_lightning_swap("boltz_swap_456")
+        assert loaded is not None
+        assert loaded.swap_type == "send"
+        assert loaded.lockup_txid == "abc123"
+        assert loaded.refund_private_key == "secret_key"
+
+    def test_load_lightning_swap_not_found(self, temp_storage):
+        """Loading non-existent swap returns None."""
+        loaded = temp_storage.load_lightning_swap("nonexistent")
+        assert loaded is None
+
+    def test_list_lightning_swaps(self, temp_storage):
+        """Test listing all Lightning swap IDs."""
+        from aqua_mcp.lightning import LightningSwap
+        from datetime import datetime, UTC
+
+        assert temp_storage.list_lightning_swaps() == []
+
+        swap1 = LightningSwap(
+            swap_id="swap_1",
+            swap_type="receive",
+            provider="ankara",
+            invoice="lnbc...",
+            amount=100000,
+            wallet_name="default",
+            status="pending",
+            network="mainnet",
+            created_at=datetime.now(UTC).isoformat(),
+        )
+        swap2 = LightningSwap(
+            swap_id="swap_2",
+            swap_type="send",
+            provider="boltz",
+            invoice="lnbc...",
+            amount=100000,
+            wallet_name="default",
+            status="processing",
+            network="mainnet",
+            created_at=datetime.now(UTC).isoformat(),
+        )
+        temp_storage.save_lightning_swap(swap1)
+        temp_storage.save_lightning_swap(swap2)
+
+        swaps = temp_storage.list_lightning_swaps()
+        assert set(swaps) == {"swap_1", "swap_2"}
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix mode bits")
+    def test_lightning_swap_file_permissions(self, temp_storage):
+        """Lightning swap files should be created with 0600 permissions."""
+        from aqua_mcp.lightning import LightningSwap
+        from datetime import datetime, UTC
+
+        swap = LightningSwap(
+            swap_id="secure_swap",
+            swap_type="send",
+            provider="boltz",
+            invoice="lnbc...",
+            amount=100000,
+            wallet_name="default",
+            status="pending",
+            network="mainnet",
+            created_at=datetime.now(UTC).isoformat(),
+            refund_private_key="secret",
+        )
+        temp_storage.save_lightning_swap(swap)
+
+        path = temp_storage._lightning_swap_path("secure_swap")
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+        assert mode == 0o600, f"Expected 0600, got {oct(mode)}"

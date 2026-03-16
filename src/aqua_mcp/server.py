@@ -3,7 +3,12 @@
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
+_project_root = Path(__file__).resolve().parent.parent.parent
+load_dotenv(_project_root / ".env")
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -20,12 +25,10 @@ from mcp.types import (
 from . import __version__
 from .tools import TOOLS
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# Tool schemas for MCP
 TOOL_SCHEMAS = {
     "lw_generate_mnemonic": {
         "description": "Generate a new BIP39 mnemonic phrase for creating a Liquid wallet",
@@ -310,14 +313,36 @@ TOOL_SCHEMAS = {
             },
         },
     },
-    "lbtc_pay_lightning_invoice": {
-        "description": "Pay a Lightning invoice using L-BTC via Boltz submarine swap. Sends L-BTC from a Liquid wallet to pay a BOLT11 Lightning invoice.",
+    "lightning_receive": {
+        "description": "Generate a Lightning invoice to receive L-BTC into a Liquid wallet (~1-2 min after payment). Limits: 100 – 25,000,000 sats.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "integer",
+                    "description": "Amount in satoshis (100 – 25,000,000)",
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Liquid wallet to receive into",
+                    "default": "default",
+                },
+                "passphrase": {
+                    "type": "string",
+                    "description": "Passphrase to decrypt mnemonic (if encrypted)",
+                },
+            },
+            "required": ["amount"],
+        },
+    },
+    "lightning_send": {
+        "description": "Pay a Lightning invoice using L-BTC from a Liquid wallet (reverse submarine swap). Fees: ~0.1% + miner fees. Limits: 100 – 25,000,000 sats.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "invoice": {
                     "type": "string",
-                    "description": "BOLT11 Lightning invoice (starts with lnbc...)",
+                    "description": "BOLT11 Lightning invoice (lnbc... or lntb...)",
                 },
                 "wallet_name": {
                     "type": "string",
@@ -332,14 +357,14 @@ TOOL_SCHEMAS = {
             "required": ["invoice"],
         },
     },
-    "lbtc_swap_lightning_status": {
-        "description": "Check the status of a Boltz submarine swap (Lightning payment via L-BTC)",
+    "lightning_transaction_status": {
+        "description": "Check the status of a Lightning receive swap. Auto-claims L-BTC when settled.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "swap_id": {
                     "type": "string",
-                    "description": "Boltz swap ID returned from lbtc_pay_lightning_invoice",
+                    "description": "Swap ID returned from lightning_receive",
                 },
             },
             "required": ["swap_id"],
@@ -397,17 +422,16 @@ WHEN GENERATING NEW SEEDS:
 
 PASSPHRASE HANDLING:
 - Wallets with encrypted mnemonics require passphrase for signing
-- Ask user for passphrase when calling btc_send, lw_send, lw_send_asset, lbtc_pay_lightning_invoice
+- Ask user for passphrase when calling btc_send, lw_send, lw_send_asset, lightning_send
 - If operation fails with decryption error, wallet likely has passphrase
 
-LIGHTNING PAYMENTS (via Boltz):
-- Use lbtc_pay_lightning_invoice to pay BOLT11 invoices using L-BTC
-- This performs a submarine swap: L-BTC -> Boltz -> Lightning
-- Fees: ~0.1% + miner fees (~19 sats)
-- Limits: 1,000 - 25,000,000 sats
-- The tool may take 1-3 minutes to complete (waits for swap confirmation)
-- Use lbtc_swap_lightning_status to check status of existing swaps
-- If swap fails, L-BTC is locked until timeout then refundable (swap data saved locally)""",
+LIGHTNING:
+- Use lightning_receive to generate an invoice for receiving L-BTC from Lightning
+  Fees: ~0.1%, Limits: 100 - 25,000,000 sats, Time: ~1-2 min after payment
+- Use lightning_send to pay a BOLT11 invoice using L-BTC (submarine swap via Boltz)
+  Fees: ~0.1% + miner fees, Limits: 100 - 25,000,000 sats
+- Use lightning_transaction_status to check status of receive swaps (auto-claims when settled)
+- For send swaps: check on-chain transaction status using lw_tx_status after getting lockup_txid""",
     )
 
     @server.list_prompts()
@@ -757,7 +781,7 @@ Please:
    - Miner fee: ~19 sats
    - Limits: 1,000 - 25,000,000 sats
 4. Show total cost (invoice amount + fees) and ask for confirmation
-5. Use lbtc_pay_lightning_invoice to execute the swap
+5. Use lightning_send to execute the swap
 6. Wait for completion (may take 1-3 minutes)
 7. Show the result:
    - Swap ID for reference

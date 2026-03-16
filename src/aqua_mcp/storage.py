@@ -16,6 +16,7 @@ import base64
 
 
 DEFAULT_DIR = Path.home() / ".aqua-mcp"
+SWAP_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]{1,128}$')
 
 
 @dataclass
@@ -76,6 +77,8 @@ class Storage:
         self.wallets_dir = self.base_dir / "wallets"
         self.cache_dir = self.base_dir / "cache"
         self.swaps_dir = self.base_dir / "swaps"
+        self.ankara_swaps_dir = self.base_dir / "ankara_swaps"
+        self.lightning_swaps_dir = self.base_dir / "lightning_swaps"
         self.config_path = self.base_dir / "config.json"
         self._ensure_dirs()
 
@@ -89,6 +92,10 @@ class Storage:
         os.chmod(self.cache_dir, 0o700)
         self.swaps_dir.mkdir(exist_ok=True, mode=0o700)
         os.chmod(self.swaps_dir, 0o700)
+        self.ankara_swaps_dir.mkdir(exist_ok=True, mode=0o700)
+        os.chmod(self.ankara_swaps_dir, 0o700)
+        self.lightning_swaps_dir.mkdir(exist_ok=True, mode=0o700)
+        os.chmod(self.lightning_swaps_dir, 0o700)
 
     def _derive_key(self, passphrase: str, salt: bytes) -> bytes:
         """Derive encryption key from passphrase."""
@@ -220,7 +227,7 @@ class Storage:
 
     def _swap_path(self, swap_id: str) -> Path:
         """Get path to swap file, validating the ID to prevent path traversal."""
-        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', swap_id):
+        if not SWAP_ID_PATTERN.fullmatch(swap_id):
             raise ValueError(
                 f"Invalid swap ID '{swap_id}'. "
                 "Use only letters, numbers, hyphens and underscores (max 128 chars)."
@@ -246,7 +253,73 @@ class Storage:
         """List all swap IDs."""
         return [
             p.stem for p in self.swaps_dir.glob("*.json")
-            if re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', p.stem)
+            if SWAP_ID_PATTERN.fullmatch(p.stem)
+        ]
+
+    # Ankara swap operations
+
+    def _ankara_swap_path(self, swap_id: str) -> Path:
+        """Get path to Ankara swap file, validating the ID to prevent path traversal."""
+        if not SWAP_ID_PATTERN.fullmatch(swap_id):
+            raise ValueError(
+                f"Invalid swap ID '{swap_id}'. "
+                "Use only letters, numbers, hyphens and underscores (max 128 chars)."
+            )
+        return self.ankara_swaps_dir / f"{swap_id}.json"
+
+    def save_ankara_swap(self, swap) -> None:
+        """Save Ankara swap data for recovery."""
+        path = self._ankara_swap_path(swap.swap_id)
+        self._atomic_write_json(path, swap.to_dict())
+
+    def load_ankara_swap(self, swap_id: str):
+        """Load Ankara swap data. Returns AnkaraSwapInfo or None."""
+        from .ankara import AnkaraSwapInfo
+
+        path = self._ankara_swap_path(swap_id)
+        if not path.exists():
+            return None
+        with open(path) as f:
+            return AnkaraSwapInfo(**json.load(f))
+
+    def list_ankara_swaps(self) -> list[str]:
+        """List all Ankara swap IDs."""
+        return [
+            p.stem for p in self.ankara_swaps_dir.glob("*.json")
+            if SWAP_ID_PATTERN.fullmatch(p.stem)
+        ]
+
+    # Lightning swap operations
+
+    def _lightning_swap_path(self, swap_id: str) -> Path:
+        """Get path to Lightning swap file, validating the ID to prevent path traversal."""
+        if not SWAP_ID_PATTERN.fullmatch(swap_id):
+            raise ValueError(
+                f"Invalid swap ID '{swap_id}'. "
+                "Use only letters, numbers, hyphens and underscores (max 128 chars)."
+            )
+        return self.lightning_swaps_dir / f"{swap_id}.json"
+
+    def save_lightning_swap(self, swap) -> None:
+        """Save Lightning swap data for recovery."""
+        path = self._lightning_swap_path(swap.swap_id)
+        self._atomic_write_json(path, swap.to_dict())
+
+    def load_lightning_swap(self, swap_id: str):
+        """Load Lightning swap data. Returns LightningSwap or None."""
+        from .lightning import LightningSwap
+
+        path = self._lightning_swap_path(swap_id)
+        if not path.exists():
+            return None
+        with open(path) as f:
+            return LightningSwap.from_dict(json.load(f))
+
+    def list_lightning_swaps(self) -> list[str]:
+        """List all Lightning swap IDs."""
+        return [
+            p.stem for p in self.lightning_swaps_dir.glob("*.json")
+            if SWAP_ID_PATTERN.fullmatch(p.stem)
         ]
 
     # Cache operations

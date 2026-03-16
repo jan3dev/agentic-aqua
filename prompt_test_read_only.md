@@ -125,3 +125,31 @@ Export the CT descriptor for my latest imported wallet.
 - No private keys are exposed
 
 ---
+
+### 9. Generate Lightning Invoice (Receive)
+
+```
+Generate a Lightning invoice to receive 500 sats into my Liquid wallet.
+```
+
+**Expected behavior:**
+- Returns a BOLT11 invoice string (`lnbc...`)
+- Shows `swap_id`, `invoice`, `amount` (500 sats), and `receive_address` (lq1...)
+- Swap status starts as `pending`
+- Invoice is valid for ~24 hours
+
+---
+
+### 10. Check Lightning Swap Status
+
+```
+Check the status of my Lightning swap 3882e4fd-c73a-4e72-abbe-18ac1ea3b2aa
+```
+
+**Expected behavior:**
+- Returns swap status from Ankara API (e.g. `pending`, `claimed`, `settled`)
+- Shows `swap_id`, `status`, `invoice`, `amount`, and `receive_address`
+- If settled, includes `preimage` and auto-claims L-BTC to the Liquid wallet
+- If failed, reports the error state
+
+---
