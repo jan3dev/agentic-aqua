@@ -181,6 +181,13 @@ class LightningManager:
                 raise ValueError(
                     f"Invoice amount {invoice_amount} sats exceeds maximum ({BOLTZ_MAX_SATS} sats)"
                 )
+            # Validate balance before creating Boltz swap
+            balances = self.wallet_manager.get_balance(wallet_name)
+            lbtc_balance = next((b.amount for b in balances if b.ticker == "L-BTC"), 0)
+            if lbtc_balance < invoice_amount:
+                raise ValueError(
+                    f"Insufficient L-BTC balance: have {lbtc_balance} sats, need at least {invoice_amount} sats"
+                )
 
         client = BoltzClient(network=network)
         pairs = client.get_submarine_pairs()
