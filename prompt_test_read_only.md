@@ -111,7 +111,7 @@ Export the CT descriptor for my latest imported wallet.
 
 ---
 
-### 8. Check Lightning Swap Status
+### 8. Check Lightning Swap Status (that I paid)
 
 ```
 Check the status of my Lightning swap wneeB76Iu5k2 at boltz
@@ -126,7 +126,7 @@ Check the status of my Lightning swap wneeB76Iu5k2 at boltz
 
 ---
 
-### 9. Generate Lightning Invoice (Receive)
+### 9. Generate Lightning Invoice (to receive)
 
 ```
 Generate a Lightning invoice to receive 500 sats into my Liquid wallet.
@@ -140,10 +140,10 @@ Generate a Lightning invoice to receive 500 sats into my Liquid wallet.
 
 ---
 
-### 10. Check Lightning Swap Status
+### 10. Check Lightning Swap Status (Receiving)
 
 ```
-Check the status of my Lightning swap 3882e4fd-c73a-4e72-abbe-18ac1ea3b2aa
+Check the status of my Lightning swap id 3882e4fd-c73a-4e72-abbe-18ac1ea3b2aa
 ```
 
 **Expected behavior:**
