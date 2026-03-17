@@ -551,6 +551,35 @@ def lw_list_wallets() -> dict[str, Any]:
     }
 
 
+def delete_wallet(wallet_name: str) -> dict[str, Any]:
+    """Delete a wallet and all its cached data.
+
+    Args:
+        wallet_name: Name of the wallet to delete.
+
+    Returns:
+        deleted: True if wallet was deleted.
+        wallet_name: Name of the deleted wallet.
+    """
+    manager = get_manager()
+    wallet_data = manager.storage.load_wallet(wallet_name)
+    if wallet_data is None:
+        raise ValueError(f"Wallet '{wallet_name}' not found")
+
+    # Clear Liquid (LWK) manager caches
+    manager._signers.pop(wallet_name, None)
+    manager._wollets.pop(wallet_name, None)
+
+    # Clear Bitcoin (BDK) manager caches
+    btc = get_btc_manager()
+    btc._wallets.pop(wallet_name, None)
+    btc._persisters.pop(wallet_name, None)
+    btc._networks.pop(wallet_name, None)
+
+    manager.storage.delete_wallet(wallet_name)
+    return {"deleted": True, "wallet_name": wallet_name}
+
+
 # ---------------------------------------------------------------------------
 # Lightning tools (unified interface)
 # ---------------------------------------------------------------------------
@@ -647,6 +676,7 @@ TOOLS = {
     "lw_send_asset": lw_send_asset,
     "lw_tx_status": lw_tx_status,
     "lw_list_wallets": lw_list_wallets,
+    "delete_wallet": delete_wallet,
     "btc_balance": btc_balance,
     "btc_address": btc_address,
     "btc_transactions": btc_transactions,

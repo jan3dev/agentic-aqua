@@ -16,7 +16,7 @@ AI Assistant ←→ MCP Server (Python) ←→ LWK (Liquid) ──→ Electrum/E
 
 No local server required. Liquid uses Electrum/Esplora; Bitcoin uses Esplora only. All via Blockstream's public infrastructure.
 
-## Tools (19 total)
+## Tools (20 total)
 
 Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified tools are `unified_*`; Lightning tools are `lightning_*`.
 
@@ -29,6 +29,7 @@ Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified 
 | `lw_export_descriptor` | Export CT descriptor (watch-only) | `wallet_name`: optional |
 | `lw_import_descriptor` | Import watch-only wallet from CT descriptor | `descriptor`: string, `wallet_name`: string, `network`: optional |
 | `lw_list_wallets` | List all wallets | (none) |
+| `delete_wallet` | Delete a wallet and all its cached data | `wallet_name`: string |
 
 ### Wallet Operations (Liquid)
 
@@ -79,7 +80,7 @@ MCP resources provide static documentation to AI assistants.
 | `aqua://docs/networks` | Network Reference | Bitcoin and Liquid network details, address formats, explorers, common assets |
 | `aqua://docs/security` | Security Best Practices | Passphrase usage, encryption, backup, watch-only wallets, recovery |
 
-## Prompts (13 total)
+## Prompts (14 total)
 
 MCP prompts provide pre-built conversation starters for common workflows.
 
@@ -97,6 +98,7 @@ MCP prompts provide pre-built conversation starters for common workflows.
 | `transaction_status` | Check transaction status | `network`: optional (bitcoin/liquid) |
 | `list_wallets` | Show all wallets | (none) |
 | `export_descriptor` | Export descriptor for watch-only wallet | `wallet_name`: optional |
+| `delete_wallet` | Safely delete a wallet with balance check and seed backup reminder | `wallet_name`: required |
 | `pay_lightning` | Pay a Lightning invoice using Liquid Bitcoin | `wallet_name`: optional |
 
 ## Data Storage
