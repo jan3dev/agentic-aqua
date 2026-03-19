@@ -96,24 +96,9 @@ List all my wallets.
 **Expected behavior:**
 - Returns a list of all wallets
 - Each wallet shows: name, network, type (watch-only or signing), and creation date
-
 ---
 
-### 7. Check Lightning Swap Status
-
-```
-Check the status of my Lightning swap wneeB76Iu5k2
-```
-
-**Expected behavior:**
-- Returns swap status from Boltz API (e.g. `transaction.claim.pending`, `transaction.claimed`)
-- Shows `swap_id`, `status`, `lockup_txid`, `timeout_block_height`, and `network`
-- If claimed, includes `preimage` and `claim_txid`
-- If failed, includes `refund_info` with timeout block height
-
----
-
-### 8. Export Descriptor (Watch-Only)
+### 7. Export Descriptor (Watch-Only)
 
 ```
 Export the CT descriptor for my latest imported wallet.
@@ -126,7 +111,22 @@ Export the CT descriptor for my latest imported wallet.
 
 ---
 
-### 9. Generate Lightning Invoice (Receive)
+### 8. Check Lightning Swap Status (that I paid)
+
+```
+Check the status of my Lightning swap JHDBY9rzD2Qn at boltz
+```
+
+**Expected behavior:**
+- Returns swap status from Boltz API (e.g. `transaction.claim.pending`, `transaction.claimed`)
+- Shows `swap_id`, `status`, `lockup_txid`, `timeout_block_height`, and `network`
+- If claimed, includes `preimage` and `claim_txid`
+- If failed, includes `refund_info` with timeout block height
+
+
+---
+
+### 9. Generate Lightning Invoice (to receive)
 
 ```
 Generate a Lightning invoice to receive 500 sats into my Liquid wallet.
@@ -140,10 +140,10 @@ Generate a Lightning invoice to receive 500 sats into my Liquid wallet.
 
 ---
 
-### 10. Check Lightning Swap Status
+### 10. Check Lightning Swap Status (Receiving)
 
 ```
-Check the status of my Lightning swap 3882e4fd-c73a-4e72-abbe-18ac1ea3b2aa
+Check the status of my Lightning swap id 3882e4fd-c73a-4e72-abbe-18ac1ea3b2aa
 ```
 
 **Expected behavior:**
@@ -151,5 +151,33 @@ Check the status of my Lightning swap 3882e4fd-c73a-4e72-abbe-18ac1ea3b2aa
 - Shows `swap_id`, `status`, `invoice`, `amount`, and `receive_address`
 - If settled, includes `preimage` and auto-claims L-BTC to the Liquid wallet
 - If failed, reports the error state
+
+---
+
+### 11. Delete Wallet
+
+```
+Import a wallet named delete_test_<DATETIME> using the mnemonic "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" on mainnet. Then delete the wallet and verify it no longer appears in the wallet list.
+```
+
+**Expected behavior:**
+- Wallet is imported successfully with name `delete_test_<DATETIME>`
+- `delete_wallet` removes the wallet
+- `lw_list_wallets` no longer shows the deleted wallet
+
+---
+
+### 12. Seed Backup & Restore with Passphrase
+
+```
+Create a new wallet named test_seed_restore_<DATETIME> with passphrase "test". Generate the first Bitcoin receiving address and remember it. Then delete the wallet. Re-import the wallet using the same seed and passphrase "test", generate the first Bitcoin receiving address again, and verify it matches the original.
+```
+
+**Expected behavior:**
+- New mnemonic is generated and wallet is imported with passphrase "test"
+- First BTC address is derived and stored in memory
+- Wallet is successfully deleted
+- Wallet is re-imported from the same mnemonic + passphrase "test"
+- New BTC address matches the original (deterministic derivation)
 
 ---

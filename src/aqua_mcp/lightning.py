@@ -7,6 +7,18 @@ from typing import Optional
 from .ankara import AnkaraClient
 from .boltz import BoltzClient, MIN_SWAP_AMOUNT_SATS as BOLTZ_MIN_SATS, MAX_SWAP_AMOUNT_SATS as BOLTZ_MAX_SATS, decode_bolt11_amount_sats, generate_keypair
 
+# Boltz API status string -> local lifecycle status (pending | processing | completed | failed)
+_BOLTZ_STATUS_MAP = {
+    "swap.created": "pending",
+    "transaction.mempool": "processing",
+    "transaction.confirmed": "processing",
+    "transaction.claim.pending": "completed",
+    "transaction.claimed": "completed",
+    "swap.expired": "failed",
+    "transaction.failed": "failed",
+    "transaction.refunded": "failed",
+}
+
 # Ankara swap amount limits (satoshis)
 ANKARA_MIN_SATS = 100
 ANKARA_MAX_SATS = 25_000_000
@@ -265,3 +277,92 @@ class LightningManager:
             result["claim_warning"] = claim_warning
 
         return result
+
+    def get_send_status(self, swap_id: str) -> dict:
+        """
+        Check the status of a Lightning send swap (Boltz) and enrich with claim details when claimed.
+
+        Args:
+            swap_id: Swap ID from pay_invoice (Boltz swap id).
+
+        Returns:
+            Dict with swap_id, swap_type, status, boltz_status, amount, wallet_name, invoice,
+            lockup_txid, network, and optional preimage, claim_txid, refund_info, warning.
+        """
+        swap = self.storage.load_lightning_swap(swap_id)
+        if not swap:
+            raise ValueError(f"Lightning swap not found: {swap_id}")
+        if swap.swap_type != "send":
+            raise ValueError(f"Swap {swap_id} is a receive swap, not a send swap")
+
+        warning = None
+        boltz_status = None
+        try:
+            client = BoltzClient(network=swap.network)
+            status_resp = client.get_swap_status(swap_id)
+            boltz_status = status_resp.get("status") or status_resp.get("state")
+            if boltz_status is None:
+                boltz_status = str(status_resp)
+
+            mapped = _BOLTZ_STATUS_MAP.get(boltz_status)
+            if mapped is not None:
+                swap.status = mapped
+                self.storage.save_lightning_swap(swap)
+
+            if boltz_status in ("transaction.claim.pending", "transaction.claimed"):
+                try:
+                    details = client.get_claim_details(swap_id)
+                    preimage = details.get("preimage")
+                    claim_txid = details.get("claimTxid") or details.get("transactionId") or details.get("transaction_id")
+                    if preimage:
+                        swap.preimage = preimage
+                    if claim_txid:
+                        swap.claim_txid = claim_txid
+                    if preimage or claim_txid:
+                        self.storage.save_lightning_swap(swap)
+                except Exception as e:
+                    warning = f"Claim details unavailable: {e}"
+        except Exception as e:
+            warning = f"Could not fetch Boltz status: {e}"
+
+        result = {
+            "swap_id": swap.swap_id,
+            "swap_type": swap.swap_type,
+            "status": swap.status,
+            "amount": swap.amount,
+            "wallet_name": swap.wallet_name,
+            "invoice": swap.invoice,
+            "lockup_txid": swap.lockup_txid,
+            "network": swap.network,
+        }
+        if boltz_status is not None:
+            result["boltz_status"] = boltz_status
+        if swap.preimage:
+            result["preimage"] = swap.preimage
+        if swap.claim_txid:
+            result["claim_txid"] = swap.claim_txid
+        if swap.status == "failed" and swap.timeout_block_height is not None:
+            result["refund_info"] = {"timeout_block_height": swap.timeout_block_height}
+        if warning:
+            result["warning"] = warning
+
+        return result
+
+    def get_swap_status(self, swap_id: str) -> dict:
+        """
+        Check the status of any Lightning swap (receive or send). Routes by swap_type.
+
+        Args:
+            swap_id: Swap ID from lightning_receive or lightning_send.
+
+        Returns:
+            Status dict from get_receive_status or get_send_status.
+        """
+        swap = self.storage.load_lightning_swap(swap_id)
+        if not swap:
+            raise ValueError(f"Lightning swap not found: {swap_id}")
+        if swap.swap_type == "receive":
+            return self.get_receive_status(swap_id)
+        if swap.swap_type == "send":
+            return self.get_send_status(swap_id)
+        raise ValueError(f"Unknown swap_type for swap {swap_id}: {swap.swap_type!r}")
