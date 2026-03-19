@@ -48,6 +48,8 @@ ALL_PROMPTS = [
     ("transaction_status", None),
     ("list_wallets", None),
     ("export_descriptor", {"wallet_name": "test"}),
+    ("delete_wallet", {"wallet_name": "test"}),
+    ("pay_lightning", {"wallet_name": "test"}),
 ]
 
 

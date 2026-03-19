@@ -563,6 +563,236 @@ class TestLightningManagerReceiveStatus:
             assert "Connection error" in result["warning"]
 
 
+class TestLightningManagerSendStatus:
+    """Tests for LightningManager.get_send_status()."""
+
+    def test_send_status_processing(self, test_wallet, isolated_managers):
+        """Boltz returns transaction.mempool -> status processing."""
+        manager = get_lightning_manager()
+        swap = LightningSwap(
+            swap_id="wneeB76Iu5k2",
+            swap_type="send",
+            provider="boltz",
+            invoice=VALID_INVOICE_MAINNET,
+            amount=50069,
+            wallet_name="default",
+            status="processing",
+            network="mainnet",
+            created_at=datetime.now(UTC).isoformat(),
+            lockup_txid="abc123",
+            timeout_block_height=2500000,
+        )
+        isolated_managers.storage.save_lightning_swap(swap)
+
+        with patch("aqua_mcp.lightning.BoltzClient") as mock_boltz:
+            mock_client = MagicMock()
+            mock_boltz.return_value = mock_client
+            mock_client.get_swap_status.return_value = {"status": "transaction.mempool"}
+
+            result = manager.get_send_status("wneeB76Iu5k2")
+
+            assert result["status"] == "processing"
+            assert result["boltz_status"] == "transaction.mempool"
+            assert result["lockup_txid"] == "abc123"
+            assert result["swap_type"] == "send"
+
+    def test_send_status_claimed_with_preimage(self, test_wallet, isolated_managers):
+        """Boltz returns transaction.claimed, claim details has preimage."""
+        manager = get_lightning_manager()
+        swap = LightningSwap(
+            swap_id="boltz_claimed_123",
+            swap_type="send",
+            provider="boltz",
+            invoice=VALID_INVOICE_MAINNET,
+            amount=50069,
+            wallet_name="default",
+            status="processing",
+            network="mainnet",
+            created_at=datetime.now(UTC).isoformat(),
+            lockup_txid="lockup_abc",
+            timeout_block_height=2500000,
+        )
+        isolated_managers.storage.save_lightning_swap(swap)
+
+        with patch("aqua_mcp.lightning.BoltzClient") as mock_boltz:
+            mock_client = MagicMock()
+            mock_boltz.return_value = mock_client
+            mock_client.get_swap_status.return_value = {"status": "transaction.claimed"}
+            mock_client.get_claim_details.return_value = {
+                "preimage": "bb" * 32,
+                "claimTxid": "claim_txid_hex",
+            }
+
+            result = manager.get_send_status("boltz_claimed_123")
+
+            assert result["status"] == "completed"
+            assert result["boltz_status"] == "transaction.claimed"
+            assert result["preimage"] == "bb" * 32
+            assert result["claim_txid"] == "claim_txid_hex"
+            loaded = isolated_managers.storage.load_lightning_swap("boltz_claimed_123")
+            assert loaded.preimage == "bb" * 32
+            assert loaded.claim_txid == "claim_txid_hex"
+
+    def test_send_status_claim_details_fails_gracefully(self, test_wallet, isolated_managers):
+        """Claimed but get_claim_details raises -> warning, no crash."""
+        manager = get_lightning_manager()
+        swap = LightningSwap(
+            swap_id="boltz_claim_fail",
+            swap_type="send",
+            provider="boltz",
+            invoice=VALID_INVOICE_MAINNET,
+            amount=50069,
+            wallet_name="default",
+            status="processing",
+            network="mainnet",
+            created_at=datetime.now(UTC).isoformat(),
+            lockup_txid="lockup_abc",
+            timeout_block_height=2500000,
+        )
+        isolated_managers.storage.save_lightning_swap(swap)
+
+        with patch("aqua_mcp.lightning.BoltzClient") as mock_boltz:
+            mock_client = MagicMock()
+            mock_boltz.return_value = mock_client
+            mock_client.get_swap_status.return_value = {"status": "transaction.claimed"}
+            mock_client.get_claim_details.side_effect = RuntimeError("Claim details API error")
+
+            result = manager.get_send_status("boltz_claim_fail")
+
+            assert result["status"] == "completed"
+            assert "warning" in result
+            assert "Claim details API error" in result["warning"]
+
+    def test_send_status_expired(self, test_wallet, isolated_managers):
+        """swap.expired -> failed + refund_info."""
+        manager = get_lightning_manager()
+        swap = LightningSwap(
+            swap_id="boltz_expired_123",
+            swap_type="send",
+            provider="boltz",
+            invoice=VALID_INVOICE_MAINNET,
+            amount=50069,
+            wallet_name="default",
+            status="processing",
+            network="mainnet",
+            created_at=datetime.now(UTC).isoformat(),
+            lockup_txid="lockup_abc",
+            timeout_block_height=2500000,
+        )
+        isolated_managers.storage.save_lightning_swap(swap)
+
+        with patch("aqua_mcp.lightning.BoltzClient") as mock_boltz:
+            mock_client = MagicMock()
+            mock_boltz.return_value = mock_client
+            mock_client.get_swap_status.return_value = {"status": "swap.expired"}
+
+            result = manager.get_send_status("boltz_expired_123")
+
+            assert result["status"] == "failed"
+            assert result["boltz_status"] == "swap.expired"
+            assert "refund_info" in result
+            assert result["refund_info"]["timeout_block_height"] == 2500000
+
+    def test_send_status_api_down(self, test_wallet, isolated_managers):
+        """API fails -> returns local data + warning."""
+        manager = get_lightning_manager()
+        swap = LightningSwap(
+            swap_id="boltz_api_down",
+            swap_type="send",
+            provider="boltz",
+            invoice=VALID_INVOICE_MAINNET,
+            amount=50069,
+            wallet_name="default",
+            status="processing",
+            network="mainnet",
+            created_at=datetime.now(UTC).isoformat(),
+            lockup_txid="lockup_abc",
+            timeout_block_height=2500000,
+        )
+        isolated_managers.storage.save_lightning_swap(swap)
+
+        with patch("aqua_mcp.lightning.BoltzClient") as mock_boltz:
+            mock_client = MagicMock()
+            mock_boltz.return_value = mock_client
+            mock_client.get_swap_status.side_effect = RuntimeError("Boltz API unreachable")
+
+            result = manager.get_send_status("boltz_api_down")
+
+            assert result["status"] == "processing"
+            assert result["lockup_txid"] == "lockup_abc"
+            assert "warning" in result
+            assert "Boltz API unreachable" in result["warning"]
+
+    def test_send_status_receive_swap_raises(self, test_wallet, isolated_managers):
+        """get_send_status called on receive swap raises ValueError."""
+        manager = get_lightning_manager()
+        with patch("aqua_mcp.lightning.AnkaraClient") as mock_ankara:
+            mock_client = MagicMock()
+            mock_ankara.return_value = mock_client
+            mock_client.create_swap.return_value = MOCK_ANKARA_CREATE_RESPONSE
+            swap = manager.create_receive_invoice(100000, "default")
+
+        with pytest.raises(ValueError, match="receive swap"):
+            manager.get_send_status(swap.swap_id)
+
+
+class TestLightningManagerGetSwapStatus:
+    """Tests for LightningManager.get_swap_status() router."""
+
+    def test_routes_receive_to_get_receive_status(self, test_wallet, isolated_managers):
+        """Router dispatches receive swap to get_receive_status."""
+        manager = get_lightning_manager()
+        with patch("aqua_mcp.lightning.AnkaraClient") as mock_ankara:
+            mock_client = MagicMock()
+            mock_ankara.return_value = mock_client
+            mock_client.create_swap.return_value = MOCK_ANKARA_CREATE_RESPONSE
+            swap = manager.create_receive_invoice(100000, "default")
+            swap_id = swap.swap_id
+            mock_client.verify_swap.return_value = MOCK_ANKARA_VERIFY_PENDING
+
+            result = manager.get_swap_status(swap_id)
+
+            assert result["status"] == "pending"
+            assert result["amount"] == 100000
+            assert "swap_type" not in result  # receive path doesn't add swap_type
+
+    def test_routes_send_to_get_send_status(self, test_wallet, isolated_managers):
+        """Router dispatches send swap to get_send_status."""
+        manager = get_lightning_manager()
+        swap = LightningSwap(
+            swap_id="router_send_123",
+            swap_type="send",
+            provider="boltz",
+            invoice=VALID_INVOICE_MAINNET,
+            amount=50069,
+            wallet_name="default",
+            status="processing",
+            network="mainnet",
+            created_at=datetime.now(UTC).isoformat(),
+            lockup_txid="abc",
+            timeout_block_height=2500000,
+        )
+        isolated_managers.storage.save_lightning_swap(swap)
+
+        with patch("aqua_mcp.lightning.BoltzClient") as mock_boltz:
+            mock_client = MagicMock()
+            mock_boltz.return_value = mock_client
+            mock_client.get_swap_status.return_value = {"status": "transaction.confirmed"}
+
+            result = manager.get_swap_status("router_send_123")
+
+            assert result["swap_type"] == "send"
+            assert result["status"] == "processing"
+            assert result["boltz_status"] == "transaction.confirmed"
+
+    def test_not_found_raises(self):
+        """Non-existent swap_id raises ValueError."""
+        manager = get_lightning_manager()
+
+        with pytest.raises(ValueError, match="not found"):
+            manager.get_swap_status("nonexistent_swap_id")
+
+
 class TestLightningTools:
     """Tests for lightning_receive, lightning_send, lightning_transaction_status tools."""
 
@@ -615,11 +845,11 @@ class TestLightningTools:
             assert result["status"] == "processing"
 
     def test_lightning_transaction_status_tool(self):
-        """lightning_transaction_status tool delegates to manager."""
+        """lightning_transaction_status tool delegates to manager.get_swap_status."""
         with patch("aqua_mcp.tools.get_lightning_manager") as mock_get:
             mock_manager = MagicMock()
             mock_get.return_value = mock_manager
-            mock_manager.get_receive_status.return_value = {
+            mock_manager.get_swap_status.return_value = {
                 "swap_id": "test_123",
                 "status": "completed",
                 "amount": 100000,
@@ -630,3 +860,4 @@ class TestLightningTools:
             result = lightning_transaction_status("test_123")
 
             assert result["status"] == "completed"
+            mock_manager.get_swap_status.assert_called_once_with("test_123")

@@ -223,6 +223,19 @@ TOOL_SCHEMAS = {
             "properties": {},
         },
     },
+    "delete_wallet": {
+        "description": "Delete a wallet and all its cached data. IMPORTANT: The agent MUST check balances and ask for user confirmation before calling this tool. Use the 'delete_wallet' prompt for the safe workflow.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Name of the wallet to delete",
+                },
+            },
+            "required": ["wallet_name"],
+        },
+    },
     "btc_balance": {
         "description": "Get Bitcoin wallet balance in satoshis",
         "inputSchema": {
@@ -358,13 +371,13 @@ TOOL_SCHEMAS = {
         },
     },
     "lightning_transaction_status": {
-        "description": "Check the status of a Lightning receive swap. Auto-claims L-BTC when settled.",
+        "description": "Check the status of a Lightning swap (send or receive). For receive: auto-claims L-BTC when settled. For send: checks Boltz status and retrieves preimage when claimed.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "swap_id": {
                     "type": "string",
-                    "description": "Swap ID returned from lightning_receive",
+                    "description": "Swap ID returned from lightning_receive or lightning_send",
                 },
             },
             "required": ["swap_id"],
@@ -430,8 +443,12 @@ LIGHTNING:
   Fees: ~0.1%, Limits: 100 - 25,000,000 sats, Time: ~1-2 min after payment
 - Use lightning_send to pay a BOLT11 invoice using L-BTC (submarine swap via Boltz)
   Fees: ~0.1% + miner fees, Limits: 100 - 25,000,000 sats
-- Use lightning_transaction_status to check status of receive swaps (auto-claims when settled)
-- For send swaps: check on-chain transaction status using lw_tx_status after getting lockup_txid""",
+- Use lightning_transaction_status to check status of any Lightning swap (send or receive)
+
+WALLET DELETION:
+- ALWAYS use the delete_wallet prompt workflow (check balances, remind about seed backup, confirm)
+- NEVER call delete_wallet directly without first checking balances and getting user confirmation
+- Remind user to backup their mnemonic and passphrase before deletion""",
     )
 
     @server.list_prompts()
@@ -530,6 +547,13 @@ LIGHTNING:
                 description="Export descriptor for watch-only wallet",
                 arguments=[
                     PromptArgument(name="wallet_name", description="Wallet name", required=False),
+                ],
+            ),
+            Prompt(
+                name="delete_wallet",
+                description="Safely delete a wallet with balance check and seed backup reminder",
+                arguments=[
+                    PromptArgument(name="wallet_name", description="Wallet name", required=True),
                 ],
             ),
 
@@ -763,6 +787,26 @@ Use lw_export_descriptor and explain:
 - What the descriptor is for
 - How to import it in another wallet as watch-only
 - That it does NOT provide access to sign transactions""",
+                ),
+            )])
+
+        elif name == "delete_wallet":
+            return GetPromptResult(messages=[PromptMessage(
+                role="user",
+                content=TextContent(
+                    type="text",
+                    text=f"""I want to delete wallet '{wallet_name}'.
+
+Please follow this safety workflow:
+1. Check if the wallet exists with lw_list_wallets
+2. Check balances on BOTH networks using unified_balance for '{wallet_name}'
+3. If there are any funds (BTC or L-BTC > 0):
+   - WARN me clearly about the remaining funds
+   - Show me exactly how much is in each network
+4. REMIND me: "Make sure you have backed up your seed phrase (mnemonic) and passphrase before proceeding. Without these, you will permanently lose access to any funds associated with this wallet."
+5. Ask me for EXPLICIT confirmation: "Are you sure you want to delete wallet '{wallet_name}'? This cannot be undone."
+6. Only after I explicitly confirm, call delete_wallet with wallet_name='{wallet_name}'
+7. Confirm deletion was successful""",
                 ),
             )])
 

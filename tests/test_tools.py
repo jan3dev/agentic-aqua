@@ -10,6 +10,7 @@ import pytest
 from aqua_mcp.storage import Storage, WalletData
 from aqua_mcp.tools import (
     _manager,
+    delete_wallet,
     get_manager,
     lw_address,
     lw_balance,
@@ -712,6 +713,7 @@ class TestToolRegistry:
             "lightning_receive",
             "lightning_send",
             "lightning_transaction_status",
+            "delete_wallet",
         }
         assert set(TOOLS.keys()) == expected
 
@@ -721,3 +723,62 @@ class TestToolRegistry:
 
         for name, fn in TOOLS.items():
             assert callable(fn), f"Tool {name} is not callable"
+
+
+# ---------------------------------------------------------------------------
+# delete_wallet
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteWallet:
+    """Tests for the delete_wallet tool."""
+
+    def test_delete_nonexistent_raises(self):
+        """ValueError when wallet doesn't exist."""
+        with pytest.raises(ValueError, match="not found"):
+            delete_wallet(wallet_name="nonexistent")
+
+    def test_delete_removes_wallet(self, isolated_manager):
+        """Wallet file is gone from storage after deletion."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="todelete", network="testnet")
+        assert "todelete" in lw_list_wallets()["wallets"]
+
+        result = delete_wallet(wallet_name="todelete")
+        assert result == {"deleted": True, "wallet_name": "todelete"}
+        assert "todelete" not in lw_list_wallets()["wallets"]
+
+    def test_delete_clears_lw_manager_caches(self, isolated_manager):
+        """Liquid manager caches (_signers/_wollets) are cleared."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="cached", network="testnet")
+        manager = get_manager()
+        # Force cache population by getting a wollet
+        manager._signers["cached"] = "fake_signer"
+        manager._wollets["cached"] = "fake_wollet"
+
+        delete_wallet(wallet_name="cached")
+        assert "cached" not in manager._signers
+        assert "cached" not in manager._wollets
+
+    def test_delete_clears_btc_manager_caches(self, isolated_manager):
+        """Bitcoin manager caches (_wallets/_persisters/_networks) are cleared."""
+        import aqua_mcp.tools as tools_module
+        from aqua_mcp.tools import get_btc_manager
+
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="btccached", network="testnet")
+        btc = get_btc_manager()
+        # Populate caches with fakes
+        btc._wallets["btccached"] = "fake_wallet"
+        btc._persisters["btccached"] = "fake_persister"
+        btc._networks["btccached"] = "testnet"
+
+        delete_wallet(wallet_name="btccached")
+        assert "btccached" not in btc._wallets
+        assert "btccached" not in btc._persisters
+        assert "btccached" not in btc._networks
+
+    def test_delete_returns_success(self, isolated_manager):
+        """Returns the expected success dict."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="success", network="testnet")
+        result = delete_wallet(wallet_name="success")
+        assert result["deleted"] is True
+        assert result["wallet_name"] == "success"

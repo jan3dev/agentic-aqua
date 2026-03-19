@@ -551,6 +551,35 @@ def lw_list_wallets() -> dict[str, Any]:
     }
 
 
+def delete_wallet(wallet_name: str) -> dict[str, Any]:
+    """Delete a wallet and all its cached data.
+
+    Args:
+        wallet_name: Name of the wallet to delete.
+
+    Returns:
+        deleted: True if wallet was deleted.
+        wallet_name: Name of the deleted wallet.
+    """
+    manager = get_manager()
+    wallet_data = manager.storage.load_wallet(wallet_name)
+    if wallet_data is None:
+        raise ValueError(f"Wallet '{wallet_name}' not found")
+
+    # Clear Liquid (LWK) manager caches
+    manager._signers.pop(wallet_name, None)
+    manager._wollets.pop(wallet_name, None)
+
+    # Clear Bitcoin (BDK) manager caches
+    btc = get_btc_manager()
+    btc._wallets.pop(wallet_name, None)
+    btc._persisters.pop(wallet_name, None)
+    btc._networks.pop(wallet_name, None)
+
+    manager.storage.delete_wallet(wallet_name)
+    return {"deleted": True, "wallet_name": wallet_name}
+
+
 # ---------------------------------------------------------------------------
 # Lightning tools (unified interface)
 # ---------------------------------------------------------------------------
@@ -622,16 +651,21 @@ def lightning_send(
 
 
 def lightning_transaction_status(swap_id: str) -> dict[str, Any]:
-    """Check the status of a Lightning receive swap and auto-claim when settled.
+    """Check the status of a Lightning swap (send or receive).
+
+    For receive swaps: auto-claims L-BTC when settled. For send swaps: checks
+    Boltz status and retrieves preimage when claimed.
 
     Args:
-        swap_id: Swap ID from lightning_receive
+        swap_id: Swap ID returned from lightning_receive or lightning_send
 
     Returns:
-        swap_id, status, amount, wallet_name, invoice, and optional preimage, warning, claim_warning
+        swap_id, status, amount, wallet_name, invoice; for receive: optional preimage,
+        warning, claim_warning; for send: optional boltz_status, lockup_txid, preimage,
+        claim_txid, refund_info, warning
     """
     manager = get_lightning_manager()
-    return manager.get_receive_status(swap_id)
+    return manager.get_swap_status(swap_id)
 
 
 # Tool registry for MCP
@@ -647,6 +681,7 @@ TOOLS = {
     "lw_send_asset": lw_send_asset,
     "lw_tx_status": lw_tx_status,
     "lw_list_wallets": lw_list_wallets,
+    "delete_wallet": delete_wallet,
     "btc_balance": btc_balance,
     "btc_address": btc_address,
     "btc_transactions": btc_transactions,
