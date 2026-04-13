@@ -63,3 +63,5 @@ htmlcov/
 .tldrignore
 .mcp.json
 specs/
+.omc/
+.omx/
