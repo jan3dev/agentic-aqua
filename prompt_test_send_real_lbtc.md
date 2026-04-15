@@ -28,7 +28,7 @@ SIGNER_MNEMONIC=${SIGNER_MNEMONIC}
 **Expected behavior:**
 - Wallet is imported with name `default`
 - L-BTC balance is displayed in satoshis and BTC
-- Balance should be > 1000 sats to perform the send test
+- Balance should be > 500 sats to perform the send test
 
 ---
 
@@ -37,7 +37,7 @@ SIGNER_MNEMONIC=${SIGNER_MNEMONIC}
 Send a small amount of L-BTC to the destination address.
 
 ```
-Send 1000 sats of L-BTC to this Liquid address: ${LIQUID_DEST_ADDRESS}
+Send 500 sats of L-BTC to this Liquid address: ${LIQUID_DEST_ADDRESS}
 ```
 
 **Expected behavior:**
