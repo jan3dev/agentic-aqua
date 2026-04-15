@@ -241,13 +241,11 @@ class LightningManager:
 
         client = AnkaraClient()
         warning = None
+        claim_warning = None
         try:
             verify_resp = client.verify_swap(swap_id)
             settled = verify_resp.get("settled", False)
             preimage = verify_resp.get("preimage")
-
-            # Auto-claim if settled and not already completed
-            claim_warning = None
             if settled and swap.status != "completed":
                 try:
                     client.claim_swap(swap_id)
@@ -255,8 +253,15 @@ class LightningManager:
                     if preimage:
                         swap.preimage = preimage
                     self.storage.save_lightning_swap(swap)
-                except Exception as e:
-                    claim_warning = f"Swap settled but claim failed: {e}"
+                except RuntimeError as e:
+                    err_msg = str(e)
+                    if "409" in err_msg or "already been claimed" in err_msg.lower():
+                        swap.status = "completed"
+                        if preimage:
+                            swap.preimage = preimage
+                        self.storage.save_lightning_swap(swap)
+                    else:
+                        claim_warning = f"Swap settled but claim failed: {e}"
         except Exception as e:
             warning = f"Could not fetch remote status: {e}"
             verify_resp = {}
@@ -273,7 +278,7 @@ class LightningManager:
             result["preimage"] = swap.preimage
         if warning:
             result["warning"] = warning
-        if "claim_warning" in locals() and claim_warning:
+        if claim_warning:
             result["claim_warning"] = claim_warning
 
         return result
