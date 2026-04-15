@@ -185,10 +185,7 @@ class BitcoinWalletManager:
         wallet_name: str,
         mnemonic: str,
     ) -> tuple[bdk.Wallet, str]:
-        """Get or create BDK wallet with signing capability (from mnemonic).
-
-        BIP39 passphrase is intentionally NOT used (see ``create_wallet``).
-        """
+        """Get or create BDK wallet with signing capability (from mnemonic)."""
         wallet_data = self.storage.load_wallet(wallet_name)
         if not wallet_data:
             raise ValueError(f"Wallet '{wallet_name}' not found")
