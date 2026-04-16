@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.13"
 
 [options]
@@ -32,6 +32,7 @@ version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "bdkpython" },
+    { name = "click" },
     { name = "coincurve" },
     { name = "cryptography" },
     { name = "lwk" },
@@ -52,6 +53,7 @@ dev = [
 requires-dist = [
     { name = "bdkpython", specifier = ">=2.2.0" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=24.0.0" },
+    { name = "click", specifier = ">=8.1" },
     { name = "coincurve", specifier = ">=21.0.0" },
     { name = "cryptography", specifier = ">=42.0.0" },
     { name = "lwk", specifier = ">=0.8.0" },

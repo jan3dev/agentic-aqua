@@ -28,6 +28,7 @@ dependencies = [
     "bdkpython>=2.2.0",
     "coincurve>=21.0.0",
     "python-dotenv>=1.0.0",
+    "click>=8.1",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +42,7 @@ dev = [
 
 [project.scripts]
 aqua-mcp = "aqua_mcp.server:main"
+aqua-cli = "aqua_mcp.cli.main:cli"
 
 [project.urls]
 Homepage = "https://github.com/jan3dev/aqua-mcp"
