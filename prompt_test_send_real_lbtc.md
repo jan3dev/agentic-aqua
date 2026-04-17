@@ -28,7 +28,7 @@ SIGNER_MNEMONIC=${SIGNER_MNEMONIC}
 **Expected behavior:**
 - Wallet is imported with name `default`
 - L-BTC balance is displayed in satoshis and BTC
-- Balance should be > 500 sats to perform the send test
+- Balance should be > 550 sats to cover the send amount (500 sats) plus network fees
 
 ---
 
