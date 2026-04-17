@@ -1,7 +1,6 @@
 """Root CLI group for AQUA wallet operations."""
 
 import logging
-import sys
 from pathlib import Path
 
 import click

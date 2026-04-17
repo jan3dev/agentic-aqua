@@ -1,20 +1,18 @@
 """Register all CLI subcommand groups."""
 
-import sys
-
 import click
 
 from ..tools import unified_balance
-from .output import render, render_error
+from .output import run_tool
 
 
 def register_commands(cli):
     """Register all subcommand groups and top-level commands on the root CLI group."""
-    from .wallet import wallet
-    from .liquid import liquid
     from .btc import btc
     from .lightning import lightning
+    from .liquid import liquid
     from .serve import serve
+    from .wallet import wallet
 
     cli.add_command(wallet)
     cli.add_command(liquid)
@@ -29,9 +27,4 @@ def register_commands(cli):
 @click.pass_obj
 def balance(ctx, wallet_name):
     """Get unified balance for both Bitcoin and Liquid networks."""
-    try:
-        result = unified_balance(wallet_name)
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lambda: unified_balance(wallet_name))

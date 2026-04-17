@@ -1,7 +1,5 @@
 """Liquid network CLI commands."""
 
-import sys
-
 import click
 
 from ..tools import (
@@ -12,7 +10,7 @@ from ..tools import (
     lw_transactions,
     lw_tx_status,
 )
-from .output import render, render_error
+from .output import run_tool
 from .password import handle_password_retry
 
 
@@ -27,12 +25,7 @@ def liquid():
 @click.pass_obj
 def balance(ctx, wallet_name):
     """Get Liquid wallet balance (all assets)."""
-    try:
-        result = lw_balance(wallet_name)
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lambda: lw_balance(wallet_name))
 
 
 @liquid.command("address")
@@ -41,12 +34,7 @@ def balance(ctx, wallet_name):
 @click.pass_obj
 def address(ctx, wallet_name, index):
     """Generate a Liquid receive address."""
-    try:
-        result = lw_address(wallet_name, index)
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lambda: lw_address(wallet_name, index))
 
 
 @liquid.command("transactions")
@@ -55,12 +43,7 @@ def address(ctx, wallet_name, index):
 @click.pass_obj
 def transactions(ctx, wallet_name, limit):
     """List Liquid transaction history."""
-    try:
-        result = lw_transactions(wallet_name, limit)
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lambda: lw_transactions(wallet_name, limit))
 
 
 @liquid.command("send")
@@ -71,14 +54,11 @@ def transactions(ctx, wallet_name, limit):
 @click.pass_obj
 def send(ctx, wallet_name, address, amount, password):
     """Send L-BTC to an address."""
-    try:
-        result = handle_password_retry(
-            lw_send, {"wallet_name": wallet_name, "address": address, "amount": amount, "password": password}
-        )
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lambda: handle_password_retry(
+        lw_send,
+        {"wallet_name": wallet_name, "address": address,
+         "amount": amount, "password": password}
+    ))
 
 
 @liquid.command("send-asset")
@@ -90,15 +70,12 @@ def send(ctx, wallet_name, address, amount, password):
 @click.pass_obj
 def send_asset(ctx, wallet_name, address, amount, asset_id, password):
     """Send a Liquid asset to an address."""
-    try:
-        result = handle_password_retry(
-            lw_send_asset,
-            {"wallet_name": wallet_name, "address": address, "amount": amount, "asset_id": asset_id, "password": password},
-        )
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lambda: handle_password_retry(
+        lw_send_asset,
+        {"wallet_name": wallet_name, "address": address,
+         "amount": amount, "asset_id": asset_id,
+         "password": password},
+    ))
 
 
 @liquid.command("tx-status")
@@ -106,9 +83,4 @@ def send_asset(ctx, wallet_name, address, amount, asset_id, password):
 @click.pass_obj
 def tx_status(ctx, tx):
     """Get Liquid transaction status."""
-    try:
-        result = lw_tx_status(tx)
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lambda: lw_tx_status(tx))

@@ -6,6 +6,8 @@ import click
 
 from ..tools import (
     delete_wallet as _delete_wallet,
+)
+from ..tools import (
     lw_balance,
     lw_export_descriptor,
     lw_generate_mnemonic,
@@ -13,7 +15,7 @@ from ..tools import (
     lw_import_mnemonic,
     lw_list_wallets,
 )
-from .output import render, render_error
+from .output import render, render_error, run_tool
 from .password import handle_password_retry
 
 
@@ -27,12 +29,7 @@ def wallet():
 @click.pass_obj
 def generate_mnemonic(ctx):
     """Generate a new BIP39 mnemonic phrase (12 words)."""
-    try:
-        result = lw_generate_mnemonic()
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lw_generate_mnemonic)
 
 
 @wallet.command("import-mnemonic")
@@ -53,15 +50,11 @@ def generate_mnemonic(ctx):
 @click.pass_obj
 def import_mnemonic(ctx, mnemonic, wallet_name, network, password):
     """Import a wallet from a BIP39 mnemonic (creates Liquid + Bitcoin wallets)."""
-    try:
-        result = handle_password_retry(
-            lw_import_mnemonic,
-            {"mnemonic": mnemonic, "wallet_name": wallet_name, "network": network, "password": password},
-        )
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lambda: handle_password_retry(
+        lw_import_mnemonic,
+        {"mnemonic": mnemonic, "wallet_name": wallet_name,
+         "network": network, "password": password},
+    ))
 
 
 @wallet.command("import-descriptor")
@@ -77,12 +70,7 @@ def import_mnemonic(ctx, mnemonic, wallet_name, network, password):
 @click.pass_obj
 def import_descriptor(ctx, descriptor, wallet_name, network):
     """Import a watch-only wallet from a CT descriptor."""
-    try:
-        result = lw_import_descriptor(descriptor, wallet_name, network)
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lambda: lw_import_descriptor(descriptor, wallet_name, network))
 
 
 @wallet.command("export-descriptor")
@@ -90,24 +78,14 @@ def import_descriptor(ctx, descriptor, wallet_name, network):
 @click.pass_obj
 def export_descriptor(ctx, wallet_name):
     """Export the CT descriptor for a wallet (watch-only import elsewhere)."""
-    try:
-        result = lw_export_descriptor(wallet_name)
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lambda: lw_export_descriptor(wallet_name))
 
 
 @wallet.command("list")
 @click.pass_obj
 def list_wallets(ctx):
     """List all wallets."""
-    try:
-        result = lw_list_wallets()
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lw_list_wallets)
 
 
 @wallet.command("delete")
@@ -118,7 +96,6 @@ def delete(ctx, wallet_name, yes):
     """Delete a wallet and all its cached data."""
     try:
         if not yes:
-            # Show Liquid balance before deletion (skip BTC to avoid slow network sync)
             try:
                 balance = lw_balance(wallet_name)
                 click.echo("Current Liquid wallet balance:", err=True)

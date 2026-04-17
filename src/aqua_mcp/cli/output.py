@@ -3,6 +3,8 @@
 import json
 import sys
 
+import click
+
 
 def _detect_format(fmt: str | None) -> str:
     """Detect output format: explicit flag wins, otherwise TTY-aware."""
@@ -54,3 +56,13 @@ def render_error(code: str, message: str, fmt: str | None = None) -> str:
     if fmt == "json":
         return json.dumps(error, indent=2)
     return f"Error [{code}]: {message}"
+
+
+def run_tool(ctx, fn):
+    """Execute fn(), render the result or exit with a formatted error."""
+    try:
+        result = fn()
+        click.echo(render(result, ctx.fmt))
+    except Exception as e:
+        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
+        sys.exit(1)

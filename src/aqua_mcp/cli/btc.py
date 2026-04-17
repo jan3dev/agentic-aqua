@@ -1,7 +1,5 @@
 """Bitcoin CLI commands."""
 
-import sys
-
 import click
 
 from ..tools import (
@@ -10,7 +8,7 @@ from ..tools import (
     btc_send,
     btc_transactions,
 )
-from .output import render, render_error
+from .output import run_tool
 from .password import handle_password_retry
 
 
@@ -25,12 +23,7 @@ def btc():
 @click.pass_obj
 def balance(ctx, wallet_name):
     """Get Bitcoin wallet balance in satoshis."""
-    try:
-        result = btc_balance(wallet_name)
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lambda: btc_balance(wallet_name))
 
 
 @btc.command("address")
@@ -39,12 +32,7 @@ def balance(ctx, wallet_name):
 @click.pass_obj
 def address(ctx, wallet_name, index):
     """Generate a Bitcoin receive address (bc1...)."""
-    try:
-        result = btc_address(wallet_name, index)
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lambda: btc_address(wallet_name, index))
 
 
 @btc.command("transactions")
@@ -53,12 +41,7 @@ def address(ctx, wallet_name, index):
 @click.pass_obj
 def transactions(ctx, wallet_name, limit):
     """List Bitcoin transaction history."""
-    try:
-        result = btc_transactions(wallet_name, limit)
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lambda: btc_transactions(wallet_name, limit))
 
 
 @btc.command("send")
@@ -70,12 +53,8 @@ def transactions(ctx, wallet_name, limit):
 @click.pass_obj
 def send(ctx, wallet_name, address, amount, fee_rate, password):
     """Send BTC to an address."""
-    try:
-        result = handle_password_retry(
-            btc_send,
-            {"wallet_name": wallet_name, "address": address, "amount": amount, "fee_rate": fee_rate, "password": password},
-        )
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lambda: handle_password_retry(
+        btc_send,
+        {"wallet_name": wallet_name, "address": address, "amount": amount,
+         "fee_rate": fee_rate, "password": password},
+    ))
