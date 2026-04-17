@@ -14,6 +14,7 @@ from ..tools import (
     lw_list_wallets,
 )
 from .output import render, render_error
+from .password import handle_password_retry
 
 
 @click.group()
@@ -53,20 +54,11 @@ def generate_mnemonic(ctx):
 def import_mnemonic(ctx, mnemonic, wallet_name, network, password):
     """Import a wallet from a BIP39 mnemonic (creates Liquid + Bitcoin wallets)."""
     try:
-        result = lw_import_mnemonic(mnemonic, wallet_name, network, password)
+        result = handle_password_retry(
+            lw_import_mnemonic,
+            {"mnemonic": mnemonic, "wallet_name": wallet_name, "network": network, "password": password},
+        )
         click.echo(render(result, ctx.fmt))
-    except ValueError as e:
-        if "password required" in str(e).lower() and password is None:
-            password = click.prompt("Password", hide_input=True)
-            try:
-                result = lw_import_mnemonic(mnemonic, wallet_name, network, password)
-                click.echo(render(result, ctx.fmt))
-                return
-            except Exception as e2:
-                click.echo(render_error(type(e2).__name__, str(e2), ctx.fmt), err=True)
-                sys.exit(1)
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
     except Exception as e:
         click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
         sys.exit(1)
