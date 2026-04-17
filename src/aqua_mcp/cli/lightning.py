@@ -10,17 +10,7 @@ from ..tools import (
     lightning_transaction_status,
 )
 from .output import render, render_error
-
-
-def _handle_password_retry(fn, kwargs, ctx_fmt):
-    """Call fn(**kwargs); if password is required and missing, prompt and retry once."""
-    try:
-        return fn(**kwargs)
-    except ValueError as e:
-        if "password required" in str(e).lower() and kwargs.get("password") is None:
-            kwargs["password"] = click.prompt("Password", hide_input=True)
-            return fn(**kwargs)
-        raise
+from .password import handle_password_retry
 
 
 @click.group()
@@ -37,10 +27,9 @@ def lightning():
 def receive(ctx, amount, wallet_name, password):
     """Generate a Lightning invoice to receive L-BTC into a Liquid wallet."""
     try:
-        result = _handle_password_retry(
+        result = handle_password_retry(
             lightning_receive,
             {"amount": amount, "wallet_name": wallet_name, "password": password},
-            ctx.fmt,
         )
         click.echo(render(result, ctx.fmt))
     except Exception as e:
@@ -56,10 +45,9 @@ def receive(ctx, amount, wallet_name, password):
 def send(ctx, invoice, wallet_name, password):
     """Pay a Lightning invoice using L-BTC (submarine swap via Boltz)."""
     try:
-        result = _handle_password_retry(
+        result = handle_password_retry(
             lightning_send,
             {"invoice": invoice, "wallet_name": wallet_name, "password": password},
-            ctx.fmt,
         )
         click.echo(render(result, ctx.fmt))
     except Exception as e:
