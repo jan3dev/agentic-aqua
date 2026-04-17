@@ -14,6 +14,8 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
 
+SALT_LENGTH = 16
+
 
 DEFAULT_DIR = Path.home() / ".aqua-mcp"
 SWAP_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]{1,128}$')
@@ -109,7 +111,7 @@ class Storage:
 
     def encrypt_mnemonic(self, mnemonic: str, password: str) -> str:
         """Encrypt mnemonic with password (used only for at-rest encryption)."""
-        salt = os.urandom(16)
+        salt = os.urandom(SALT_LENGTH)
         key = self._derive_key(password, salt)
         f = Fernet(key)
         encrypted = f.encrypt(mnemonic.encode())
@@ -119,8 +121,8 @@ class Storage:
     def decrypt_mnemonic(self, encrypted: str, password: str) -> str:
         """Decrypt mnemonic with password."""
         data = base64.b64decode(encrypted)
-        salt = data[:16]
-        encrypted_data = data[16:]
+        salt = data[:SALT_LENGTH]
+        encrypted_data = data[SALT_LENGTH:]
         key = self._derive_key(password, salt)
         f = Fernet(key)
         return f.decrypt(encrypted_data).decode()
