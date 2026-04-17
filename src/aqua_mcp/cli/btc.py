@@ -11,17 +11,7 @@ from ..tools import (
     btc_transactions,
 )
 from .output import render, render_error
-
-
-def _handle_password_retry(fn, kwargs, ctx_fmt):
-    """Call fn(**kwargs); if password is required and missing, prompt and retry once."""
-    try:
-        return fn(**kwargs)
-    except ValueError as e:
-        if "password required" in str(e).lower() and kwargs.get("password") is None:
-            kwargs["password"] = click.prompt("Password", hide_input=True)
-            return fn(**kwargs)
-        raise
+from .password import handle_password_retry
 
 
 @click.group()
@@ -81,10 +71,9 @@ def transactions(ctx, wallet_name, limit):
 def send(ctx, wallet_name, address, amount, fee_rate, password):
     """Send BTC to an address."""
     try:
-        result = _handle_password_retry(
+        result = handle_password_retry(
             btc_send,
             {"wallet_name": wallet_name, "address": address, "amount": amount, "fee_rate": fee_rate, "password": password},
-            ctx.fmt,
         )
         click.echo(render(result, ctx.fmt))
     except Exception as e:
