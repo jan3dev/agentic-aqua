@@ -1,10 +1,11 @@
 """CLI smoke tests: read-only operations against MAINNET.
 
 These tests hit MAINNET via real Electrum/Esplora servers.
-They are SKIPPED unless SIGNER_MNEMONIC is set in the environment.
+By default they use a throwaway BIP39 mnemonic with no on-chain history;
+override with SIGNER_MNEMONIC to run against a wallet with real history.
 
 Usage:
-    SIGNER_MNEMONIC="word1 word2 ..." uv run python -m pytest tests/smoke/ -v
+    uv run python -m pytest tests/smoke/ -v
 """
 
 import json
@@ -12,14 +13,12 @@ import os
 import time
 
 import pytest
+from click.testing import CliRunner
 
-SIGNER_MNEMONIC = os.getenv("SIGNER_MNEMONIC")
-ABANDON_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+from aqua_mcp.cli.main import cli
 
-pytestmark = pytest.mark.skipif(
-    not SIGNER_MNEMONIC,
-    reason="SIGNER_MNEMONIC not set — skipping mainnet smoke tests",
-)
+DEFAULT_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+SIGNER_MNEMONIC = os.getenv("SIGNER_MNEMONIC", DEFAULT_MNEMONIC)
 
 
 @pytest.fixture(scope="module")
@@ -31,9 +30,6 @@ def wallet_name():
 @pytest.fixture(scope="module")
 def cli_runner():
     """Return a function that invokes aqua-cli and returns parsed JSON."""
-    from click.testing import CliRunner
-    from aqua_mcp.cli.main import cli
-
     runner = CliRunner()
 
     def run(*args):
@@ -137,13 +133,10 @@ class TestSmokeLightningStatus:
 class TestSmokeDeleteWallet:
     def test_delete_wallet(self, cli_runner):
         """Import a throwaway wallet then delete it; verify it's gone."""
-        from click.testing import CliRunner
-        from aqua_mcp.cli.main import cli
-
         name = f"delete_test_{int(time.time())}"
         cli_runner(
             "wallet", "import-mnemonic",
-            "--mnemonic", ABANDON_MNEMONIC,
+            "--mnemonic", DEFAULT_MNEMONIC,
             "--wallet-name", name,
         )
 
@@ -162,13 +155,10 @@ class TestSmokeDeleteWallet:
 class TestSmokeSeedRestore:
     def test_seed_backup_and_restore(self, cli_runner):
         """Re-importing the same mnemonic + password yields the same BTC address."""
-        from click.testing import CliRunner
-        from aqua_mcp.cli.main import cli
-
         name = f"test_seed_restore_{int(time.time())}"
         cli_runner(
             "wallet", "import-mnemonic",
-            "--mnemonic", ABANDON_MNEMONIC,
+            "--mnemonic", DEFAULT_MNEMONIC,
             "--wallet-name", name,
             "--password", "test",
         )
@@ -179,7 +169,7 @@ class TestSmokeSeedRestore:
 
         cli_runner(
             "wallet", "import-mnemonic",
-            "--mnemonic", ABANDON_MNEMONIC,
+            "--mnemonic", DEFAULT_MNEMONIC,
             "--wallet-name", name,
             "--password", "test",
         )
@@ -192,9 +182,6 @@ class TestSmokeSeedRestore:
 class TestSmokeCleanup:
     def test_delete_smoke_wallet(self, wallet_name):
         """Delete the smoke wallet after all tests."""
-        from click.testing import CliRunner
-        from aqua_mcp.cli.main import cli
-
         runner = CliRunner()
         result = runner.invoke(
             cli,
