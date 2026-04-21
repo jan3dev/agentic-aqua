@@ -213,6 +213,54 @@ class TestLiquidCommands:
         )
         assert result.exit_code == 1
 
+    def test_assets_lists_known_assets(self, runner):
+        """liquid assets returns the mainnet registry with id/ticker/name/precision."""
+        result = runner.invoke(cli, ["--format", "json", "liquid", "assets"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["network"] == "mainnet"
+        assert data["count"] >= 1
+        tickers = {a["ticker"] for a in data["assets"]}
+        assert "L-BTC" in tickers
+        assert "USDt" in tickers
+        # Every entry exposes the fields an agent needs to send
+        for entry in data["assets"]:
+            assert set(entry.keys()) == {"asset_id", "ticker", "name", "precision"}
+            assert len(entry["asset_id"]) == 64
+
+
+    def test_send_asset_requires_exactly_one_of_id_or_ticker(self, runner):
+        """send-asset must receive exactly one of --asset-id or --asset-ticker."""
+        _import_wallet(runner)
+        neither = runner.invoke(
+            cli,
+            ["liquid", "send-asset", "--wallet-name", "default",
+             "--address", "lq1x", "--amount", "100"],
+        )
+        assert neither.exit_code != 0
+        assert "exactly one" in neither.output.lower()
+
+        both = runner.invoke(
+            cli,
+            ["liquid", "send-asset", "--wallet-name", "default",
+             "--address", "lq1x", "--amount", "100",
+             "--asset-id", "abc", "--asset-ticker", "USDt"],
+        )
+        assert both.exit_code != 0
+        assert "exactly one" in both.output.lower()
+
+    def test_send_asset_unknown_ticker(self, runner):
+        """Unknown ticker produces a helpful usage error, never reaches the tool."""
+        _import_wallet(runner)
+        result = runner.invoke(
+            cli,
+            ["liquid", "send-asset", "--wallet-name", "default",
+             "--address", "lq1x", "--amount", "100",
+             "--asset-ticker", "NOTAREAL"],
+        )
+        assert result.exit_code != 0
+        assert "unknown ticker" in result.output.lower()
+
 
 # ---------------------------------------------------------------------------
 # BTC commands
@@ -285,3 +333,4 @@ class TestErrorHandling:
         assert result.exit_code == 1
         assert "Error" in result.output
 
+uv run aqua-cli liquid send-asset --wallet-name $WALLET --address $DEST --amount 50000000 --asset-ticker usdt
