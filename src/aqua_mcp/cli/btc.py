@@ -14,7 +14,7 @@ from .password import handle_password_retry
 
 @click.group()
 def btc():
-    """Bitcoin operations."""
+    """Bitcoin on-chain operations."""
     pass
 
 

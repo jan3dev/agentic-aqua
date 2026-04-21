@@ -414,7 +414,7 @@ def btc_balance(wallet_name: str = "default") -> dict[str, Any]:
     return {
         "wallet_name": wallet_name,
         "balance_sats": balance_sats,
-        "balance_btc": round(balance_sats / 100_000_000, 8),
+        "balance_btc": f"{balance_sats / 100_000_000:.8f}",
     }
 
 
@@ -525,7 +525,7 @@ def unified_balance(wallet_name: str = "default") -> dict[str, Any]:
         "wallet_name": wallet_name,
         "bitcoin": {
             "balance_sats": btc_sats,
-            "balance_btc": round(btc_sats / 100_000_000, 8) if btc_sats is not None else None,
+            "balance_btc": f"{btc_sats / 100_000_000:.8f}" if btc_sats is not None else None,
         } if btc_sats is not None else None,
         "liquid": {
             "balances": [b.to_dict() for b in liquid_balances],
