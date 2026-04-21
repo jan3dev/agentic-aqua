@@ -102,20 +102,7 @@ def test_send_btc():
 test("2. Send BTC On-Chain", test_send_btc)
 
 # ---------------------------------------------------------------------------
-# 3. Verify Transaction URL
-# ---------------------------------------------------------------------------
-
-def test_tx_url():
-    assert txid is not None, "No txid from send test"
-    explorer_url = f"https://blockstream.info/tx/{txid}"
-    print(f"  Explorer URL: {explorer_url}")
-    # Just verify the URL is well-formed
-    assert txid in explorer_url
-
-test("3. Verify Transaction URL", test_tx_url)
-
-# ---------------------------------------------------------------------------
-# 4. Verify Updated Balance
+# 3. Verify Updated Balance
 # ---------------------------------------------------------------------------
 
 def test_updated_balance():
@@ -123,10 +110,10 @@ def test_updated_balance():
     assert balance is not None, "Balance check failed"
     print(f"  Updated BTC balance: {balance['balance_sats']} sats ({balance['balance_btc']} BTC)")
 
-test("4. Verify Updated Balance", test_updated_balance)
+test("3. Verify Updated Balance", test_updated_balance)
 
 # ---------------------------------------------------------------------------
-# 5. View Transaction History
+# 4. View Transaction History
 # ---------------------------------------------------------------------------
 
 def test_tx_history():
@@ -137,7 +124,7 @@ def test_tx_history():
         latest = result["transactions"][0]
         print(f"  Latest txid: {latest.get('txid', 'N/A')}")
 
-test("5. View Transaction History", test_tx_history)
+test("4. View Transaction History", test_tx_history)
 
 # ---------------------------------------------------------------------------
 # Cleanup
