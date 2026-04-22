@@ -2,7 +2,7 @@
 
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import lwk
 import pytest
@@ -25,9 +25,11 @@ TEST_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon
 @pytest.fixture(autouse=True)
 def isolated_managers():
     """Use temp directory and reset both manager singletons."""
+    import gc
+
     import aqua_mcp.tools as tools_module
 
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         storage = Storage(Path(tmpdir))
         from aqua_mcp.wallet import WalletManager
 
@@ -38,6 +40,11 @@ def isolated_managers():
         yield manager, btc_manager
         tools_module._manager = None
         tools_module._btc_manager = None
+        # Release BDK SQLite handles so Windows can delete the tempdir.
+        btc_manager._wallets.clear()
+        btc_manager._persisters.clear()
+        btc_manager._clients.clear()
+        gc.collect()
 
 
 # ---------------------------------------------------------------------------

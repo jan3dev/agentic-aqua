@@ -22,11 +22,11 @@ MAX_SWAP_AMOUNT_SATS = 25_000_000
 
 # BOLT11 amount multiplier → satoshis factor
 _BOLT11_MULTIPLIERS: dict[str, float] = {
-    "m": 100_000,        # milli-BTC
-    "u": 100,            # micro-BTC
-    "n": 0.1,            # nano-BTC
-    "p": 0.0001,         # pico-BTC
-    "":  100_000_000,    # BTC (no suffix)
+    "m": 100_000,  # milli-BTC
+    "u": 100,  # micro-BTC
+    "n": 0.1,  # nano-BTC
+    "p": 0.0001,  # pico-BTC
+    "": 100_000_000,  # BTC (no suffix)
 }
 
 
@@ -90,9 +90,7 @@ class BoltzClient:
                 msg += f": {detail}"
             raise RuntimeError(msg) from e
         except urllib.error.URLError as e:
-            raise RuntimeError(
-                f"Boltz API unreachable ({method} {path}): {e.reason}"
-            ) from e
+            raise RuntimeError(f"Boltz API unreachable ({method} {path}): {e.reason}") from e
 
     def get_submarine_pairs(self) -> dict:
         """GET /v2/swap/submarine - fetch available pairs, fees, limits."""
@@ -100,12 +98,16 @@ class BoltzClient:
 
     def create_submarine_swap(self, invoice: str, refund_public_key: str) -> dict:
         """POST /v2/swap/submarine - create a new swap."""
-        return self._api_request("POST", "/v2/swap/submarine", {
-            "invoice": invoice,
-            "from": "L-BTC",
-            "to": "BTC",
-            "refundPublicKey": refund_public_key,
-        })
+        return self._api_request(
+            "POST",
+            "/v2/swap/submarine",
+            {
+                "invoice": invoice,
+                "from": "L-BTC",
+                "to": "BTC",
+                "refundPublicKey": refund_public_key,
+            },
+        )
 
     def get_swap_status(self, swap_id: str) -> dict:
         """GET /v2/swap/{swap_id} - get current swap status."""
@@ -142,7 +144,7 @@ def decode_bolt11_amount_sats(invoice: str) -> int | None:
     # Strip Lightning prefix to get the amount portion of the HRP
     for prefix in ("lnbcrt", "lnbc", "lntb", "lntbs"):
         if invoice.startswith(prefix):
-            hrp_rest = invoice[len(prefix):]
+            hrp_rest = invoice[len(prefix) :]
             break
     else:
         return None

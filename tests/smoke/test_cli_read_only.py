@@ -27,15 +27,54 @@ def wallet_name():
     return f"smoke_cli_{int(time.time())}"
 
 
+# Esplora/Electrum: connection resets, timeouts, Windows WSAETIMEDOUT (10060), minreq
+TRANSIENT_NETWORK_MARKERS = (
+    "minreq",
+    "connection reset",
+    "timed out",
+    "timeout",
+    "10060",
+    "connection attempt failed",
+    "failed to respond",
+    "established connection failed",
+)
+
+
+_SMOKE_CLI_ATTEMPTS = 6
+_SMOKE_CLI_RETRY_DELAY_S = 3
+
+
 @pytest.fixture(scope="module")
 def cli_runner():
-    """Return a function that invokes aqua-cli and returns parsed JSON."""
+    """Return a function that invokes aqua-cli and returns parsed JSON.
+
+    Retries on transient Esplora/Electrum network errors so smoke tests are
+    not brittle against occasional upstream connection resets.
+    If the upstream stays unreachable, skips the test instead of hard-failing CI.
+    """
     runner = CliRunner()
 
     def run(*args):
-        result = runner.invoke(cli, ["--format", "json", *args])
-        assert result.exit_code == 0, f"CLI failed: {result.output}"
-        return json.loads(result.output)
+        last_output = ""
+        result = None
+        for attempt in range(_SMOKE_CLI_ATTEMPTS):
+            result = runner.invoke(cli, ["--format", "json", *args])
+            if result.exit_code == 0:
+                return json.loads(result.stdout)
+            last_output = f"{result.stdout!r} {result.stderr!r}"
+            if not any(m in last_output.lower() for m in TRANSIENT_NETWORK_MARKERS):
+                break
+            if attempt < _SMOKE_CLI_ATTEMPTS - 1:
+                time.sleep(_SMOKE_CLI_RETRY_DELAY_S)
+
+        if result is not None and result.exit_code != 0 and any(
+            m in last_output.lower() for m in TRANSIENT_NETWORK_MARKERS
+        ):
+            pytest.skip(
+                "Network error after retries (mainnet API unreachable). "
+                f"Last output: {last_output[:400]}"
+            )
+        raise AssertionError(f"CLI failed: {last_output}")
 
     return run
 

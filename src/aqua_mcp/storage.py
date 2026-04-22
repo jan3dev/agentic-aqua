@@ -1,29 +1,30 @@
 """Storage layer for wallet persistence."""
 
+import base64
 import json
 import os
 import re
 import shutil
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
 
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-import base64
 
 SALT_LENGTH = 16
 
 
 DEFAULT_DIR = Path.home() / ".aqua-mcp"
-SWAP_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]{1,128}$')
+SWAP_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 
 
 @dataclass
 class WalletData:
     """Wallet data structure."""
+
     name: str
     network: str  # "mainnet" or "testnet"
     descriptor: str  # CT descriptor (Liquid)
@@ -48,6 +49,7 @@ class WalletData:
 @dataclass
 class Config:
     """Global configuration."""
+
     network: str = "mainnet"
     default_wallet: str = "default"
     electrum_url: Optional[str] = None
@@ -63,7 +65,7 @@ class Config:
 
 def _validate_wallet_name(name: str) -> str:
     """Validate wallet name to prevent path traversal."""
-    if not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', name):
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name):
         raise ValueError(
             f"Invalid wallet name '{name}'. "
             "Use only letters, numbers, hyphens and underscores (max 64 chars)."
@@ -204,8 +206,9 @@ class Storage:
     def list_wallets(self) -> list[str]:
         """List all wallet names."""
         return [
-            p.stem for p in self.wallets_dir.glob("*.json")
-            if re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', p.stem)
+            p.stem
+            for p in self.wallets_dir.glob("*.json")
+            if re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", p.stem)
         ]
 
     def load_wallet(self, name: str) -> Optional[WalletData]:
@@ -259,10 +262,7 @@ class Storage:
 
     def list_swaps(self) -> list[str]:
         """List all swap IDs."""
-        return [
-            p.stem for p in self.swaps_dir.glob("*.json")
-            if SWAP_ID_PATTERN.fullmatch(p.stem)
-        ]
+        return [p.stem for p in self.swaps_dir.glob("*.json") if SWAP_ID_PATTERN.fullmatch(p.stem)]
 
     # Ankara swap operations
 
@@ -293,7 +293,8 @@ class Storage:
     def list_ankara_swaps(self) -> list[str]:
         """List all Ankara swap IDs."""
         return [
-            p.stem for p in self.ankara_swaps_dir.glob("*.json")
+            p.stem
+            for p in self.ankara_swaps_dir.glob("*.json")
             if SWAP_ID_PATTERN.fullmatch(p.stem)
         ]
 
@@ -326,7 +327,8 @@ class Storage:
     def list_lightning_swaps(self) -> list[str]:
         """List all Lightning swap IDs."""
         return [
-            p.stem for p in self.lightning_swaps_dir.glob("*.json")
+            p.stem
+            for p in self.lightning_swaps_dir.glob("*.json")
             if SWAP_ID_PATTERN.fullmatch(p.stem)
         ]
 

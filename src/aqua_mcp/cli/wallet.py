@@ -3,6 +3,7 @@
 import sys
 
 import click
+from click.core import ParameterSource
 
 from ..tools import (
     delete_wallet as _delete_wallet,
@@ -15,14 +16,13 @@ from ..tools import (
     lw_import_mnemonic,
     lw_list_wallets,
 )
-from .output import render, render_error, run_tool
+from .output import render, run_tool
 from .password import handle_password_retry
 
 
 @click.group()
 def wallet():
     """Wallet management (create, import, list, delete)."""
-    pass
 
 
 @wallet.command("generate-mnemonic")
@@ -33,7 +33,16 @@ def generate_mnemonic(ctx):
 
 
 @wallet.command("import-mnemonic")
-@click.option("--mnemonic", required=True, help="BIP39 mnemonic phrase (12 words).")
+@click.option(
+    "--mnemonic",
+    default=None,
+    envvar="AQUA_MNEMONIC",
+    help=(
+        "BIP39 mnemonic. Omit to enter interactively, or set AQUA_MNEMONIC. "
+        "Passing a seed via this flag can be stored in shell history; prefer "
+        "interactive input or the environment variable."
+    ),
+)
 @click.option("--wallet-name", default="default", show_default=True, help="Name for the wallet.")
 @click.option(
     "--network",
@@ -50,11 +59,33 @@ def generate_mnemonic(ctx):
 @click.pass_obj
 def import_mnemonic(ctx, mnemonic, wallet_name, network, password):
     """Import a wallet from a BIP39 mnemonic (creates Liquid + Bitcoin wallets)."""
-    run_tool(ctx, lambda: handle_password_retry(
-        lw_import_mnemonic,
-        {"mnemonic": mnemonic, "wallet_name": wallet_name,
-         "network": network, "password": password},
-    ))
+    click_ctx = click.get_current_context()
+    try:
+        src = click_ctx.get_parameter_source("mnemonic")
+    except KeyError:
+        src = None
+    if src == ParameterSource.COMMANDLINE and mnemonic and str(mnemonic).strip():
+        click.echo(
+            "Warning: --mnemonic on the command line can be stored in shell history. "
+            "Prefer interactive entry or the AQUA_MNEMONIC environment variable.",
+            err=True,
+        )
+    if not mnemonic or not str(mnemonic).strip():
+        mnemonic = click.prompt("Mnemonic", hide_input=True)
+    else:
+        mnemonic = str(mnemonic).strip()
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            lw_import_mnemonic,
+            {
+                "mnemonic": mnemonic,
+                "wallet_name": wallet_name,
+                "network": network,
+                "password": password,
+            },
+        ),
+    )
 
 
 @wallet.command("import-descriptor")
@@ -94,34 +125,29 @@ def list_wallets(ctx):
 @click.pass_obj
 def delete(ctx, wallet_name, yes):
     """Delete a wallet and all its cached data."""
-    try:
-        if not yes:
-            try:
-                balance = lw_balance(wallet_name)
-                click.echo("Current Liquid wallet balance:", err=True)
-                click.echo(render(balance, "pretty"), err=True)
-            except Exception:
-                pass  # Wallet may not exist yet
+    if not yes:
+        try:
+            balance = lw_balance(wallet_name)
+            click.echo("Current Liquid wallet balance:", err=True)
+            click.echo(render(balance, "pretty"), err=True)
+        except Exception:
+            pass  # Wallet may not exist yet
 
-            click.echo(
-                "\nMake sure you have backed up your seed phrase (mnemonic) before proceeding.",
-                err=True,
-            )
-            click.echo(
-                "Without it, you will permanently lose access to any funds.",
-                err=True,
-            )
-            confirm = click.prompt(
-                f"Type '{wallet_name}' to confirm deletion",
-                default="",
-                show_default=False,
-            )
-            if confirm != wallet_name:
-                click.echo("Deletion cancelled.", err=True)
-                sys.exit(1)
+        click.echo(
+            "\nMake sure you have backed up your seed phrase (mnemonic) before proceeding.",
+            err=True,
+        )
+        click.echo(
+            "Without it, you will permanently lose access to any funds.",
+            err=True,
+        )
+        confirm = click.prompt(
+            f"Type '{wallet_name}' to confirm deletion",
+            default="",
+            show_default=False,
+        )
+        if confirm != wallet_name:
+            click.echo("Deletion cancelled.", err=True)
+            sys.exit(1)
 
-        result = _delete_wallet(wallet_name)
-        click.echo(render(result, ctx.fmt))
-    except Exception as e:
-        click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
-        sys.exit(1)
+    run_tool(ctx, lambda: _delete_wallet(wallet_name))

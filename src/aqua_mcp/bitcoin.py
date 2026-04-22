@@ -9,7 +9,6 @@ import bdkpython as bdk
 
 from .storage import Storage, WalletData
 
-
 ESPLORA_URLS = {
     "mainnet": [
         "https://blockstream.info/api",
@@ -162,12 +161,8 @@ class BitcoinWalletManager:
         net = _network_bdk(network)
         bdk_mnemonic = bdk.Mnemonic.from_string(mnemonic)
         secret_key = bdk.DescriptorSecretKey(net, bdk_mnemonic, None)
-        external_desc = bdk.Descriptor.new_bip84(
-            secret_key, bdk.KeychainKind.EXTERNAL, net
-        )
-        change_desc = bdk.Descriptor.new_bip84(
-            secret_key, bdk.KeychainKind.INTERNAL, net
-        )
+        external_desc = bdk.Descriptor.new_bip84(secret_key, bdk.KeychainKind.EXTERNAL, net)
+        change_desc = bdk.Descriptor.new_bip84(secret_key, bdk.KeychainKind.INTERNAL, net)
 
         cache_path = self._get_btc_cache_path(wallet_name)
         persister = bdk.Persister.new_sqlite(str(cache_path))
@@ -234,12 +229,8 @@ class BitcoinWalletManager:
         net = _network_bdk(wallet_data.network)
         bdk_mnemonic = bdk.Mnemonic.from_string(mnemonic)
         secret_key = bdk.DescriptorSecretKey(net, bdk_mnemonic, None)
-        external_desc = bdk.Descriptor.new_bip84(
-            secret_key, bdk.KeychainKind.EXTERNAL, net
-        )
-        change_desc = bdk.Descriptor.new_bip84(
-            secret_key, bdk.KeychainKind.INTERNAL, net
-        )
+        external_desc = bdk.Descriptor.new_bip84(secret_key, bdk.KeychainKind.EXTERNAL, net)
+        change_desc = bdk.Descriptor.new_bip84(secret_key, bdk.KeychainKind.INTERNAL, net)
         cache_path = self._get_btc_cache_path(wallet_name)
         persister = bdk.Persister.new_sqlite(str(cache_path))
         wallet = bdk.Wallet.load(
@@ -259,6 +250,7 @@ class BitcoinWalletManager:
 
         last_exc: Optional[Exception] = None
         for client in clients:
+
             def _scan(c=client):
                 request = wallet.start_full_scan().build()
                 return c.full_scan(request, STOP_GAP, PARALLEL_REQUESTS)
@@ -363,9 +355,7 @@ class BitcoinWalletManager:
         needs_password = self.storage.is_mnemonic_encrypted(wallet_data.encrypted_mnemonic)
         if needs_password and not password:
             raise ValueError("Password required to decrypt mnemonic")
-        mnemonic = self.storage.retrieve_mnemonic(
-            wallet_data.encrypted_mnemonic, password
-        )
+        mnemonic = self.storage.retrieve_mnemonic(wallet_data.encrypted_mnemonic, password)
         wallet, network = self._get_wallet_with_signer(wallet_name, mnemonic)
         self.sync_wallet(wallet_name)
 

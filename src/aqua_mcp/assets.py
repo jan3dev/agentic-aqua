@@ -7,6 +7,7 @@ from typing import Optional
 @dataclass
 class AssetInfo:
     """Metadata for a known Liquid asset."""
+
     asset_id: str
     name: str
     ticker: str
@@ -16,7 +17,8 @@ class AssetInfo:
 
 # Mainnet known assets
 MAINNET_ASSETS: dict[str, AssetInfo] = {
-    info.asset_id: info for info in [
+    info.asset_id: info
+    for info in [
         AssetInfo(
             asset_id="6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d",
             name="Liquid Bitcoin",

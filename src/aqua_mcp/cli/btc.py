@@ -49,12 +49,19 @@ def transactions(ctx, wallet_name, limit):
 @click.option("--address", required=True, help="Destination Bitcoin address (bc1...).")
 @click.option("--amount", required=True, type=int, help="Amount in satoshis.")
 @click.option("--fee-rate", type=int, default=None, help="Fee rate in sat/vB.")
-@click.option("--password", default=None, help="Password to decrypt mnemonic.")
 @click.pass_obj
-def send(ctx, wallet_name, address, amount, fee_rate, password):
-    """Send BTC to an address."""
-    run_tool(ctx, lambda: handle_password_retry(
-        btc_send,
-        {"wallet_name": wallet_name, "address": address, "amount": amount,
-         "fee_rate": fee_rate, "password": password},
-    ))
+def send(ctx, wallet_name, address, amount, fee_rate):
+    """Send BTC to an address. If the wallet mnemonic is encrypted, a password is prompted."""
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            btc_send,
+            {
+                "wallet_name": wallet_name,
+                "address": address,
+                "amount": amount,
+                "fee_rate": fee_rate,
+                "password": None,
+            },
+        ),
+    )

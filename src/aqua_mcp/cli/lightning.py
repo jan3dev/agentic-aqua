@@ -19,32 +19,38 @@ def lightning():
 
 @lightning.command("receive")
 @click.option("--amount", required=True, type=int, help="Amount in satoshis (100-25,000,000).")
-@click.option("--wallet-name", default="default", show_default=True,
-              help="Liquid wallet to receive into.")
+@click.option(
+    "--wallet-name", default="default", show_default=True, help="Liquid wallet to receive into."
+)
 @click.option("--password", default=None, help="Password to decrypt mnemonic.")
 @click.pass_obj
 def receive(ctx, amount, wallet_name, password):
     """Generate a Lightning invoice to receive L-BTC into a Liquid wallet."""
-    run_tool(ctx, lambda: handle_password_retry(
-        lightning_receive,
-        {"amount": amount, "wallet_name": wallet_name,
-         "password": password},
-    ))
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            lightning_receive,
+            {"amount": amount, "wallet_name": wallet_name, "password": password},
+        ),
+    )
 
 
 @lightning.command("send")
-@click.option("--invoice", required=True,
-              help="BOLT11 Lightning invoice (lnbc... or lntb...).")
-@click.option("--wallet-name", default="default", show_default=True,
-              help="Liquid wallet to pay from.")
+@click.option("--invoice", required=True, help="BOLT11 Lightning invoice (lnbc... or lntb...).")
+@click.option(
+    "--wallet-name", default="default", show_default=True, help="Liquid wallet to pay from."
+)
 @click.option("--password", default=None, help="Password to decrypt mnemonic.")
 @click.pass_obj
 def send(ctx, invoice, wallet_name, password):
     """Pay a Lightning invoice using L-BTC (submarine swap via Boltz)."""
-    run_tool(ctx, lambda: handle_password_retry(
-        lightning_send,
-        {"invoice": invoice, "wallet_name": wallet_name, "password": password},
-    ))
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            lightning_send,
+            {"invoice": invoice, "wallet_name": wallet_name, "password": password},
+        ),
+    )
 
 
 @lightning.command("status")

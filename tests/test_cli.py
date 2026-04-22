@@ -1,6 +1,7 @@
 """Tests for the Click CLI interface."""
 
 import json
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -24,7 +25,7 @@ def isolated_manager():
     """
     import aqua_mcp.tools as tools_module
 
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         storage = Storage(Path(tmpdir))
         manager = WalletManager(storage=storage)
         btc_manager = BitcoinWalletManager(storage=storage)
@@ -91,7 +92,8 @@ class TestWalletCommands:
             ["--format", "json", "wallet", "import-mnemonic", "--mnemonic", TEST_MNEMONIC],
         )
         assert result.exit_code == 0
-        data = json.loads(result.output)
+        assert "shell history" in (result.stderr or "")
+        data = json.loads(result.stdout)
         assert data["wallet_name"] == "default"
         assert data["watch_only"] is False
 
@@ -106,8 +108,37 @@ class TestWalletCommands:
             ],
         )
         assert result.exit_code == 0
-        data = json.loads(result.output)
+        assert "shell history" in (result.stderr or "")
+        data = json.loads(result.stdout)
         assert data["wallet_name"] == "test_wallet"
+
+    def test_import_mnemonic_from_env(self, runner):
+        env = {k: v for k, v in os.environ.items() if k != "AQUA_MNEMONIC"}
+        env["AQUA_MNEMONIC"] = TEST_MNEMONIC
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "wallet", "import-mnemonic"],
+            env=env,
+        )
+        assert result.exit_code == 0
+        assert "shell history" not in (result.stderr or "")
+        data = json.loads(result.stdout)
+        assert data["wallet_name"] == "default"
+        assert data["watch_only"] is False
+
+    @patch("aqua_mcp.cli.wallet.click.prompt", return_value=TEST_MNEMONIC)
+    def test_import_mnemonic_from_prompt(self, mock_prompt, runner):
+        env = {k: v for k, v in os.environ.items() if k != "AQUA_MNEMONIC"}
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "wallet", "import-mnemonic"],
+            env=env,
+        )
+        assert result.exit_code == 0
+        assert "shell history" not in (result.stderr or "")
+        mock_prompt.assert_called_once_with("Mnemonic", hide_input=True)
+        data = json.loads(result.stdout)
+        assert data["wallet_name"] == "default"
 
     def test_list_wallets_empty(self, runner):
         result = runner.invoke(cli, ["--format", "json", "wallet", "list"])
@@ -192,6 +223,15 @@ class TestLiquidCommands:
         data = json.loads(result.output)
         assert "address" in data
 
+    def test_address_rejects_negative_index(self, runner):
+        _import_wallet(runner)
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "liquid", "address", "--index", "-1"],
+        )
+        assert result.exit_code == 2
+        assert "index must be non-negative" in result.output.lower()
+
     def test_transactions(self, runner):
         _import_wallet(runner)
         result = runner.invoke(cli, ["--format", "json", "liquid", "transactions"])
@@ -206,6 +246,23 @@ class TestLiquidCommands:
             ["--format", "json", "liquid", "send", "--wallet-name", "nope", "--address", "lq1x", "--amount", "1000"],
         )
         assert result.exit_code == 1
+
+    def test_send_lbtc_amount_must_be_positive(self, runner):
+        """liquid send rejects non-positive --amount before invoking the tool."""
+        _import_wallet(runner)
+        result = runner.invoke(
+            cli,
+            [
+                "--format", "json",
+                "liquid", "send",
+                "--wallet-name", "default",
+                "--address", "lq1x",
+                "--amount", "0",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "amount" in result.output.lower()
+        assert "1" in result.output or "range" in result.output.lower()
 
     def test_assets_lists_known_assets(self, runner):
         """liquid assets returns the mainnet registry with id/ticker/name/precision."""
@@ -254,6 +311,20 @@ class TestLiquidCommands:
         )
         assert result.exit_code != 0
         assert "unknown ticker" in result.output.lower()
+
+    def test_send_asset_amount_must_be_positive(self, runner):
+        """Non-positive --amount is rejected before ticker resolution."""
+        _import_wallet(runner)
+        result = runner.invoke(
+            cli,
+            [
+                "liquid", "send-asset", "--wallet-name", "default",
+                "--address", "lq1x", "--amount", "0",
+                "--asset-ticker", "USDt",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "positive" in result.output.lower()
 
 
 # BTC commands
