@@ -332,5 +332,3 @@ class TestErrorHandling:
         )
         assert result.exit_code == 1
         assert "Error" in result.output
-
-uv run aqua-cli liquid send-asset --wallet-name $WALLET --address $DEST --amount 50000000 --asset-ticker usdt
