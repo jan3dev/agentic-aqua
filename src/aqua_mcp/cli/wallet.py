@@ -16,7 +16,7 @@ from ..tools import (
     lw_list_wallets,
 )
 from .output import render, run_tool
-from .password import handle_password_retry, read_secret
+from .password import handle_password_retry, resolve_secret
 
 
 @click.group()
@@ -33,53 +33,56 @@ def generate_mnemonic(ctx):
 
 @wallet.command("import-mnemonic")
 @click.option(
-	"--mnemonic-stdin",
-	"mnemonic_stdin",
-	is_flag=True,
-	default=False,
-	help=(
-		"Read BIP39 mnemonic from stdin (piped) or prompt interactively. "
-		"When absent, falls back to the AQUA_MNEMONIC environment variable, "
-		"then to an interactive prompt."
-	),
+    "--mnemonic-stdin",
+    "mnemonic_stdin",
+    is_flag=True,
+    default=False,
+    help=(
+        "Read BIP39 mnemonic from stdin (piped) or prompt interactively. "
+        "When absent, falls back to the AQUA_MNEMONIC environment variable, "
+        "then to an interactive prompt."
+    ),
 )
 @click.option("--wallet-name", default="default", show_default=True, help="Name for the wallet.")
 @click.option(
-	"--network",
-	type=click.Choice(["mainnet", "testnet"]),
-	default="mainnet",
-	show_default=True,
-	help="Network to use.",
+    "--network",
+    type=click.Choice(["mainnet", "testnet"]),
+    default="mainnet",
+    show_default=True,
+    help="Network to use.",
 )
 @click.option(
-	"--password-stdin",
-	"password_stdin",
-	is_flag=True,
-	default=False,
-	help="Read wallet password from stdin (piped) or prompt interactively.",
+    "--password-stdin",
+    "password_stdin",
+    is_flag=True,
+    default=False,
+    help=(
+        "Read wallet password from stdin (piped) or prompt interactively. "
+        "When absent, falls back to the AQUA_PASSWORD environment variable, "
+        "then to no password (wallet stored in plaintext)."
+    ),
 )
 @click.pass_obj
 def import_mnemonic(ctx, mnemonic_stdin, wallet_name, network, password_stdin):
-	"""Import a wallet from a BIP39 mnemonic (creates Liquid + Bitcoin wallets)."""
-	import os
-	if mnemonic_stdin:
-		mnemonic = read_secret("Mnemonic")
-	else:
-		env_val = os.environ.get("AQUA_MNEMONIC", "").strip()
-		mnemonic = env_val if env_val else click.prompt("Mnemonic", hide_input=True)
-	password = read_secret("Password") if password_stdin else None
-	run_tool(
-		ctx,
-		lambda: handle_password_retry(
-			lw_import_mnemonic,
-			{
-				"mnemonic": mnemonic,
-				"wallet_name": wallet_name,
-				"network": network,
-				"password": password,
-			},
-		),
-	)
+    """Import a wallet from a BIP39 mnemonic (creates Liquid + Bitcoin wallets)."""
+    mnemonic = resolve_secret(
+        "Mnemonic", mnemonic_stdin, env_var="AQUA_MNEMONIC", required=True
+    )
+    password = resolve_secret(
+        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+    )
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            lw_import_mnemonic,
+            {
+                "mnemonic": mnemonic,
+                "wallet_name": wallet_name,
+                "network": network,
+                "password": password,
+            },
+        ),
+    )
 
 
 @wallet.command("import-descriptor")

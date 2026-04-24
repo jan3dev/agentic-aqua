@@ -9,7 +9,7 @@ from ..tools import (
     btc_transactions,
 )
 from .output import run_tool
-from .password import handle_password_retry, read_secret
+from .password import handle_password_retry, resolve_secret
 
 
 @click.group()
@@ -54,12 +54,18 @@ def transactions(ctx, wallet_name, limit):
     "password_stdin",
     is_flag=True,
     default=False,
-    help="Read wallet password from stdin (piped) or prompt interactively.",
+    help=(
+        "Read wallet password from stdin (piped) or prompt interactively. "
+        "Without this flag, falls back to the AQUA_PASSWORD environment variable, "
+        "then to no password."
+    ),
 )
 @click.pass_obj
 def send(ctx, wallet_name, address, amount, fee_rate, password_stdin):
-    """Send BTC to an address. If the wallet mnemonic is encrypted, a password is prompted."""
-    password = read_secret("Password") if password_stdin else None
+    """Send BTC to an address. If the wallet mnemonic is encrypted, a password is required."""
+    password = resolve_secret(
+        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+    )
     run_tool(
         ctx,
         lambda: handle_password_retry(
