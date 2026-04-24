@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentic-aqua"
-version = "0.2.1"
+version = "0.3.0"
 description = "Agentic AQUA — MCP server for Liquid Network and Bitcoin wallet operations"
 readme = "README.md"
 license = "MIT"
