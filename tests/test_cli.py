@@ -49,7 +49,8 @@ def runner():
 
 def _import_wallet(runner):
     """Helper: import the test wallet via CLI."""
-    runner.invoke(cli, ["wallet", "import-mnemonic", "--mnemonic", TEST_MNEMONIC])
+    runner.invoke(cli, ["wallet", "import-mnemonic", "--mnemonic-stdin"],
+                  input=TEST_MNEMONIC + "\n")
 
 
 
@@ -89,10 +90,10 @@ class TestWalletCommands:
     def test_import_mnemonic(self, runner):
         result = runner.invoke(
             cli,
-            ["--format", "json", "wallet", "import-mnemonic", "--mnemonic", TEST_MNEMONIC],
+            ["--format", "json", "wallet", "import-mnemonic", "--mnemonic-stdin"],
+            input=TEST_MNEMONIC + "\n",
         )
         assert result.exit_code == 0
-        assert "shell history" in (result.stderr or "")
         data = json.loads(result.stdout)
         assert data["wallet_name"] == "default"
         assert data["watch_only"] is False
@@ -103,12 +104,12 @@ class TestWalletCommands:
             [
                 "--format", "json",
                 "wallet", "import-mnemonic",
-                "--mnemonic", TEST_MNEMONIC,
+                "--mnemonic-stdin",
                 "--wallet-name", "test_wallet",
             ],
+            input=TEST_MNEMONIC + "\n",
         )
         assert result.exit_code == 0
-        assert "shell history" in (result.stderr or "")
         data = json.loads(result.stdout)
         assert data["wallet_name"] == "test_wallet"
 
@@ -121,7 +122,6 @@ class TestWalletCommands:
             env=env,
         )
         assert result.exit_code == 0
-        assert "shell history" not in (result.stderr or "")
         data = json.loads(result.stdout)
         assert data["wallet_name"] == "default"
         assert data["watch_only"] is False
@@ -135,7 +135,6 @@ class TestWalletCommands:
             env=env,
         )
         assert result.exit_code == 0
-        assert "shell history" not in (result.stderr or "")
         mock_prompt.assert_called_once_with("Mnemonic", hide_input=True)
         data = json.loads(result.stdout)
         assert data["wallet_name"] == "default"

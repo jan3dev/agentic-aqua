@@ -13,7 +13,7 @@ from ..tools import (
     lw_tx_status,
 )
 from .output import run_tool
-from .password import handle_password_retry
+from .password import handle_password_retry, read_secret
 
 
 def _index_non_negative(ctx, param, value):
@@ -70,27 +70,34 @@ def transactions(ctx, wallet_name, limit):
 @click.option("--wallet-name", required=True, help="Name of the wallet.")
 @click.option("--address", required=True, help="Destination Liquid address.")
 @click.option(
-    "--amount",
-    required=True,
-    type=click.IntRange(min=1),
-    help="Amount in satoshis (must be >= 1).",
+	"--amount",
+	required=True,
+	type=click.IntRange(min=1),
+	help="Amount in satoshis (must be >= 1).",
 )
-@click.option("--password", default=None, help="Password to decrypt mnemonic.")
+@click.option(
+	"--password-stdin",
+	"password_stdin",
+	is_flag=True,
+	default=False,
+	help="Read wallet password from stdin (piped) or prompt interactively.",
+)
 @click.pass_obj
-def send(ctx, wallet_name, address, amount, password):
-    """Send L-BTC to an address."""
-    run_tool(
-        ctx,
-        lambda: handle_password_retry(
-            lw_send,
-            {
-                "wallet_name": wallet_name,
-                "address": address,
-                "amount": amount,
-                "password": password,
-            },
-        ),
-    )
+def send(ctx, wallet_name, address, amount, password_stdin):
+	"""Send L-BTC to an address."""
+	password = read_secret("Password") if password_stdin else None
+	run_tool(
+		ctx,
+		lambda: handle_password_retry(
+			lw_send,
+			{
+				"wallet_name": wallet_name,
+				"address": address,
+				"amount": amount,
+				"password": password,
+			},
+		),
+	)
 
 
 @liquid.command("send-asset")
@@ -99,42 +106,49 @@ def send(ctx, wallet_name, address, amount, password):
 @click.option("--amount", required=True, type=int, help="Amount in satoshis.")
 @click.option("--asset-id", default=None, help="Asset ID (hex string).")
 @click.option(
-    "--asset-ticker",
-    default=None,
-    help="Asset ticker (case-insensitive, e.g. USDt, DePix). Resolved via the registry.",
+	"--asset-ticker",
+	default=None,
+	help="Asset ticker (case-insensitive, e.g. USDt, DePix). Resolved via the registry.",
 )
-@click.option("--password", default=None, help="Password to decrypt mnemonic.")
+@click.option(
+	"--password-stdin",
+	"password_stdin",
+	is_flag=True,
+	default=False,
+	help="Read wallet password from stdin (piped) or prompt interactively.",
+)
 @click.pass_obj
-def send_asset(ctx, wallet_name, address, amount, asset_id, asset_ticker, password):
-    """Send a Liquid asset to an address."""
-    if amount <= 0:
-        raise click.UsageError("Amount must be a positive integer.")
-    if bool(asset_id) == bool(asset_ticker):
-        raise click.UsageError("Provide exactly one of --asset-id or --asset-ticker.")
-    if asset_ticker:
-        wallet_data = get_manager().storage.load_wallet(wallet_name)
-        if wallet_data is None:
-            raise click.UsageError(f"Wallet '{wallet_name}' not found.")
-        info = lookup_asset_by_ticker(asset_ticker, wallet_data.network)
-        if info is None:
-            raise click.UsageError(
-                f"Unknown ticker '{asset_ticker}' on {wallet_data.network}. "
-                "Run 'aqua-cli liquid assets' to list known tickers."
-            )
-        asset_id = info.asset_id
-    run_tool(
-        ctx,
-        lambda: handle_password_retry(
-            lw_send_asset,
-            {
-                "wallet_name": wallet_name,
-                "address": address,
-                "amount": amount,
-                "asset_id": asset_id,
-                "password": password,
-            },
-        ),
-    )
+def send_asset(ctx, wallet_name, address, amount, asset_id, asset_ticker, password_stdin):
+	"""Send a Liquid asset to an address."""
+	if amount <= 0:
+		raise click.UsageError("Amount must be a positive integer.")
+	if bool(asset_id) == bool(asset_ticker):
+		raise click.UsageError("Provide exactly one of --asset-id or --asset-ticker.")
+	if asset_ticker:
+		wallet_data = get_manager().storage.load_wallet(wallet_name)
+		if wallet_data is None:
+			raise click.UsageError(f"Wallet '{wallet_name}' not found.")
+		info = lookup_asset_by_ticker(asset_ticker, wallet_data.network)
+		if info is None:
+			raise click.UsageError(
+				f"Unknown ticker '{asset_ticker}' on {wallet_data.network}. "
+				"Run 'aqua-cli liquid assets' to list known tickers."
+			)
+		asset_id = info.asset_id
+	password = read_secret("Password") if password_stdin else None
+	run_tool(
+		ctx,
+		lambda: handle_password_retry(
+			lw_send_asset,
+			{
+				"wallet_name": wallet_name,
+				"address": address,
+				"amount": amount,
+				"asset_id": asset_id,
+				"password": password,
+			},
+		),
+	)
 
 
 @liquid.command("assets")

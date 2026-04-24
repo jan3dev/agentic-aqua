@@ -80,15 +80,19 @@ def cli_runner():
 
 
 class TestSmokeImportWallet:
-    def test_import_wallet(self, cli_runner, wallet_name):
-        """Import the test wallet from SIGNER_MNEMONIC."""
-        result = cli_runner(
-            "wallet", "import-mnemonic",
-            "--mnemonic", SIGNER_MNEMONIC,
-            "--wallet-name", wallet_name,
-        )
-        assert result["wallet_name"] == wallet_name
-        assert result["watch_only"] is False
+	def test_import_wallet(self, wallet_name):
+		"""Import the test wallet from SIGNER_MNEMONIC."""
+		runner = CliRunner()
+		result = runner.invoke(
+			cli,
+			["--format", "json", "wallet", "import-mnemonic",
+			 "--mnemonic-stdin", "--wallet-name", wallet_name],
+			input=SIGNER_MNEMONIC + "\n",
+		)
+		assert result.exit_code == 0
+		data = json.loads(result.stdout)
+		assert data["wallet_name"] == wallet_name
+		assert data["watch_only"] is False
 
 
 class TestSmokeAddresses:
@@ -170,52 +174,73 @@ class TestSmokeLightningStatus:
 
 
 class TestSmokeDeleteWallet:
-    def test_delete_wallet(self, cli_runner):
-        """Import a throwaway wallet then delete it; verify it's gone."""
-        name = f"delete_test_{int(time.time())}"
-        cli_runner(
-            "wallet", "import-mnemonic",
-            "--mnemonic", DEFAULT_MNEMONIC,
-            "--wallet-name", name,
-        )
+	def test_delete_wallet(self):
+		"""Import a throwaway wallet then delete it; verify it's gone."""
+		name = f"delete_test_{int(time.time())}"
+		runner = CliRunner()
+		result = runner.invoke(
+			cli,
+			["--format", "json", "wallet", "import-mnemonic",
+			 "--mnemonic-stdin", "--wallet-name", name],
+			input=DEFAULT_MNEMONIC + "\n",
+		)
+		assert result.exit_code == 0
 
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            ["--format", "json", "wallet", "delete", "--wallet-name", name, "--yes"],
-        )
-        assert result.exit_code == 0
+		result = runner.invoke(
+			cli,
+			["--format", "json", "wallet", "delete", "--wallet-name", name, "--yes"],
+		)
+		assert result.exit_code == 0
 
-        wallets = cli_runner("wallet", "list")
-        wallet_names = [w["name"] if isinstance(w, dict) else w for w in wallets["wallets"]]
-        assert name not in wallet_names
+		result = runner.invoke(
+			cli,
+			["--format", "json", "wallet", "list"],
+		)
+		assert result.exit_code == 0
+		wallets = json.loads(result.stdout)
+		wallet_names = [w["name"] if isinstance(w, dict) else w for w in wallets["wallets"]]
+		assert name not in wallet_names
 
 
 class TestSmokeSeedRestore:
-    def test_seed_backup_and_restore(self, cli_runner):
-        """Re-importing the same mnemonic + password yields the same BTC address."""
-        name = f"test_seed_restore_{int(time.time())}"
-        cli_runner(
-            "wallet", "import-mnemonic",
-            "--mnemonic", DEFAULT_MNEMONIC,
-            "--wallet-name", name,
-            "--password", "test",
-        )
-        first_address = cli_runner("btc", "address", "--wallet-name", name)["address"]
+	def test_seed_backup_and_restore(self):
+		"""Re-importing the same mnemonic + password yields the same BTC address."""
+		name = f"test_seed_restore_{int(time.time())}"
+		runner = CliRunner()
+		result = runner.invoke(
+			cli,
+			["--format", "json", "wallet", "import-mnemonic",
+			 "--mnemonic-stdin", "--password-stdin", "--wallet-name", name],
+			input=DEFAULT_MNEMONIC + "\ntest\n",
+		)
+		assert result.exit_code == 0
 
-        runner = CliRunner()
-        runner.invoke(cli, ["--format", "json", "wallet", "delete", "--wallet-name", name, "--yes"])
+		result = runner.invoke(
+			cli,
+			["--format", "json", "btc", "address", "--wallet-name", name],
+		)
+		assert result.exit_code == 0
+		first_address = json.loads(result.stdout)["address"]
 
-        cli_runner(
-            "wallet", "import-mnemonic",
-            "--mnemonic", DEFAULT_MNEMONIC,
-            "--wallet-name", name,
-            "--password", "test",
-        )
-        restored_address = cli_runner("btc", "address", "--wallet-name", name)["address"]
-        assert restored_address == first_address
+		runner.invoke(cli, ["--format", "json", "wallet", "delete", "--wallet-name", name, "--yes"])
 
-        runner.invoke(cli, ["--format", "json", "wallet", "delete", "--wallet-name", name, "--yes"])
+		result = runner.invoke(
+			cli,
+			["--format", "json", "wallet", "import-mnemonic",
+			 "--mnemonic-stdin", "--password-stdin", "--wallet-name", name],
+			input=DEFAULT_MNEMONIC + "\ntest\n",
+		)
+		assert result.exit_code == 0
+
+		result = runner.invoke(
+			cli,
+			["--format", "json", "btc", "address", "--wallet-name", name],
+		)
+		assert result.exit_code == 0
+		restored_address = json.loads(result.stdout)["address"]
+		assert restored_address == first_address
+
+		runner.invoke(cli, ["--format", "json", "wallet", "delete", "--wallet-name", name, "--yes"])
 
 
 class TestSmokeCleanup:

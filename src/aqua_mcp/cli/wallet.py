@@ -3,7 +3,6 @@
 import sys
 
 import click
-from click.core import ParameterSource
 
 from ..tools import (
     delete_wallet as _delete_wallet,
@@ -17,7 +16,7 @@ from ..tools import (
     lw_list_wallets,
 )
 from .output import render, run_tool
-from .password import handle_password_retry
+from .password import handle_password_retry, read_secret
 
 
 @click.group()
@@ -34,58 +33,53 @@ def generate_mnemonic(ctx):
 
 @wallet.command("import-mnemonic")
 @click.option(
-    "--mnemonic",
-    default=None,
-    envvar="AQUA_MNEMONIC",
-    help=(
-        "BIP39 mnemonic. Omit to enter interactively, or set AQUA_MNEMONIC. "
-        "Passing a seed via this flag can be stored in shell history; prefer "
-        "interactive input or the environment variable."
-    ),
+	"--mnemonic-stdin",
+	"mnemonic_stdin",
+	is_flag=True,
+	default=False,
+	help=(
+		"Read BIP39 mnemonic from stdin (piped) or prompt interactively. "
+		"When absent, falls back to the AQUA_MNEMONIC environment variable, "
+		"then to an interactive prompt."
+	),
 )
 @click.option("--wallet-name", default="default", show_default=True, help="Name for the wallet.")
 @click.option(
-    "--network",
-    type=click.Choice(["mainnet", "testnet"]),
-    default="mainnet",
-    show_default=True,
-    help="Network to use.",
+	"--network",
+	type=click.Choice(["mainnet", "testnet"]),
+	default="mainnet",
+	show_default=True,
+	help="Network to use.",
 )
 @click.option(
-    "--password",
-    default=None,
-    help="Password to encrypt mnemonic at rest. Prompted if wallet needs it.",
+	"--password-stdin",
+	"password_stdin",
+	is_flag=True,
+	default=False,
+	help="Read wallet password from stdin (piped) or prompt interactively.",
 )
 @click.pass_obj
-def import_mnemonic(ctx, mnemonic, wallet_name, network, password):
-    """Import a wallet from a BIP39 mnemonic (creates Liquid + Bitcoin wallets)."""
-    click_ctx = click.get_current_context()
-    try:
-        src = click_ctx.get_parameter_source("mnemonic")
-    except KeyError:
-        src = None
-    if src == ParameterSource.COMMANDLINE and mnemonic and str(mnemonic).strip():
-        click.echo(
-            "Warning: --mnemonic on the command line can be stored in shell history. "
-            "Prefer interactive entry or the AQUA_MNEMONIC environment variable.",
-            err=True,
-        )
-    if not mnemonic or not str(mnemonic).strip():
-        mnemonic = click.prompt("Mnemonic", hide_input=True)
-    else:
-        mnemonic = str(mnemonic).strip()
-    run_tool(
-        ctx,
-        lambda: handle_password_retry(
-            lw_import_mnemonic,
-            {
-                "mnemonic": mnemonic,
-                "wallet_name": wallet_name,
-                "network": network,
-                "password": password,
-            },
-        ),
-    )
+def import_mnemonic(ctx, mnemonic_stdin, wallet_name, network, password_stdin):
+	"""Import a wallet from a BIP39 mnemonic (creates Liquid + Bitcoin wallets)."""
+	import os
+	if mnemonic_stdin:
+		mnemonic = read_secret("Mnemonic")
+	else:
+		env_val = os.environ.get("AQUA_MNEMONIC", "").strip()
+		mnemonic = env_val if env_val else click.prompt("Mnemonic", hide_input=True)
+	password = read_secret("Password") if password_stdin else None
+	run_tool(
+		ctx,
+		lambda: handle_password_retry(
+			lw_import_mnemonic,
+			{
+				"mnemonic": mnemonic,
+				"wallet_name": wallet_name,
+				"network": network,
+				"password": password,
+			},
+		),
+	)
 
 
 @wallet.command("import-descriptor")
