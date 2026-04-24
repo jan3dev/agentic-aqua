@@ -9,7 +9,7 @@ from ..tools import (
     btc_transactions,
 )
 from .output import run_tool
-from .password import handle_password_retry
+from .password import handle_password_retry, resolve_secret
 
 
 @click.group()
@@ -49,12 +49,33 @@ def transactions(ctx, wallet_name, limit):
 @click.option("--address", required=True, help="Destination Bitcoin address (bc1...).")
 @click.option("--amount", required=True, type=int, help="Amount in satoshis.")
 @click.option("--fee-rate", type=int, default=None, help="Fee rate in sat/vB.")
-@click.option("--password", default=None, help="Password to decrypt mnemonic.")
+@click.option(
+    "--password-stdin",
+    "password_stdin",
+    is_flag=True,
+    default=False,
+    help=(
+        "Read wallet password from stdin (piped) or prompt interactively. "
+        "Without this flag, falls back to the AQUA_PASSWORD environment variable, "
+        "then to no password."
+    ),
+)
 @click.pass_obj
-def send(ctx, wallet_name, address, amount, fee_rate, password):
-    """Send BTC to an address."""
-    run_tool(ctx, lambda: handle_password_retry(
-        btc_send,
-        {"wallet_name": wallet_name, "address": address, "amount": amount,
-         "fee_rate": fee_rate, "password": password},
-    ))
+def send(ctx, wallet_name, address, amount, fee_rate, password_stdin):
+    """Send BTC to an address. If the wallet mnemonic is encrypted, a password is required."""
+    password = resolve_secret(
+        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+    )
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            btc_send,
+            {
+                "wallet_name": wallet_name,
+                "address": address,
+                "amount": amount,
+                "fee_rate": fee_rate,
+                "password": password,
+            },
+        ),
+    )

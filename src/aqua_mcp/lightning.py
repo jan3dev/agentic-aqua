@@ -1,11 +1,21 @@
 """Lightning abstraction layer for unified send/receive interface."""
 
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, UTC
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from typing import Optional
 
 from .ankara import AnkaraClient
-from .boltz import BoltzClient, MIN_SWAP_AMOUNT_SATS as BOLTZ_MIN_SATS, MAX_SWAP_AMOUNT_SATS as BOLTZ_MAX_SATS, decode_bolt11_amount_sats, generate_keypair
+from .boltz import (
+    MAX_SWAP_AMOUNT_SATS as BOLTZ_MAX_SATS,
+)
+from .boltz import (
+    MIN_SWAP_AMOUNT_SATS as BOLTZ_MIN_SATS,
+)
+from .boltz import (
+    BoltzClient,
+    decode_bolt11_amount_sats,
+    generate_keypair,
+)
 
 # Boltz API status string -> local lifecycle status (pending | processing | completed | failed)
 _BOLTZ_STATUS_MAP = {
@@ -53,8 +63,12 @@ class LightningSwap:
         """Reconstruct from dict with backward compatibility."""
         data = {**data}
         for field_name in [
-            "receive_address", "preimage", "lockup_txid", "claim_txid",
-            "refund_private_key", "timeout_block_height"
+            "receive_address",
+            "preimage",
+            "lockup_txid",
+            "claim_txid",
+            "refund_private_key",
+            "timeout_block_height",
         ]:
             data.setdefault(field_name, None)
         return cls(**data)
@@ -90,13 +104,9 @@ class LightningManager:
             LightningSwap with pending status
         """
         if amount < ANKARA_MIN_SATS:
-            raise ValueError(
-                f"Amount {amount} sats is below minimum ({ANKARA_MIN_SATS} sats)"
-            )
+            raise ValueError(f"Amount {amount} sats is below minimum ({ANKARA_MIN_SATS} sats)")
         if amount > ANKARA_MAX_SATS:
-            raise ValueError(
-                f"Amount {amount} sats exceeds maximum ({ANKARA_MAX_SATS} sats)"
-            )
+            raise ValueError(f"Amount {amount} sats exceeds maximum ({ANKARA_MAX_SATS} sats)")
 
         wallet_data = self.storage.load_wallet(wallet_name)
         if not wallet_data:
@@ -318,7 +328,11 @@ class LightningManager:
                 try:
                     details = client.get_claim_details(swap_id)
                     preimage = details.get("preimage")
-                    claim_txid = details.get("claimTxid") or details.get("transactionId") or details.get("transaction_id")
+                    claim_txid = (
+                        details.get("claimTxid")
+                        or details.get("transactionId")
+                        or details.get("transaction_id")
+                    )
                     if preimage:
                         swap.preimage = preimage
                     if claim_txid:

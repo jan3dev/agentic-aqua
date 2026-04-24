@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from typing import Optional
+
 import lwk
 
 from .assets import lookup_asset, resolve_asset_name
@@ -11,6 +12,7 @@ from .storage import Storage, WalletData
 @dataclass
 class Balance:
     """Wallet balance."""
+
     asset_id: str
     asset_name: str
     ticker: str
@@ -21,7 +23,7 @@ class Balance:
     @property
     def value(self) -> float:
         """Human-readable amount (e.g. 100_000_000 sats with precision=8 -> 1.0)."""
-        return self.amount / (10 ** self.precision)
+        return self.amount / (10**self.precision)
 
     def to_dict(self) -> dict:
         d = {
@@ -40,9 +42,10 @@ class Balance:
 @dataclass
 class Address:
     """Wallet address."""
+
     address: str
     index: int
-    
+
     def to_dict(self) -> dict:
         return {
             "address": self.address,
@@ -53,12 +56,13 @@ class Address:
 @dataclass
 class Transaction:
     """Transaction info."""
+
     txid: str
     height: Optional[int]
     timestamp: Optional[int]
     balance: dict[str, int]  # asset_id -> amount change
     fee: int
-    
+
     def to_dict(self) -> dict:
         return {
             "txid": self.txid,
@@ -183,9 +187,7 @@ class WalletManager:
         if wallet.encrypted_mnemonic:
             needs_password = self.storage.is_mnemonic_encrypted(wallet.encrypted_mnemonic)
             if not needs_password or password:
-                mnemonic = self.storage.retrieve_mnemonic(
-                    wallet.encrypted_mnemonic, password
-                )
+                mnemonic = self.storage.retrieve_mnemonic(wallet.encrypted_mnemonic, password)
                 net = self._get_network(wallet.network)
                 lwk_mnemonic = lwk.Mnemonic(mnemonic)
                 self._signers[wallet_name] = lwk.Signer(lwk_mnemonic, net)
@@ -232,7 +234,7 @@ class WalletManager:
 
         policy_asset = self._get_policy_asset(wallet.network)
         balances = []
-        
+
         for asset_id, amount in raw_balance.items():
             info = lookup_asset(asset_id, wallet.network)
             if info:
@@ -245,14 +247,16 @@ class WalletManager:
                 ticker = "L-BTC" if asset_id == policy_asset else asset_id[:8] + "..."
                 logo = None
                 precision = 8  # Default for Liquid assets
-            balances.append(Balance(
-                asset_id=asset_id,
-                asset_name=name,
-                ticker=ticker,
-                amount=amount,
-                precision=precision,
-                logo=logo,
-            ))
+            balances.append(
+                Balance(
+                    asset_id=asset_id,
+                    asset_name=name,
+                    ticker=ticker,
+                    amount=amount,
+                    precision=precision,
+                    logo=logo,
+                )
+            )
 
         return balances
 
@@ -292,14 +296,16 @@ class WalletManager:
             for asset_id, amount in tx.balance().items():
                 ticker = resolve_asset_name(asset_id, wallet.network)
                 balance[ticker] = {"asset_id": asset_id, "amount": amount}
-            
-            result.append(Transaction(
-                txid=str(tx.txid()),
-                height=tx.height(),
-                timestamp=tx.timestamp(),
-                balance=balance,
-                fee=tx.fee() or 0,
-            ))
+
+            result.append(
+                Transaction(
+                    txid=str(tx.txid()),
+                    height=tx.height(),
+                    timestamp=tx.timestamp(),
+                    balance=balance,
+                    fee=tx.fee() or 0,
+                )
+            )
 
         return result
 
@@ -350,7 +356,7 @@ class WalletManager:
         unsigned_pset = builder.finish(wollet)
         signed_pset = signer.sign(unsigned_pset)
         tx = signed_pset.finalize()
-        
+
         # Broadcast
         txid = client.broadcast(tx)
         return str(txid)

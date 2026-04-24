@@ -11,6 +11,7 @@ _project_root = Path(__file__).resolve().parent.parent.parent.parent
 load_dotenv(_project_root / ".env")
 
 from .commands import register_commands  # noqa: E402
+
 # Default to WARNING so tool-level INFO logs don't spam stderr in CLI mode
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 
@@ -36,7 +37,6 @@ class AquaContext:
 @click.pass_context
 def cli(ctx, fmt, verbose):
     """AQUA wallet CLI — manage Bitcoin, Liquid, and Lightning wallets."""
-    ctx.ensure_object(dict)
     ctx.obj = AquaContext(fmt=fmt, verbose=verbose)
     if verbose:
         logging.getLogger().setLevel(logging.INFO)

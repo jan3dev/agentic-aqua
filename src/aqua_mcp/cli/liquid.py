@@ -13,7 +13,13 @@ from ..tools import (
     lw_tx_status,
 )
 from .output import run_tool
-from .password import handle_password_retry
+from .password import handle_password_retry, resolve_secret
+
+
+def _index_non_negative(ctx, param, value):
+    if value is not None and value < 0:
+        raise click.BadParameter("index must be non-negative", param=param, ctx=ctx)
+    return value
 
 
 @click.group()
@@ -32,7 +38,13 @@ def balance(ctx, wallet_name):
 
 @liquid.command("address")
 @click.option("--wallet-name", default="default", show_default=True, help="Name of the wallet.")
-@click.option("--index", type=int, default=None, help="Specific address index.")
+@click.option(
+    "--index",
+    type=int,
+    default=None,
+    callback=_index_non_negative,
+    help="Specific address index.",
+)
 @click.pass_obj
 def address(ctx, wallet_name, index):
     """Generate a Liquid receive address."""
@@ -41,7 +53,13 @@ def address(ctx, wallet_name, index):
 
 @liquid.command("transactions")
 @click.option("--wallet-name", default="default", show_default=True, help="Name of the wallet.")
-@click.option("--limit", type=int, default=10, show_default=True, help="Max transactions.")
+@click.option(
+    "--limit",
+    type=click.IntRange(min=1),
+    default=10,
+    show_default=True,
+    help="Max transactions.",
+)
 @click.pass_obj
 def transactions(ctx, wallet_name, limit):
     """List Liquid transaction history."""
@@ -51,16 +69,41 @@ def transactions(ctx, wallet_name, limit):
 @liquid.command("send")
 @click.option("--wallet-name", required=True, help="Name of the wallet.")
 @click.option("--address", required=True, help="Destination Liquid address.")
-@click.option("--amount", required=True, type=int, help="Amount in satoshis.")
-@click.option("--password", default=None, help="Password to decrypt mnemonic.")
+@click.option(
+    "--amount",
+    required=True,
+    type=click.IntRange(min=1),
+    help="Amount in satoshis (must be >= 1).",
+)
+@click.option(
+    "--password-stdin",
+    "password_stdin",
+    is_flag=True,
+    default=False,
+    help=(
+        "Read wallet password from stdin (piped) or prompt interactively. "
+        "Without this flag, falls back to the AQUA_PASSWORD environment variable, "
+        "then to no password."
+    ),
+)
 @click.pass_obj
-def send(ctx, wallet_name, address, amount, password):
+def send(ctx, wallet_name, address, amount, password_stdin):
     """Send L-BTC to an address."""
-    run_tool(ctx, lambda: handle_password_retry(
-        lw_send,
-        {"wallet_name": wallet_name, "address": address,
-         "amount": amount, "password": password}
-    ))
+    password = resolve_secret(
+        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+    )
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            lw_send,
+            {
+                "wallet_name": wallet_name,
+                "address": address,
+                "amount": amount,
+                "password": password,
+            },
+        ),
+    )
 
 
 @liquid.command("send-asset")
@@ -73,10 +116,22 @@ def send(ctx, wallet_name, address, amount, password):
     default=None,
     help="Asset ticker (case-insensitive, e.g. USDt, DePix). Resolved via the registry.",
 )
-@click.option("--password", default=None, help="Password to decrypt mnemonic.")
+@click.option(
+    "--password-stdin",
+    "password_stdin",
+    is_flag=True,
+    default=False,
+    help=(
+        "Read wallet password from stdin (piped) or prompt interactively. "
+        "Without this flag, falls back to the AQUA_PASSWORD environment variable, "
+        "then to no password."
+    ),
+)
 @click.pass_obj
-def send_asset(ctx, wallet_name, address, amount, asset_id, asset_ticker, password):
+def send_asset(ctx, wallet_name, address, amount, asset_id, asset_ticker, password_stdin):
     """Send a Liquid asset to an address."""
+    if amount <= 0:
+        raise click.UsageError("Amount must be a positive integer.")
     if bool(asset_id) == bool(asset_ticker):
         raise click.UsageError("Provide exactly one of --asset-id or --asset-ticker.")
     if asset_ticker:
@@ -90,12 +145,22 @@ def send_asset(ctx, wallet_name, address, amount, asset_id, asset_ticker, passwo
                 "Run 'aqua-cli liquid assets' to list known tickers."
             )
         asset_id = info.asset_id
-    run_tool(ctx, lambda: handle_password_retry(
-        lw_send_asset,
-        {"wallet_name": wallet_name, "address": address,
-         "amount": amount, "asset_id": asset_id,
-         "password": password},
-    ))
+    password = resolve_secret(
+        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+    )
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            lw_send_asset,
+            {
+                "wallet_name": wallet_name,
+                "address": address,
+                "amount": amount,
+                "asset_id": asset_id,
+                "password": password,
+            },
+        ),
+    )
 
 
 @liquid.command("assets")
@@ -110,19 +175,22 @@ def send_asset(ctx, wallet_name, address, amount, asset_id, asset_ticker, passwo
 def assets(ctx, network):
     """List known Liquid assets (asset_id, ticker, name, precision)."""
     registry = MAINNET_ASSETS if network == "mainnet" else TESTNET_ASSETS
-    run_tool(ctx, lambda: {
-        "network": network,
-        "count": len(registry),
-        "assets": [
-            {
-                "asset_id": info.asset_id,
-                "ticker": info.ticker,
-                "name": info.name,
-                "precision": info.precision,
-            }
-            for info in registry.values()
-        ],
-    })
+    run_tool(
+        ctx,
+        lambda: {
+            "network": network,
+            "count": len(registry),
+            "assets": [
+                {
+                    "asset_id": info.asset_id,
+                    "ticker": info.ticker,
+                    "name": info.name,
+                    "precision": info.precision,
+                }
+                for info in registry.values()
+            ],
+        },
+    )
 
 
 @liquid.command("tx-status")

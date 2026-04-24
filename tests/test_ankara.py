@@ -4,7 +4,6 @@ import json
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from datetime import datetime, UTC
 
 import pytest
 
@@ -255,6 +254,10 @@ class TestAnkaraStoragePersistence:
         assert "swap_1" in swaps
         assert "swap_2" in swaps
 
+    @pytest.mark.skipif(
+        __import__("sys").platform == "win32",
+        reason="POSIX file permissions not enforced on Windows",
+    )
     def test_swap_file_permissions(self, storage):
         """Ankara swap files have restricted permissions (0o600)."""
         swap = AnkaraSwapInfo(
