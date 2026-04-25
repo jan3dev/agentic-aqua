@@ -1,6 +1,6 @@
 # Agentic AQUA
 
-MCP server for managing **Liquid Network** and **Bitcoin** wallets through AI assistants like Claude. One mnemonic backs both networks (unified wallet).
+MCP server and CLI for managing **Liquid Network** and **Bitcoin** wallets through AI assistants like Claude. One mnemonic backs both networks (unified wallet). Also can operates on Lightning network via Boltz swaps.
 
 ## Features
 
@@ -136,6 +136,100 @@ Once connected, you can ask Claude to:
 | `lightning_receive` | Generate a Lightning invoice to receive L-BTC (100–25,000,000 sats) |
 | `lightning_send` | Pay a Lightning invoice using L-BTC via Boltz (~0.1% fee) |
 | `lightning_transaction_status` | Check status of a Lightning swap (send or receive) |
+
+## CLI
+
+Agentic AQUA also ships with a Click-based CLI (`aqua-cli`) for direct, scriptable wallet operations. It exposes the same operations as the MCP tools.
+
+```bash
+# Discover commands
+aqua-cli --help
+aqua-cli wallet --help
+aqua-cli btc --help
+aqua-cli liquid --help
+aqua-cli lightning --help
+
+# Wallet management
+aqua-cli wallet generate-mnemonic
+aqua-cli wallet import-mnemonic --wallet-name default --network mainnet
+aqua-cli wallet list
+aqua-cli wallet export-descriptor --wallet-name default
+aqua-cli wallet delete --wallet-name old
+
+# Balances
+aqua-cli balance                              # unified (BTC + Liquid)
+aqua-cli btc balance --wallet-name default
+aqua-cli liquid balance --wallet-name default
+
+# Receive addresses
+aqua-cli btc address
+aqua-cli liquid address
+
+# Send (--wallet-name is required for on-chain sends)
+aqua-cli btc send    --wallet-name default --address bc1... --amount 10000
+aqua-cli liquid send --wallet-name default --address lq1... --amount 50000
+aqua-cli liquid send-asset --wallet-name default --address lq1... --amount 1000000 --asset-id <asset_id>
+# (or use --asset-ticker USDt instead of --asset-id)
+
+# Transaction history & status
+aqua-cli btc transactions
+aqua-cli liquid transactions
+aqua-cli liquid tx-status --tx <txid|explorer_url>
+
+# Lightning (L-BTC via Boltz / Ankara)
+aqua-cli lightning receive --amount 50000
+aqua-cli lightning send --invoice lnbc...
+aqua-cli lightning status --swap-id <id>
+
+# Run as MCP stdio server
+aqua-cli serve   # equivalent to `aqua`
+```
+
+Output defaults to a human-readable table on the terminal and JSON when piped. Force a format with `--format json` or `--format pretty`.
+
+### Loading mnemonics safely (env vars from a text file)
+
+Avoid pasting mnemonics into shell prompts or chat with an AI agent — both shell history and agent transcripts may persist them. The recommended workflow is to keep secrets in a local text file with restricted permissions and load them as environment variables.
+
+1. Create `~/.aqua/secrets.env` (or any path you prefer) and lock it down:
+
+   ```bash
+   mkdir -p ~/.aqua
+   cat > ~/.aqua/secrets.env <<'EOF'
+   AQUA_MNEMONIC="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+   AQUA_PASSWORD="Wild-red-dolphin-386"
+   EOF
+   chmod 600 ~/.aqua/secrets.env
+   ```
+
+2. Source it before running CLI commands and clear it afterwards:
+
+   ```bash
+   set -a; . ~/.aqua/secrets.env; set +a
+   aqua-cli wallet import-mnemonic --wallet-name default --network mainnet
+   unset AQUA_MNEMONIC AQUA_PASSWORD
+   ```
+
+   `aqua-cli` also auto-loads a `.env` file from the project root via `python-dotenv` if you prefer a per-project file.
+
+The CLI honors these variables out of the box:
+
+| Variable | Used by |
+|----------|---------|
+| `AQUA_MNEMONIC` | `wallet import-mnemonic` |
+| `AQUA_PASSWORD` | `wallet import-mnemonic`, `btc send`, `liquid send`, `liquid send-asset`, `lightning send`, `lightning receive` |
+| `AQUA_<OPTION>` | Any CLI option (Click `auto_envvar_prefix="AQUA"`) — e.g. `AQUA_WALLET_NAME=default` |
+
+If you would rather pipe secrets from a password manager, every secret-bearing command also accepts `--mnemonic-stdin` / `--password-stdin`:
+
+```bash
+pass show crypto/aqua-mnemonic | aqua-cli wallet import-mnemonic --mnemonic-stdin
+```
+
+Tips:
+- Never commit `.env` or `secrets.env` files (the project's `.gitignore` already excludes them).
+- Prefer `set -a; . file; set +a` over `export $(cat file)` — the former tolerates spaces and quotes inside values.
+- After importing a wallet, the mnemonic is no longer needed for day-to-day operations; only `AQUA_PASSWORD` is used to sign transactions.
 
 ## Configuration
 
