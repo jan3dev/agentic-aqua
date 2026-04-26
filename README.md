@@ -139,50 +139,51 @@ Once connected, you can ask Claude to:
 
 ## CLI
 
-Agentic AQUA also ships with a Click-based CLI (`aqua-cli`) for direct, scriptable wallet operations. It exposes the same operations as the MCP tools.
+Agentic AQUA also ships with a Click-based CLI (`aqua`) for direct, scriptable wallet operations. It exposes the same operations as the MCP tools.
 
 ```bash
 # Discover commands
-aqua-cli --help
-aqua-cli wallet --help
-aqua-cli btc --help
-aqua-cli liquid --help
-aqua-cli lightning --help
+aqua --help
+aqua wallet --help
+aqua btc --help
+aqua liquid --help
+aqua lightning --help
 
 # Wallet management
-aqua-cli wallet generate-mnemonic
-aqua-cli wallet import-mnemonic --wallet-name default --network mainnet
-aqua-cli wallet list
-aqua-cli wallet export-descriptor --wallet-name default
-aqua-cli wallet delete --wallet-name old
+aqua wallet generate-mnemonic
+aqua wallet import-mnemonic --wallet-name default --network mainnet
+aqua wallet list
+aqua wallet export-descriptor --wallet-name default
+aqua wallet delete --wallet-name old
 
 # Balances
-aqua-cli balance                              # unified (BTC + Liquid)
-aqua-cli btc balance --wallet-name default
-aqua-cli liquid balance --wallet-name default
+aqua balance                              # unified (BTC + Liquid)
+aqua btc balance --wallet-name default
+aqua liquid balance --wallet-name default
 
 # Receive addresses
-aqua-cli btc address
-aqua-cli liquid address
+aqua btc address
+aqua liquid address
 
 # Send (--wallet-name is required for on-chain sends)
-aqua-cli btc send    --wallet-name default --address bc1... --amount 10000
-aqua-cli liquid send --wallet-name default --address lq1... --amount 50000
-aqua-cli liquid send-asset --wallet-name default --address lq1... --amount 1000000 --asset-id <asset_id>
+aqua btc send    --wallet-name default --address bc1... --amount 10000
+aqua liquid send --wallet-name default --address lq1... --amount 50000
+aqua liquid send-asset --wallet-name default --address lq1... --amount 1000000 --asset-id <asset_id>
 # (or use --asset-ticker USDt instead of --asset-id)
 
 # Transaction history & status
-aqua-cli btc transactions
-aqua-cli liquid transactions
-aqua-cli liquid tx-status --tx <txid|explorer_url>
+aqua btc transactions
+aqua liquid transactions
+aqua liquid tx-status --tx <txid|explorer_url>
 
 # Lightning (L-BTC via Boltz / Ankara)
-aqua-cli lightning receive --amount 50000
-aqua-cli lightning send --invoice lnbc...
-aqua-cli lightning status --swap-id <id>
+aqua lightning receive --amount 50000
+aqua lightning send --invoice lnbc...
+aqua lightning status --swap-id <id>
 
 # Run as MCP stdio server
-aqua-cli serve   # equivalent to `aqua`
+aqua serve       # recommended
+aqua-mcp         # direct MCP entrypoint
 ```
 
 Output defaults to a human-readable table on the terminal and JSON when piped. Force a format with `--format json` or `--format pretty`.

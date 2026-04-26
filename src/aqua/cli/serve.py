@@ -7,7 +7,7 @@ import click
 
 @click.command("serve")
 def serve():
-    """Start the MCP server over stdio."""
+    """Start the MCP server over stdio (`aqua serve` or `aqua-mcp`)."""
     from ..server import run_server
 
     asyncio.run(run_server())
