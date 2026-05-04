@@ -17,11 +17,7 @@ _XPUB_RE = re.compile(
 
 
 def _extract_xpub_metadata(descriptor: str) -> dict:
-    """Pull xpub, fingerprint, derivation path from a descriptor string.
-
-    Supports both '[fp/84'/0'/0']xpub.../0/*' and bare 'xpub.../0/*' forms.
-    Returns dict with keys xpub, fingerprint, derivation_path; missing keys are None.
-    """
+    """Return xpub, fingerprint, derivation_path from a descriptor; missing keys are None."""
     m = _XPUB_RE.search(descriptor)
     if not m:
         return {"xpub": None, "fingerprint": None, "derivation_path": None}
@@ -35,16 +31,13 @@ def _extract_xpub_metadata(descriptor: str) -> dict:
 
 
 def _derive_change_from_external(external: str) -> str:
-    """Replace the last '/0/*' with '/1/*'.
-
-    Drops any trailing '#checksum' from the result, because the substitution
-    invalidates the original checksum. Raise ValueError if '/0/*' not found.
-    """
+    """Replace last '/0/*' with '/1/*', dropping the now-stale checksum. Raises if '/0/*' absent."""
     if "/0/*" not in external:
         raise ValueError("External descriptor missing '/0/*'; cannot auto-derive change")
     head, _sep, tail = external.rpartition("/0/*")
     derived = head + "/1/*" + tail
     return re.sub(r"#[a-zA-Z0-9]+$", "", derived)
+
 
 ESPLORA_URLS = {
     "mainnet": [
@@ -223,17 +216,7 @@ class BitcoinWalletManager:
         network: str = "mainnet",
         change_descriptor: Optional[str] = None,
     ) -> WalletData:
-        """Import a watch-only Bitcoin wallet from a BIP84 external descriptor.
-
-        If change_descriptor is omitted, derives it from external by replacing
-        the last '/0/*' with '/1/*'. Both descriptors are validated by parsing
-        them through bdk.Descriptor().
-
-        If wallet_name does not exist, creates a new wallet (watch_only=True,
-        descriptor=""). If it exists and has no btc_descriptor, adds Bitcoin
-        side without modifying Liquid. If it exists with a btc_descriptor,
-        raises ValueError.
-        """
+        """Import a watch-only BIP84 Bitcoin wallet; adds BTC to an existing Liquid-only wallet if needed."""
         net = _network_bdk(network)
 
         ext_desc = bdk.Descriptor(descriptor, net)
@@ -253,6 +236,7 @@ class BitcoinWalletManager:
         existing = self.storage.load_wallet(wallet_name)
         if existing is not None and existing.btc_descriptor:
             raise ValueError(f"Wallet '{wallet_name}' already has a Bitcoin descriptor")
+        # Reachable via library layer when LiquidWalletManager.import_mnemonic is called without btc_manager.create_wallet.
         if existing is not None and existing.encrypted_mnemonic:
             raise ValueError(
                 f"Wallet '{wallet_name}' has a mnemonic; the Bitcoin descriptor is derived "
@@ -288,14 +272,7 @@ class BitcoinWalletManager:
         return wallet_data
 
     def export_descriptor(self, wallet_name: str) -> dict:
-        """Export Bitcoin descriptors + xpub metadata.
-
-        Returns:
-            wallet_name, network, external_descriptor, change_descriptor,
-            xpub (or None), fingerprint (or None), derivation_path (or None).
-
-        Raises ValueError if wallet not found or has no Bitcoin descriptors.
-        """
+        """Return external + change descriptors and parsed xpub metadata for a wallet."""
         wallet_data = self.storage.load_wallet(wallet_name)
         if wallet_data is None:
             raise ValueError(f"Wallet '{wallet_name}' not found")

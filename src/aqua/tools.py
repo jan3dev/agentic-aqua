@@ -473,32 +473,7 @@ def btc_import_descriptor(
     network: str = "mainnet",
     change_descriptor: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Import a watch-only Bitcoin (BDK) wallet from a BIP84 descriptor.
-
-    IMPORTANT: This imports ONLY the Bitcoin on-chain side. The Liquid CT
-    descriptor cannot be derived from the Bitcoin xpub:
-      - Bitcoin uses derivation path m/84'/0'/0'
-      - Liquid uses derivation path m/84'/1776'/0'
-      - Liquid additionally requires the SLIP-77 master blinding key, which
-        is derived from the seed (private), not from any xpub.
-
-    To enable Liquid for the same wallet, separately import its CT
-    descriptor with `lw_import_descriptor`.
-
-    Args:
-        descriptor: BIP84 external descriptor (with or without [fp/path] prefix).
-        wallet_name: Wallet to attach the descriptor to. May refer to an
-            existing Liquid-only wallet (Bitcoin will be added without
-            touching Liquid). Errors if the wallet already has Bitcoin set.
-        network: "mainnet" or "testnet". Default: "mainnet".
-        change_descriptor: Optional change descriptor. If omitted, derived
-            from `descriptor` by replacing /0/* with /1/*.
-
-    Returns:
-        wallet_name, network, btc_descriptor, btc_change_descriptor,
-        watch_only=True, message (advising Liquid follow-up).
-    """
+    """Import a watch-only BIP84 Bitcoin wallet. Liquid side must be imported separately."""
     btc = get_btc_manager()
     w = btc.import_descriptor(descriptor, wallet_name, network, change_descriptor)
     return {
@@ -518,20 +493,7 @@ def btc_import_descriptor(
 
 
 def btc_export_descriptor(wallet_name: str = "default") -> dict[str, Any]:
-    """
-    Export the Bitcoin (BDK) BIP84 descriptors and xpub for a wallet.
-
-    NOTE: Returns ONLY the Bitcoin on-chain descriptor. To export the
-    Liquid CT descriptor (separate xpub on m/84'/1776'/0' + SLIP-77
-    blinding key), use `lw_export_descriptor`.
-
-    Args:
-        wallet_name: Wallet name. Default: "default".
-
-    Returns:
-        wallet_name, network, external_descriptor, change_descriptor,
-        xpub, fingerprint, derivation_path, note.
-    """
+    """Export BIP84 descriptors and xpub metadata. Liquid CT descriptor requires lw_export_descriptor."""
     btc = get_btc_manager()
     data = btc.export_descriptor(wallet_name)
     data["note"] = (
