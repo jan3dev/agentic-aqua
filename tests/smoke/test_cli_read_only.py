@@ -19,6 +19,8 @@ from aqua.cli.main import cli
 
 DEFAULT_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 SIGNER_MNEMONIC = os.getenv("SIGNER_MNEMONIC", DEFAULT_MNEMONIC)
+CT_DESCRIPTOR_LIQUID = os.getenv("CT_DESCRIPTOR_LIQUID")
+BTC_DESCRIPTOR = os.getenv("BTC_DESCRIPTOR")
 
 
 @pytest.fixture(scope="module")
@@ -148,6 +150,15 @@ class TestSmokeExportDescriptor:
         assert result["descriptor"].startswith("ct(")
 
 
+class TestSmokeExportBtcDescriptor:
+    def test_export_btc_descriptor(self, cli_runner, wallet_name):
+        """Export BTC descriptor returns external + change descriptors and xpub."""
+        result = cli_runner("btc", "export-descriptor", "--wallet-name", wallet_name)
+        assert "external_descriptor" in result
+        assert "change_descriptor" in result
+        assert result["external_descriptor"].startswith("wpkh(")
+
+
 class TestSmokeLightningReceive:
     def test_lightning_receive(self, cli_runner, wallet_name):
         """Generate a Lightning invoice for 500 sats."""
@@ -241,6 +252,46 @@ class TestSmokeSeedRestore:
 		assert restored_address == first_address
 
 		runner.invoke(cli, ["--format", "json", "wallet", "delete", "--wallet-name", name, "--yes"])
+
+
+class TestSmokeImportLiquidDescriptor:
+    def test_import_liquid_descriptor(self):
+        """Import a Liquid watch-only wallet from CT_DESCRIPTOR_LIQUID env var."""
+        if not CT_DESCRIPTOR_LIQUID:
+            pytest.skip("CT_DESCRIPTOR_LIQUID not set")
+        name = f"smoke_liq_desc_{int(time.time())}"
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "liquid", "import-descriptor",
+             "--descriptor", CT_DESCRIPTOR_LIQUID, "--wallet-name", name],
+        )
+        assert result.exit_code == 0, result.stdout
+        data = json.loads(result.stdout)
+        assert data["wallet_name"] == name
+        assert data["watch_only"] is True
+
+        runner.invoke(cli, ["--format", "json", "wallet", "delete", "--wallet-name", name, "--yes"])
+
+
+class TestSmokeImportBtcDescriptor:
+    def test_import_btc_descriptor(self):
+        """Import a Bitcoin watch-only wallet from BTC_DESCRIPTOR env var."""
+        if not BTC_DESCRIPTOR:
+            pytest.skip("BTC_DESCRIPTOR not set")
+        name = f"smoke_btc_desc_{int(time.time())}"
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "btc", "import-descriptor",
+             "--descriptor", BTC_DESCRIPTOR, "--wallet-name", name],
+        )
+        assert result.exit_code == 0, result.stdout
+        data = json.loads(result.stdout)
+        assert data["wallet_name"] == name
+        assert data["watch_only"] is True
+
+        runner.invoke(cli, ["--format", "json", "wallet", "delete", "--wallet-name", name, "--yes"])
 
 
 class TestSmokeCleanup:
