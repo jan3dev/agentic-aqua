@@ -356,34 +356,6 @@ class TestWalletCommands:
         data = json.loads(result.output)
         assert data["count"] >= 1
 
-    def test_export_descriptor(self, runner):
-        _import_wallet(runner)
-        result = runner.invoke(cli, ["--format", "json", "wallet", "export-descriptor"])
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert "descriptor" in data
-
-    def test_import_descriptor(self, runner):
-        _import_wallet(runner)
-        exp = runner.invoke(cli, ["--format", "json", "wallet", "export-descriptor"])
-        descriptor = json.loads(exp.output)["descriptor"]
-        result = runner.invoke(
-            cli,
-            [
-                "--format",
-                "json",
-                "wallet",
-                "import-descriptor",
-                "--descriptor",
-                descriptor,
-                "--wallet-name",
-                "watch_only",
-            ],
-        )
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert data["watch_only"] is True
-
     def test_delete_wallet_with_yes(self, runner):
         _import_wallet(runner)
         result = runner.invoke(
@@ -585,6 +557,49 @@ class TestLiquidCommands:
         assert "positive" in result.output.lower()
 
 
+# Liquid descriptor commands
+
+
+class TestLiquidDescriptorCli:
+    def test_export_descriptor(self, runner):
+        _import_wallet(runner)
+        result = runner.invoke(cli, ["--format", "json", "liquid", "export-descriptor"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "descriptor" in data
+
+    def test_import_descriptor(self, runner):
+        _import_wallet(runner)
+        exp = runner.invoke(cli, ["--format", "json", "liquid", "export-descriptor"])
+        descriptor = json.loads(exp.output)["descriptor"]
+        result = runner.invoke(
+            cli,
+            [
+                "--format",
+                "json",
+                "liquid",
+                "import-descriptor",
+                "--descriptor",
+                descriptor,
+                "--wallet-name",
+                "watch_only",
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["watch_only"] is True
+
+    def test_wallet_import_descriptor_removed(self, runner):
+        result = runner.invoke(cli, ["wallet", "import-descriptor", "--help"])
+        assert result.exit_code != 0
+        assert "no such command" in result.output.lower()
+
+    def test_wallet_export_descriptor_removed(self, runner):
+        result = runner.invoke(cli, ["wallet", "export-descriptor", "--help"])
+        assert result.exit_code != 0
+        assert "no such command" in result.output.lower()
+
+
 # BTC commands
 
 
@@ -638,6 +653,96 @@ class TestBtcCommands:
         assert result.exit_code == 0, result.output
         mock_send.assert_called_once()
         assert mock_send.call_args.kwargs["password"] == "s3cret"
+
+
+# BTC descriptor commands
+
+
+class TestBtcDescriptorCli:
+    def test_btc_export_descriptor(self, runner):
+        _import_wallet(runner)
+        result = runner.invoke(cli, ["--format", "json", "btc", "export-descriptor"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        for key in (
+            "external_descriptor", "change_descriptor", "xpub",
+            "fingerprint", "derivation_path", "note",
+        ):
+            assert key in data
+
+    def test_btc_export_descriptor_includes_note(self, runner):
+        _import_wallet(runner)
+        result = runner.invoke(cli, ["--format", "json", "btc", "export-descriptor"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "lw_export_descriptor" in data["note"]
+
+    def test_btc_import_descriptor_minimal(self, runner):
+        _import_wallet(runner)
+        exp = runner.invoke(cli, ["--format", "json", "btc", "export-descriptor"])
+        ext_descriptor = json.loads(exp.output)["external_descriptor"]
+        result = runner.invoke(
+            cli,
+            [
+                "--format",
+                "json",
+                "btc",
+                "import-descriptor",
+                "--descriptor",
+                ext_descriptor,
+                "--wallet-name",
+                "watch_btc",
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["watch_only"] is True
+
+    def test_btc_import_descriptor_explicit_change(self, runner):
+        _import_wallet(runner)
+        exp = runner.invoke(cli, ["--format", "json", "btc", "export-descriptor"])
+        exp_data = json.loads(exp.output)
+        ext_descriptor = exp_data["external_descriptor"]
+        change_descriptor = exp_data["change_descriptor"]
+        result = runner.invoke(
+            cli,
+            [
+                "--format",
+                "json",
+                "btc",
+                "import-descriptor",
+                "--descriptor",
+                ext_descriptor,
+                "--change-descriptor",
+                change_descriptor,
+                "--wallet-name",
+                "watch_btc2",
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["watch_only"] is True
+
+    def test_btc_import_descriptor_missing_descriptor_fails(self, runner):
+        result = runner.invoke(
+            cli,
+            ["btc", "import-descriptor", "--wallet-name", "watch_btc"],
+        )
+        assert result.exit_code == 2
+
+    def test_btc_import_descriptor_help_mentions_liquid(self, runner):
+        result = runner.invoke(cli, ["btc", "import-descriptor", "--help"])
+        assert result.exit_code == 0
+        # Click may wrap long lines; normalize whitespace before checking.
+        normalized = " ".join(result.output.split())
+        assert "aqua liquid import-descriptor" in normalized
+
+    def test_btc_export_descriptor_help_mentions_liquid(self, runner):
+        result = runner.invoke(cli, ["btc", "export-descriptor", "--help"])
+        assert result.exit_code == 0
+        # Click may wrap long lines; normalize whitespace before checking.
+        normalized = " ".join(result.output.split())
+        assert "aqua liquid export-descriptor" in normalized
 
 
 # Lightning commands

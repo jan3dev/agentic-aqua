@@ -5,6 +5,8 @@ import click
 from ..tools import (
     btc_address,
     btc_balance,
+    btc_export_descriptor,
+    btc_import_descriptor,
     btc_send,
     btc_transactions,
 )
@@ -79,3 +81,49 @@ def send(ctx, wallet_name, address, amount, fee_rate, password_stdin):
             },
         ),
     )
+
+
+@btc.command("import-descriptor")
+@click.option(
+    "--descriptor",
+    required=True,
+    help="BIP84 external descriptor (with or without [fp/path] prefix).",
+)
+@click.option(
+    "--change-descriptor",
+    default=None,
+    help="Change descriptor. Auto-derived from external if omitted (replaces /0/* with /1/*).",
+)
+@click.option("--wallet-name", required=True, help="Name for the wallet.")
+@click.option(
+    "--network",
+    type=click.Choice(["mainnet", "testnet"]),
+    default="mainnet",
+    show_default=True,
+    help="Network to use.",
+)
+@click.pass_obj
+def import_descriptor(ctx, descriptor, change_descriptor, wallet_name, network):
+    """Import a watch-only Bitcoin wallet from a BIP84 descriptor.
+
+    Note: imports Bitcoin only. For Liquid watch-only, separately run
+    `aqua liquid import-descriptor`. The Liquid descriptor cannot be derived
+    from the Bitcoin xpub (different derivation paths + SLIP-77 blinding key
+    required).
+    """
+    run_tool(
+        ctx,
+        lambda: btc_import_descriptor(descriptor, wallet_name, network, change_descriptor),
+    )
+
+
+@btc.command("export-descriptor")
+@click.option("--wallet-name", default="default", show_default=True, help="Name of the wallet.")
+@click.pass_obj
+def export_descriptor(ctx, wallet_name):
+    """Export Bitcoin (BDK) descriptors + xpub.
+
+    Note: exports Bitcoin only. For the Liquid CT descriptor of the same
+    wallet, run `aqua liquid export-descriptor`.
+    """
+    run_tool(ctx, lambda: btc_export_descriptor(wallet_name))

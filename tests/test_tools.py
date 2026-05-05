@@ -7,10 +7,14 @@ from unittest.mock import MagicMock, patch
 import lwk
 import pytest
 
+from aqua.bitcoin import BitcoinWalletManager
 from aqua.storage import Storage, WalletData
 from aqua.tools import (
     _manager,
+    btc_export_descriptor,
+    btc_import_descriptor,
     delete_wallet,
+    get_btc_manager,
     get_manager,
     lw_address,
     lw_balance,
@@ -714,6 +718,8 @@ class TestToolRegistry:
             "lightning_send",
             "lightning_transaction_status",
             "delete_wallet",
+            "btc_import_descriptor",
+            "btc_export_descriptor",
         }
         assert set(TOOLS.keys()) == expected
 
@@ -761,7 +767,6 @@ class TestDeleteWallet:
 
     def test_delete_clears_btc_manager_caches(self, isolated_manager):
         """Bitcoin manager caches (_wallets/_persisters/_networks) are cleared."""
-        import aqua.tools as tools_module
         from aqua.tools import get_btc_manager
 
         lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="btccached", network="testnet")
@@ -782,3 +787,102 @@ class TestDeleteWallet:
         result = delete_wallet(wallet_name="success")
         assert result["deleted"] is True
         assert result["wallet_name"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# Helper: bootstrap a real BIP84 descriptor pair via the unified import flow
+# ---------------------------------------------------------------------------
+
+
+def _seed_tool_btc_descriptors(network: str = "mainnet"):
+    """Bootstrap canonical BIP84 ext + change descriptors for tool-layer tests.
+
+    lw_import_mnemonic already calls btc_manager.create_wallet internally,
+    so we only need to call lw_import_mnemonic and then read back the stored
+    descriptors from storage.
+    """
+    lw_import_mnemonic(TEST_MNEMONIC, "seed_btc", network)
+    manager = get_btc_manager()
+    w = manager.storage.load_wallet("seed_btc")
+    return w.btc_descriptor, w.btc_change_descriptor
+
+
+# ---------------------------------------------------------------------------
+# btc_import_descriptor  # Significance: 5 (Essential)
+# ---------------------------------------------------------------------------
+
+
+class TestBtcImportDescriptor:
+    def test_returns_expected_keys(self):
+        """btc_import_descriptor returns all required keys."""
+        ext, chg = _seed_tool_btc_descriptors()
+        result = btc_import_descriptor(
+            descriptor=ext, wallet_name="import_test", change_descriptor=chg
+        )
+
+        assert "wallet_name" in result
+        assert "network" in result
+        assert "btc_descriptor" in result
+        assert "btc_change_descriptor" in result
+        assert "watch_only" in result
+        assert "message" in result
+        assert result["watch_only"] is True
+
+    def test_message_mentions_lw_import_descriptor(self):
+        """The message field advises using lw_import_descriptor for Liquid."""
+        ext, chg = _seed_tool_btc_descriptors()
+        result = btc_import_descriptor(
+            descriptor=ext, wallet_name="msg_test", change_descriptor=chg
+        )
+
+        assert "lw_import_descriptor" in result["message"]
+
+    def test_propagates_value_error(self):
+        """Importing a descriptor into a wallet that already has Bitcoin raises ValueError."""
+        ext, chg = _seed_tool_btc_descriptors()
+        btc_import_descriptor(descriptor=ext, wallet_name="dup_btc", change_descriptor=chg)
+
+        with pytest.raises(ValueError, match="already has a Bitcoin descriptor"):
+            btc_import_descriptor(descriptor=ext, wallet_name="dup_btc", change_descriptor=chg)
+
+
+# ---------------------------------------------------------------------------
+# btc_export_descriptor  # Significance: 5 (Essential)
+# ---------------------------------------------------------------------------
+
+
+class TestBtcExportDescriptor:
+    def test_returns_expected_keys(self):
+        """btc_export_descriptor returns all required keys."""
+        lw_import_mnemonic(TEST_MNEMONIC, "exp_btc", "mainnet")
+
+        result = btc_export_descriptor(wallet_name="exp_btc")
+
+        assert "wallet_name" in result
+        assert "network" in result
+        assert "external_descriptor" in result
+        assert "change_descriptor" in result
+        assert "xpub" in result
+        assert "fingerprint" in result
+        assert "derivation_path" in result
+        assert "note" in result
+
+    def test_note_mentions_lw_export_descriptor(self):
+        """The note field references lw_export_descriptor for Liquid."""
+        lw_import_mnemonic(TEST_MNEMONIC, "note_btc", "mainnet")
+
+        result = btc_export_descriptor(wallet_name="note_btc")
+
+        assert "lw_export_descriptor" in result["note"]
+
+    def test_unknown_wallet_raises(self):
+        """Exporting descriptor for a non-existent wallet raises ValueError matching 'not found'."""
+        with pytest.raises(ValueError, match="not found"):
+            btc_export_descriptor(wallet_name="ghost_btc")
+
+
+# ---------------------------------------------------------------------------
+# TOOLS registry — btc_import_descriptor / btc_export_descriptor
+# ---------------------------------------------------------------------------
+
+

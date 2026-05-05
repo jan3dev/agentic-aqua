@@ -16,7 +16,7 @@ AI Assistant ←→ MCP Server (Python) ←→ LWK (Liquid) ──→ Electrum/E
 
 No local server required. Liquid uses Electrum/Esplora; Bitcoin uses Esplora only. All via Blockstream's public infrastructure.
 
-## Tools (20 total)
+## Tools (22 total)
 
 Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified tools are `unified_*`; Lightning tools are `lightning_*`.
 
@@ -30,6 +30,10 @@ Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified 
 | `lw_import_descriptor` | Import watch-only wallet from CT descriptor | `descriptor`: string, `wallet_name`: string, `network`: optional |
 | `lw_list_wallets` | List all wallets | (none) |
 | `delete_wallet` | Delete a wallet and all its cached data. Agent MUST check balances and confirm with user before calling. Use the `delete_wallet` prompt for the safe workflow. | `wallet_name`: string |
+| `btc_import_descriptor` | Import watch-only Bitcoin wallet from BIP84 descriptor. ONLY Bitcoin — for Liquid use `lw_import_descriptor`. | `descriptor`: string, `wallet_name`: string, `network`: optional, `change_descriptor`: optional |
+| `btc_export_descriptor` | Export Bitcoin BIP84 descriptors + xpub. ONLY Bitcoin — for Liquid use `lw_export_descriptor`. | `wallet_name`: optional |
+
+> ⚠️ The Bitcoin descriptor and the Liquid CT descriptor cannot be derived from each other. Bitcoin uses derivation path `m/84'/0'/0'`; Liquid uses `m/84'/1776'/0'` and additionally requires a SLIP-77 master blinding key derived from the seed. To monitor both networks watch-only, both descriptors must be imported.
 
 ### Wallet Operations (Liquid)
 

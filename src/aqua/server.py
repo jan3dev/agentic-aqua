@@ -39,7 +39,7 @@ TOOL_SCHEMAS = {
         },
     },
     "lw_import_mnemonic": {
-        "description": "Import a wallet from a BIP39 mnemonic phrase",
+        "description": "Import a wallet from a BIP39 mnemonic phrase (creates both Liquid and Bitcoin wallets from the same mnemonic)",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -331,6 +331,58 @@ TOOL_SCHEMAS = {
             "required": ["wallet_name", "address", "amount"],
         },
     },
+    "btc_import_descriptor": {
+        "description": (
+            "Import a watch-only Bitcoin wallet from a BIP84 descriptor. "
+            "ONLY imports Bitcoin — to monitor the same seed's Liquid wallet, "
+            "the user must separately import its CT descriptor with "
+            "lw_import_descriptor (different derivation path + SLIP-77 key)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "descriptor": {
+                    "type": "string",
+                    "description": "BIP84 external descriptor (with or without [fp/path] prefix)",
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Wallet name (may add Bitcoin to an existing Liquid-only wallet)",
+                },
+                "network": {
+                    "type": "string",
+                    "enum": ["mainnet", "testnet"],
+                    "default": "mainnet",
+                    "description": "Network to use",
+                },
+                "change_descriptor": {
+                    "type": "string",
+                    "description": (
+                        "Optional change descriptor; auto-derived from external "
+                        "if omitted (replaces /0/* with /1/*)"
+                    ),
+                },
+            },
+            "required": ["descriptor", "wallet_name"],
+        },
+    },
+    "btc_export_descriptor": {
+        "description": (
+            "Export the Bitcoin BIP84 descriptors + xpub for a wallet. "
+            "ONLY returns Bitcoin — for the Liquid CT descriptor (different "
+            "derivation path + SLIP-77 blinding key), use lw_export_descriptor."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Name of the wallet",
+                    "default": "default",
+                },
+            },
+        },
+    },
     "unified_balance": {
         "description": "Get balance for both Bitcoin and Liquid networks (unified wallet)",
         "inputSchema": {
@@ -467,6 +519,16 @@ LIGHTNING:
 - Use lightning_send to pay a BOLT11 invoice using L-BTC (submarine swap via Boltz)
   Fees: ~0.1% + miner fees, Limits: 100 - 25,000,000 sats
 - Use lightning_transaction_status to check status of any Lightning swap (send or receive)
+
+WATCH-ONLY WALLETS:
+- For a Bitcoin-only watch wallet: btc_import_descriptor (BIP84 wpkh xpub).
+- For a Liquid-only watch wallet: lw_import_descriptor (CT descriptor).
+- Bitcoin and Liquid descriptors are NOT interchangeable: Bitcoin uses path
+  m/84'/0'/0' and Liquid uses m/84'/1776'/0'; Liquid also requires the SLIP-77
+  master blinding key from the seed. If the user wants both networks watch-only,
+  both descriptors must be imported separately.
+- btc_export_descriptor / lw_export_descriptor return the public descriptors that
+  can be re-imported elsewhere as watch-only.
 
 WALLET DELETION:
 - ALWAYS use the delete_wallet prompt workflow (check balances, remind about seed backup, confirm)
@@ -993,7 +1055,31 @@ If you need convenience over security:
 - Liquid (L-BTC): `lw_send(wallet_name="default", address="lq1...", amount=10000, password="secret")`
 - Liquid (other assets): `lw_send_asset(..., asset_id="ce091c99...")`
 
-Note: If wallet mnemonic is not encrypted, omit the password parameter"""
+Note: If wallet mnemonic is not encrypted, omit the password parameter
+
+## Watch-Only Wallets
+
+Watch-only wallets monitor balances and generate addresses without exposing
+private keys. Bitcoin and Liquid descriptors are NOT interchangeable — to
+monitor both networks for the same seed, you must import each side separately.
+
+```python
+# Bitcoin watch-only (BIP84 wpkh xpub on m/84'/0'/0')
+btc_import_descriptor(
+    descriptor="wpkh([fp/84'/0'/0']xpub.../0/*)#cs",
+    wallet_name="cold",
+)
+
+# Liquid watch-only (CT descriptor on m/84'/1776'/0' + SLIP-77 blinding key)
+lw_import_descriptor(
+    descriptor="ct(slip77(...),elwpkh([fp/84'/1776'/0']xpub.../0/*))",
+    wallet_name="cold",
+)
+
+# Export the public descriptors of an existing wallet for re-import elsewhere
+btc_export_descriptor(wallet_name="cold")
+lw_export_descriptor(wallet_name="cold")
+```"""
 
         elif uri == "aqua://docs/networks":
             return """# Network Reference
@@ -1093,9 +1179,18 @@ lw_import_mnemonic(
 
 For monitoring without signing risk:
 
-1. Export descriptor: `lw_export_descriptor(wallet_name="main")`
-2. Import as watch-only: `lw_import_descriptor(descriptor="ct(...)", wallet_name="monitor")`
-3. Monitor balance without exposing private keys
+1. Export descriptors from a full wallet:
+   - Liquid: `lw_export_descriptor(wallet_name="main")`
+   - Bitcoin: `btc_export_descriptor(wallet_name="main")`
+2. Import them as watch-only on another instance:
+   - Liquid: `lw_import_descriptor(descriptor="ct(...)", wallet_name="monitor")`
+   - Bitcoin: `btc_import_descriptor(descriptor="wpkh(...)", wallet_name="monitor")`
+3. Monitor balances without exposing private keys
+
+⚠️ The Bitcoin descriptor and the Liquid CT descriptor cannot be derived from
+each other — Bitcoin uses derivation path `m/84'/0'/0'`, Liquid uses
+`m/84'/1776'/0'` and additionally requires a SLIP-77 master blinding key. To
+monitor both networks watch-only, both descriptors must be imported separately.
 
 ## Recovery
 

@@ -129,8 +129,14 @@ def run_suite(label: str, password: str | None):
 
     def t_tx_status():
         assert state["txid"] is not None, "No txid from send test"
-        result = run_cli("liquid", "tx-status", "--tx", state["txid"])
-        assert result is not None, "Status check failed"
+        result = None
+        for attempt in range(5):
+            result = run_cli("liquid", "tx-status", "--tx", state["txid"])
+            if result is not None:
+                break
+            print(f"  Indexer not ready yet (attempt {attempt + 1}/5), retrying in 3s...")
+            time.sleep(3)
+        assert result is not None, "Status check failed after retries"
         print(f"  Status: {result.get('status')}")
         print(f"  Explorer: {result.get('explorer_url')}")
         assert result["txid"] == state["txid"]

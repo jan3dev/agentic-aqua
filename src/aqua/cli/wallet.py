@@ -9,9 +9,7 @@ from ..tools import (
 )
 from ..tools import (
     lw_balance,
-    lw_export_descriptor,
     lw_generate_mnemonic,
-    lw_import_descriptor,
     lw_import_mnemonic,
     lw_list_wallets,
 )
@@ -83,30 +81,6 @@ def import_mnemonic(ctx, mnemonic_stdin, wallet_name, network, password_stdin):
             },
         ),
     )
-
-
-@wallet.command("import-descriptor")
-@click.option("--descriptor", required=True, help="CT descriptor string.")
-@click.option("--wallet-name", required=True, help="Name for the wallet.")
-@click.option(
-    "--network",
-    type=click.Choice(["mainnet", "testnet"]),
-    default="mainnet",
-    show_default=True,
-    help="Network to use.",
-)
-@click.pass_obj
-def import_descriptor(ctx, descriptor, wallet_name, network):
-    """Import a watch-only wallet from a CT descriptor."""
-    run_tool(ctx, lambda: lw_import_descriptor(descriptor, wallet_name, network))
-
-
-@wallet.command("export-descriptor")
-@click.option("--wallet-name", default="default", show_default=True, help="Name of the wallet.")
-@click.pass_obj
-def export_descriptor(ctx, wallet_name):
-    """Export the CT descriptor for a wallet (watch-only import elsewhere)."""
-    run_tool(ctx, lambda: lw_export_descriptor(wallet_name))
 
 
 @wallet.command("list")

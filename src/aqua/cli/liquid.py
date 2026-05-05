@@ -7,6 +7,8 @@ from ..tools import (
     get_manager,
     lw_address,
     lw_balance,
+    lw_export_descriptor,
+    lw_import_descriptor,
     lw_send,
     lw_send_asset,
     lw_transactions,
@@ -199,3 +201,36 @@ def assets(ctx, network):
 def tx_status(ctx, tx):
     """Get Liquid transaction status."""
     run_tool(ctx, lambda: lw_tx_status(tx))
+
+
+@liquid.command("import-descriptor")
+@click.option("--descriptor", required=True, help="CT descriptor string.")
+@click.option("--wallet-name", required=True, help="Name for the wallet.")
+@click.option(
+    "--network",
+    type=click.Choice(["mainnet", "testnet"]),
+    default="mainnet",
+    show_default=True,
+    help="Network to use.",
+)
+@click.pass_obj
+def import_descriptor(ctx, descriptor, wallet_name, network):
+    """Import a watch-only Liquid wallet from a CT descriptor.
+
+    Note: imports Liquid only. For Bitcoin watch-only, use
+    `aqua btc import-descriptor`. The Bitcoin descriptor cannot be derived
+    from this CT descriptor (different derivation path + xpub).
+    """
+    run_tool(ctx, lambda: lw_import_descriptor(descriptor, wallet_name, network))
+
+
+@liquid.command("export-descriptor")
+@click.option("--wallet-name", default="default", show_default=True, help="Name of the wallet.")
+@click.pass_obj
+def export_descriptor(ctx, wallet_name):
+    """Export the Liquid CT descriptor for watch-only import elsewhere.
+
+    Note: exports Liquid only. For the Bitcoin descriptor of the same wallet,
+    use `aqua btc export-descriptor`.
+    """
+    run_tool(ctx, lambda: lw_export_descriptor(wallet_name))

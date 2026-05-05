@@ -98,10 +98,14 @@ Once connected, you can ask Claude to:
 |------|-------------|
 | `lw_generate_mnemonic` | Generate new BIP39 seed |
 | `lw_import_mnemonic` | Import wallet from seed (also creates Bitcoin wallet) |
-| `lw_import_descriptor` | Import watch-only wallet from CT descriptor |
-| `lw_export_descriptor` | Export CT descriptor for watch-only use |
+| `lw_import_descriptor` | Import watch-only Liquid wallet from CT descriptor |
+| `lw_export_descriptor` | Export Liquid CT descriptor for watch-only use |
+| `btc_import_descriptor` | Import watch-only Bitcoin wallet from BIP84 descriptor |
+| `btc_export_descriptor` | Export Bitcoin BIP84 descriptors + xpub |
 | `lw_list_wallets` | List all wallets |
 | `delete_wallet` | Delete a wallet and all its cached data |
+
+> ⚠️ Bitcoin and Liquid descriptors cannot be derived from each other (different BIP84 paths + Liquid's SLIP-77 blinding key). To watch a unified wallet, import both descriptors separately.
 
 **Liquid (lw_*)**
 
@@ -153,8 +157,13 @@ aqua lightning --help
 aqua wallet generate-mnemonic
 aqua wallet import-mnemonic --wallet-name default --network mainnet
 aqua wallet list
-aqua wallet export-descriptor --wallet-name default
 aqua wallet delete --wallet-name old
+
+# Watch-only descriptors (Bitcoin and Liquid are separate)
+aqua btc export-descriptor    --wallet-name default
+aqua btc import-descriptor    --wallet-name cold --descriptor "wpkh([fp/84h/0h/0h]xpub.../0/*)#cs"
+aqua liquid export-descriptor --wallet-name default
+aqua liquid import-descriptor --wallet-name cold --descriptor "ct(slip77(...),elwpkh(...))"
 
 # Balances
 aqua balance                              # unified (BTC + Liquid)

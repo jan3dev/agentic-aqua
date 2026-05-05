@@ -467,6 +467,43 @@ def btc_transactions(
     }
 
 
+def btc_import_descriptor(
+    descriptor: str,
+    wallet_name: str,
+    network: str = "mainnet",
+    change_descriptor: str | None = None,
+) -> dict[str, Any]:
+    """Import a watch-only BIP84 Bitcoin wallet. Liquid side must be imported separately."""
+    btc = get_btc_manager()
+    w = btc.import_descriptor(descriptor, wallet_name, network, change_descriptor)
+    return {
+        "wallet_name": w.name,
+        "network": w.network,
+        "btc_descriptor": w.btc_descriptor,
+        "btc_change_descriptor": w.btc_change_descriptor,
+        "watch_only": w.watch_only,
+        "message": (
+            "Bitcoin watch-only descriptor imported. To monitor the matching "
+            "Liquid wallet from the same seed, import its CT descriptor "
+            "separately with `lw_import_descriptor`. The Liquid descriptor "
+            "is NOT derivable from the Bitcoin xpub (different derivation "
+            "paths and SLIP-77 master blinding key required)."
+        ),
+    }
+
+
+def btc_export_descriptor(wallet_name: str = "default") -> dict[str, Any]:
+    """Export BIP84 descriptors and xpub metadata. Liquid CT descriptor requires lw_export_descriptor."""
+    btc = get_btc_manager()
+    data = btc.export_descriptor(wallet_name)
+    data["note"] = (
+        "This is the Bitcoin on-chain descriptor only. For the Liquid CT "
+        "descriptor of the same wallet (different derivation path + "
+        "SLIP-77 blinding key), call `lw_export_descriptor`."
+    )
+    return data
+
+
 def btc_send(
     wallet_name: str,
     address: str,
@@ -733,6 +770,8 @@ TOOLS = {
     "btc_address": btc_address,
     "btc_transactions": btc_transactions,
     "btc_send": btc_send,
+    "btc_import_descriptor": btc_import_descriptor,
+    "btc_export_descriptor": btc_export_descriptor,
     "unified_balance": unified_balance,
     "lightning_receive": lightning_receive,
     "lightning_send": lightning_send,

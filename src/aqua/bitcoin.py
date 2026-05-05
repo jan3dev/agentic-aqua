@@ -1,5 +1,6 @@
 """Bitcoin wallet management using BDK."""
 
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,6 +9,35 @@ from typing import Callable, Optional, TypeVar
 import bdkpython as bdk
 
 from .storage import Storage, WalletData
+
+_XPUB_RE = re.compile(
+    r"\[(?P<fp>[0-9a-fA-F]{8})/(?P<path>[^\]]+)\](?P<xpub>[xt]pub[A-Za-z0-9]+)"
+    r"|(?P<bare>[xt]pub[A-Za-z0-9]+)"
+)
+
+
+def _extract_xpub_metadata(descriptor: str) -> dict:
+    """Return xpub, fingerprint, derivation_path from a descriptor; missing keys are None."""
+    m = _XPUB_RE.search(descriptor)
+    if not m:
+        return {"xpub": None, "fingerprint": None, "derivation_path": None}
+    if m.group("xpub"):
+        return {
+            "xpub": m.group("xpub"),
+            "fingerprint": m.group("fp"),
+            "derivation_path": m.group("path"),
+        }
+    return {"xpub": m.group("bare"), "fingerprint": None, "derivation_path": None}
+
+
+def _derive_change_from_external(external: str) -> str:
+    """Replace last '/0/*' with '/1/*', dropping the now-stale checksum. Raises if '/0/*' absent."""
+    if "/0/*" not in external:
+        raise ValueError("External descriptor missing '/0/*'; cannot auto-derive change")
+    head, _sep, tail = external.rpartition("/0/*")
+    derived = head + "/1/*" + tail
+    return re.sub(r"#[a-zA-Z0-9]+$", "", derived)
+
 
 ESPLORA_URLS = {
     "mainnet": [
@@ -178,6 +208,87 @@ class BitcoinWalletManager:
         self.storage.save_wallet(wallet_data)
 
         return wallet_data
+
+    def import_descriptor(
+        self,
+        descriptor: str,
+        wallet_name: str,
+        network: str = "mainnet",
+        change_descriptor: Optional[str] = None,
+    ) -> WalletData:
+        """Import a watch-only BIP84 Bitcoin wallet; adds BTC to an existing Liquid-only wallet if needed."""
+        net = _network_bdk(network)
+
+        ext_desc = bdk.Descriptor(descriptor, net)
+
+        if change_descriptor is not None:
+            change_desc = bdk.Descriptor(change_descriptor, net)
+            change_desc_str = change_descriptor
+        else:
+            try:
+                change_desc_str = _derive_change_from_external(descriptor)
+            except ValueError:
+                raise ValueError(
+                    "Could not auto-derive change descriptor; provide change_descriptor explicitly"
+                )
+            change_desc = bdk.Descriptor(change_desc_str, net)
+
+        existing = self.storage.load_wallet(wallet_name)
+        if existing is not None and existing.btc_descriptor:
+            raise ValueError(f"Wallet '{wallet_name}' already has a Bitcoin descriptor")
+        # Reachable via library layer when LiquidWalletManager.import_mnemonic is called without btc_manager.create_wallet.
+        if existing is not None and existing.encrypted_mnemonic:
+            raise ValueError(
+                f"Wallet '{wallet_name}' has a mnemonic; the Bitcoin descriptor is derived "
+                "from it automatically. Use a different wallet_name for a watch-only import."
+            )
+
+        if existing is not None:
+            wallet_data = existing
+            wallet_data.btc_descriptor = str(ext_desc)
+            wallet_data.btc_change_descriptor = str(change_desc)
+            wallet_data.watch_only = True
+        else:
+            wallet_data = WalletData(
+                name=wallet_name,
+                network=network,
+                descriptor="",
+                btc_descriptor=str(ext_desc),
+                btc_change_descriptor=str(change_desc),
+                encrypted_mnemonic=None,
+                watch_only=True,
+            )
+
+        cache_path = self._get_btc_cache_path(wallet_name)
+        persister = bdk.Persister.new_sqlite(str(cache_path))
+        wallet = bdk.Wallet(ext_desc, change_desc, net, persister)
+        wallet.persist(persister)
+
+        self._wallets[wallet_name] = wallet
+        self._persisters[wallet_name] = persister
+        self._networks[wallet_name] = network
+
+        self.storage.save_wallet(wallet_data)
+        return wallet_data
+
+    def export_descriptor(self, wallet_name: str) -> dict:
+        """Return external + change descriptors and parsed xpub metadata for a wallet."""
+        wallet_data = self.storage.load_wallet(wallet_name)
+        if wallet_data is None:
+            raise ValueError(f"Wallet '{wallet_name}' not found")
+        if not wallet_data.btc_descriptor or not wallet_data.btc_change_descriptor:
+            raise ValueError(f"Wallet '{wallet_name}' has no Bitcoin descriptors")
+
+        meta = _extract_xpub_metadata(wallet_data.btc_descriptor)
+        return {
+            "wallet_name": wallet_data.name,
+            "network": wallet_data.network,
+            "external_descriptor": wallet_data.btc_descriptor,
+            "change_descriptor": wallet_data.btc_change_descriptor,
+            "xpub": meta["xpub"],
+            "fingerprint": meta["fingerprint"],
+            "derivation_path": meta["derivation_path"],
+        }
 
     def _get_wallet(
         self,
