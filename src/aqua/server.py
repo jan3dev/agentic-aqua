@@ -32,14 +32,14 @@ logger = logging.getLogger(__name__)
 
 TOOL_SCHEMAS = {
     "lw_generate_mnemonic": {
-        "description": "Generate a new BIP39 mnemonic phrase for creating a Liquid wallet",
+        "description": "Generate a new BIP39 seed phrase for creating a Liquid wallet",
         "inputSchema": {
             "type": "object",
             "properties": {},
         },
     },
     "lw_import_mnemonic": {
-        "description": "Import a wallet from a BIP39 mnemonic phrase (creates both Liquid and Bitcoin wallets from the same mnemonic)",
+        "description": "Import a wallet from a BIP39 seed phrase (creates both Liquid and Bitcoin wallets from the same seed)",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -165,7 +165,7 @@ TOOL_SCHEMAS = {
                 },
                 "amount": {
                     "type": "integer",
-                    "description": "Amount in satoshis",
+                    "description": "Amount in Satoshis",
                 },
                 "password": {
                     "type": "string",
@@ -190,7 +190,7 @@ TOOL_SCHEMAS = {
                 },
                 "amount": {
                     "type": "integer",
-                    "description": "Amount in satoshis",
+                    "description": "Amount in Satoshis",
                 },
                 "asset_id": {
                     "type": "string",
@@ -255,7 +255,7 @@ TOOL_SCHEMAS = {
         },
     },
     "btc_balance": {
-        "description": "Get Bitcoin wallet balance in satoshis",
+        "description": "Get Bitcoin wallet balance in Satoshis",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -317,11 +317,11 @@ TOOL_SCHEMAS = {
                 },
                 "amount": {
                     "type": "integer",
-                    "description": "Amount in satoshis",
+                    "description": "Amount in Satoshis",
                 },
                 "fee_rate": {
                     "type": "integer",
-                    "description": "Optional fee rate in sat/vB",
+                    "description": "Optional fee rate in Sat/vB",
                 },
                 "password": {
                     "type": "string",
@@ -397,13 +397,13 @@ TOOL_SCHEMAS = {
         },
     },
     "lightning_receive": {
-        "description": "Generate a Lightning invoice to receive L-BTC into a Liquid wallet (~1-2 min after payment). Limits: 100 – 25,000,000 sats.",
+        "description": "Generate a Lightning invoice to receive L-BTC into a Liquid wallet (~1-2 min after payment). Limits: 100 – 25,000,000 Sats.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "amount": {
                     "type": "integer",
-                    "description": "Amount in satoshis (100 – 25,000,000)",
+                    "description": "Amount in Satoshis (100 – 25,000,000)",
                 },
                 "wallet_name": {
                     "type": "string",
@@ -419,7 +419,7 @@ TOOL_SCHEMAS = {
         },
     },
     "lightning_send": {
-        "description": "Pay a Lightning invoice using L-BTC from a Liquid wallet (reverse submarine swap). Fees: ~0.1% + miner fees. Limits: 100 – 25,000,000 sats.",
+        "description": "Pay a Lightning invoice using L-BTC from a Liquid wallet (reverse submarine swap). Fees: ~0.1% + miner fees. Limits: 100 – 25,000,000 Sats.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -471,15 +471,15 @@ STARTUP BEHAVIOR:
 DEFAULTS:
 - Network: MAINNET (unless user explicitly requests testnet)
 - Balance queries: Use unified_balance (both networks) unless user specifies bitcoin or liquid only
-- New wallets: Encourage encrypting the mnemonic at rest with a strong password
+- New wallets: Encourage encrypting the seed at rest with a strong password
 - Password format: Use memorable but strong passwords (e.g. "Wild-red-dolphin-386")
 
 CRITICAL SAFETY RULES:
-- Amounts are in SATOSHIS (1 BTC = 100,000,000 sats)
+- Amounts are in SATOSHIS (1 BTC = 100,000,000 Sats)
 - Always verify network: mainnet vs testnet
 - Confirm transactions before broadcasting
 - Show explorer links after sending
-- STRONGLY recommend encrypting the mnemonic with a password, but allow user choice
+- STRONGLY recommend encrypting the seed with a password, but allow user choice
 
 NETWORK IDENTIFIERS:
 - Bitcoin mainnet: bc1... addresses
@@ -494,30 +494,30 @@ WORKFLOW:
 4. Broadcast and provide txid
 
 WHEN GENERATING NEW SEEDS:
-1. Generate mnemonic with lw_generate_mnemonic
-2. ASK user if they want to encrypt the mnemonic on disk with a password (STRONGLY RECOMMENDED)
+1. Generate seed with lw_generate_mnemonic
+2. ASK user if they want to encrypt the seed on disk with a password (STRONGLY RECOMMENDED)
 3. If yes: ASK user for their password
    - Give example: "Wild-red-dolphin-386" (Word1-word2-word3-###)
    - Wait for user to provide their chosen password
-4. Import wallet with mnemonic + user's password (or no password if declined)
-5. Show user the mnemonic (and remind them of their password if used)
-6. Emphasize importance of backing up the mnemonic securely. The password only
-   protects the local file — it is NOT a BIP39 passphrase, so the mnemonic alone
+4. Import wallet with seed + user's password (or no password if declined)
+5. Show user the seed (and remind them of their password if used)
+6. Emphasize importance of backing up the seed securely. The password only
+   protects the local file — it is NOT a BIP39 passphrase, so the seed alone
    is enough to restore the wallet in any other software.
 
 PASSWORD HANDLING (encryption at rest):
-- Wallets with encrypted mnemonics require the password to decrypt for signing
+- Wallets with encrypted seeds require the password to decrypt for signing
 - Ask user for the password when calling btc_send, lw_send, lw_send_asset, lightning_send
 - If operation fails with decryption error, the wallet likely has a password
 - IMPORTANT: the password is NOT a BIP39 passphrase. It does not alter the
-  derived keys. The mnemonic alone fully restores the same descriptors on Liquid
+  derived keys. The seed alone fully restores the same descriptors on Liquid
   and Bitcoin in any BIP39-compliant wallet.
 
 LIGHTNING:
 - Use lightning_receive to generate an invoice for receiving L-BTC from Lightning
-  Fees: ~0.1%, Limits: 100 - 25,000,000 sats, Time: ~1-2 min after payment
+  Fees: ~0.1%, Limits: 100 - 25,000,000 Sats, Time: ~1-2 min after payment
 - Use lightning_send to pay a BOLT11 invoice using L-BTC (submarine swap via Boltz)
-  Fees: ~0.1% + miner fees, Limits: 100 - 25,000,000 sats
+  Fees: ~0.1% + miner fees, Limits: 100 - 25,000,000 Sats
 - Use lightning_transaction_status to check status of any Lightning swap (send or receive)
 
 WATCH-ONLY WALLETS:
@@ -533,7 +533,7 @@ WATCH-ONLY WALLETS:
 WALLET DELETION:
 - ALWAYS use the delete_wallet prompt workflow (check balances, remind about seed backup, confirm)
 - NEVER call delete_wallet directly without first checking balances and getting user confirmation
-- Remind user to backup their mnemonic before deletion""",
+- Remind user to backup their seed before deletion""",
     )
 
     @server.list_prompts()
@@ -543,7 +543,7 @@ WALLET DELETION:
             # Wallet creation
             Prompt(
                 name="create_new_wallet",
-                description="Create a new wallet with mnemonic and optional at-rest password",
+                description="Create a new wallet with seed and optional at-rest password",
                 arguments=[
                     PromptArgument(
                         name="wallet_name", description="Name for the wallet", required=False
@@ -555,7 +555,7 @@ WALLET DELETION:
             ),
             Prompt(
                 name="import_seed",
-                description="Import an existing wallet from a mnemonic",
+                description="Import an existing wallet from a seed phrase",
                 arguments=[
                     PromptArgument(
                         name="wallet_name", description="Name for the wallet", required=False
@@ -670,21 +670,21 @@ WALLET DELETION:
                             text=f"""I want to create a new wallet named '{wallet_name}' on {network}.
 
 Please:
-1. Generate a new 12-word mnemonic with lw_generate_mnemonic
-2. Show me the mnemonic
-3. Ask me: "Do you want to encrypt the mnemonic on disk with a password? (STRONGLY RECOMMENDED)"
+1. Generate a new 12-word seed with lw_generate_mnemonic
+2. Show me the seed
+3. Ask me: "Do you want to encrypt the seed on disk with a password? (STRONGLY RECOMMENDED)"
    - Clarify: this password protects the local file only. It is NOT a BIP39
-     passphrase, so the mnemonic alone restores the same addresses elsewhere.
+     passphrase, so the seed phrase alone restores the same addresses elsewhere.
 4. If I say yes:
    - Ask me: "Please provide your password. Example format: 'Wild-red-dolphin-386' (Word1-word2-word3-###)"
    - Wait for me to give you my chosen password
    - Import wallet with my password
 5. If I say no:
-   - Warn me that the mnemonic will only be base64-encoded (less secure at rest)
+   - Warn me that the seed will only be base64-encoded (less secure at rest)
    - Ask for confirmation
    - Import wallet without password
 6. Confirm wallet creation for both Bitcoin and Liquid
-7. Remind me to backup the mnemonic securely (losing the password only blocks
+7. Remind me to backup the seed phrase securely (losing the password only blocks
    this local file — the mnemonic alone still restores my funds elsewhere)
 8. Generate a receive address for Bitcoin and another for Liquid""",
                         ),
@@ -699,15 +699,15 @@ Please:
                         role="user",
                         content=TextContent(
                             type="text",
-                            text=f"""I want to import an existing mnemonic.
+                            text=f"""I want to import an existing mnemonic or seed phrase.
 
 Please ask me:
-1. The mnemonic (12 or 24 words)
-2. If I want to encrypt the mnemonic on disk with a password (STRONGLY RECOMMENDED)
+1. The seed (12 or 24 words)
+2. If I want to encrypt the seed on disk with a password (STRONGLY RECOMMENDED)
    - If yes: ask for the password
    - If no: warn me it will be less secure at rest (base64 only)
    - Note: the password only protects the local file. It is NOT a BIP39
-     passphrase — derived addresses depend solely on the mnemonic.
+     passphrase — derived addresses depend solely on the seed.
 3. Network: mainnet or testnet (default: mainnet)
 4. Wallet name (default: '{wallet_name}')
 
@@ -728,9 +728,9 @@ Then import and confirm that both Bitcoin and Liquid wallets were created.""",
                             text=f"""Show me the balance of my '{wallet_name}' wallet.
 
 Use unified_balance to display:
-- Bitcoin balance (in BTC and sats)
+- Bitcoin balance (in BTC and Sats)
 - Liquid balance (L-BTC and other assets if any)
-- User-friendly format with BTC values, not just satoshis""",
+- User-friendly format with BTC values, not just Satoshis""",
                         ),
                     )
                 ]
@@ -745,7 +745,7 @@ Use unified_balance to display:
                             type="text",
                             text=f"""Show me only the Bitcoin balance of my '{wallet_name}' wallet.
 
-Use btc_balance and display result in both BTC and satoshis.""",
+Use btc_balance and display result in both BTC and Satoshis.""",
                         ),
                     )
                 ]
@@ -830,11 +830,11 @@ Please:
 1. Show my current Bitcoin balance
 2. Ask me for:
    - Destination address (bc1...)
-   - Amount (accept in BTC, convert to satoshis)
-   - Fee rate (optional, suggest: 2-10 sat/vB based on urgency)
+   - Amount (accept in BTC, convert to Satoshis)
+   - Fee rate (optional, suggest: 2-10 Sat/vB based on urgency)
 3. Verify the address is valid and mainnet
 4. Show me a summary BEFORE sending:
-   - Amount: X BTC (Y sats)
+   - Amount: X BTC (Y Sats)
    - Estimated fees
    - Destination address
 5. Ask for explicit confirmation
@@ -909,7 +909,7 @@ Use lw_list_wallets and display in table format with:
 - Name
 - Network (mainnet/testnet)
 - Type (full/watch-only)
-- Whether the mnemonic is password-encrypted at rest""",
+- Whether the seed is password-encrypted at rest""",
                         ),
                     )
                 ]
@@ -948,7 +948,7 @@ Please follow this safety workflow:
 3. If there are any funds (BTC or L-BTC > 0):
    - WARN me clearly about the remaining funds
    - Show me exactly how much is in each network
-4. REMIND me: "Make sure you have backed up your seed phrase (mnemonic) before proceeding. Without it, you will permanently lose access to any funds associated with this wallet. The at-rest encryption password, if any, protects only this local file — the mnemonic alone is enough to restore funds elsewhere."
+4. REMIND me: "Make sure you have backed up your seed phrase (mnemonic) before proceeding. Without it, you will permanently lose access to any funds associated with this wallet. The at-rest encryption password, if any, protects only this local file — the seed alone is enough to restore funds elsewhere."
 5. Ask me for EXPLICIT confirmation: "Are you sure you want to delete wallet '{wallet_name}'? This cannot be undone."
 6. Only after I explicitly confirm, call delete_wallet with wallet_name='{wallet_name}'
 7. Confirm deletion was successful""",
@@ -971,8 +971,8 @@ Please:
 2. Ask me for the Lightning invoice (BOLT11 format, starts with lnbc...)
 3. Explain the fee structure:
    - Boltz fee: ~0.1% of amount
-   - Miner fee: ~19 sats
-   - Limits: 1,000 - 25,000,000 sats
+   - Miner fee: ~19 Sats
+   - Limits: 1,000 - 25,000,000 Sats
 4. Show total cost (invoice amount + fees) and ask for confirmation
 5. Use lightning_send to execute the swap
 6. Wait for completion (may take 1-3 minutes)
@@ -1021,18 +1021,18 @@ Please:
 ## Creating a New Wallet (Recommended Method)
 
 1. Generate a mnemonic: `lw_generate_mnemonic()`
-2. Choose a strong password to encrypt the mnemonic on disk
+2. Choose a strong password to encrypt the seed on disk
 3. Import it: `lw_import_mnemonic(mnemonic="your 12 words", network="mainnet", password="your-password")`
-4. This creates BOTH a Liquid and Bitcoin wallet from the same mnemonic
+4. This creates BOTH a Liquid and Bitcoin wallet from the same seed
 5. **BACKUP THE MNEMONIC**: Save it securely offline. The password only protects
-   the local file — it is NOT a BIP39 passphrase, so the mnemonic alone is
+   the local file — it is NOT a BIP39 passphrase, so the seed alone is
    enough to restore the same addresses in any BIP39-compliant wallet.
 
 ## Creating Without a Password (Not Recommended)
 
 If you need convenience over security:
 - `lw_import_mnemonic(mnemonic="your words", network="mainnet")`
-- ⚠️ **WARNING**: Mnemonic stored with only base64 encoding (not encrypted)
+- ⚠️ **WARNING**: Seed stored with only base64 encoding (not encrypted)
 - Only use for testing/small amounts
 
 ## Checking Balance
@@ -1056,6 +1056,7 @@ If you need convenience over security:
 - Liquid (other assets): `lw_send_asset(..., asset_id="ce091c99...")`
 
 Note: If wallet mnemonic is not encrypted, omit the password parameter
+Note: mnemonic is sinonym of seed or seed phrase
 
 ## Watch-Only Wallets
 
@@ -1118,26 +1119,26 @@ lw_export_descriptor(wallet_name="cold")
 | Finality | 6 blocks | 2 blocks |
 | Assets | BTC only | Multiple assets |
 | Privacy | Public amounts | Confidential amounts |
-| Fees | Dynamic (sat/vB) | Fixed (~33 sats) |"""
+| Fees | Dynamic (Sat/vB) | Fixed (~33 Sats) |"""
 
         elif uri == "aqua://docs/security":
             return """# Security Best Practices
 
-## ⚠️ IMPORTANT: Mnemonic Storage
+## ⚠️ IMPORTANT: Seed Storage
 
 **At-rest encryption with a password is STRONGLY RECOMMENDED but optional**.
 
-The `password` parameter is used ONLY to encrypt the mnemonic on disk (PBKDF2 +
+The `password` parameter is used ONLY to encrypt the seed on disk (PBKDF2 +
 Fernet). It is **NOT** a BIP39 passphrase: the derived Liquid and Bitcoin keys
-depend solely on the mnemonic, so the same mnemonic restores the same
+depend solely on the seed, so the same seed restores the same
 descriptors in any BIP39-compliant wallet (AQUA, Blockstream Green, Jade, etc.).
 
 ```python
-# ⚠️ NOT RECOMMENDED - stores mnemonic with base64 only (not encrypted)
+# ⚠️ NOT RECOMMENDED - stores seed with base64 only (not encrypted)
 # Use only for testing or small amounts
 lw_import_mnemonic(mnemonic="abandon abandon...")
 
-# ✅ RECOMMENDED - encrypts mnemonic on disk with strong encryption
+# ✅ RECOMMENDED - encrypts seed on disk with strong encryption
 lw_import_mnemonic(
     mnemonic="abandon abandon...",
     password="strong-password-here"
@@ -1156,12 +1157,12 @@ lw_import_mnemonic(
 - **Unique**: Don't reuse passwords from other services
 - **Required for signing**: You'll need it every time you send funds
 - **NOT required for recovery**: Losing the password only blocks this local
-  file. The mnemonic alone still restores the wallet in any other software.
+  file. The seed alone still restores the wallet in any other software.
 
 ## Wallet Security Checklist
 
-- ✅ Always encrypt the local mnemonic with a password
-- ✅ Back up the mnemonic offline (paper, metal, encrypted USB)
+- ✅ Always encrypt the local seed with a password
+- ✅ Back up the seed offline (paper, metal, encrypted USB)
 - ✅ Verify addresses before sending (double-check network)
 - ✅ Start with small test transactions
 - ✅ Use watch-only wallets for monitoring (export with `lw_export_descriptor`)
@@ -1169,9 +1170,9 @@ lw_import_mnemonic(
 
 ## What NOT to Do
 
-- ❌ Store mnemonics in cloud services (Dropbox, Google Drive)
-- ❌ Share mnemonics in chat/email/screenshots
-- ❌ Leave mnemonics unencrypted on shared machines
+- ❌ Store seeds in cloud services (Dropbox, Google Drive)
+- ❌ Share seeds in chat/email/screenshots
+- ❌ Leave seeds unencrypted on shared machines
 - ❌ Send mainnet funds to testnet addresses
 - ❌ Ignore address network prefixes
 
