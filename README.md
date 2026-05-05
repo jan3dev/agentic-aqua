@@ -1,16 +1,16 @@
 # Agentic AQUA
 
-MCP server and CLI for managing **Liquid Network** and **Bitcoin** wallets through AI assistants like Claude. One mnemonic backs both networks (unified wallet). Also can operates on Lightning network via Boltz swaps.
+MCP server and CLI for managing **Bitcoin** and **Liquid Network** wallets through AI assistants like Claude. One seed backs both networks (unified wallet). Agentic AQUA can also can operate on the Lightning Network.
 
 ## Features
 
-- **Generate & Import** - Create new wallets or import existing mnemonics
-- **Unified Wallet** - One mnemonic for Liquid and Bitcoin; `unified_balance` shows both
+- **Generate & Import** - Create new wallets or import existing seeds
+- **Unified Wallet** - One seed (mnemonic) for Bitcoin and Liquid; `unified_balance` shows both
 - **Bitcoin (onchain)** - BIP84 wallets, balance and send via `btc_*` tools (BDK)
 - **Watch-Only** - Import CT descriptors for balance monitoring
-- **Send & Receive** - Full transaction support (L-BTC, BTC, and Liquid assets)
-- **Lightning** - Send and receive via Lightning using L-BTC (via Boltz & Ankara)
-- **Assets** - Native support for L-BTC, USDT, and all Liquid assets
+- **Send & Receive** - Full transaction support (L-BTC, BTC, and Liquid assets like USDt and DePix)
+- **Lightning** - Send and receive via Lightning using L-BTC
+- **Assets** - Native support for L-BTC, USDt, and all Liquid assets
 - **Secure** - Encrypted storage, no remote servers for keys
 
 ## Installation
@@ -82,12 +82,12 @@ Configure Claude Desktop using the full path to `uv` (find with `which uv`):
 
 Once connected, you can ask Claude to:
 
-- "Create a new wallet" (creates both Bitcoin and Liquid wallets from one mnemonic)
+- "Create a new wallet" (creates both Bitcoin and Liquid wallets from one seed)
 - "Show my balance" / "What's my Bitcoin balance?"
 - "Generate a receive address" (Liquid or Bitcoin)
-- "Send 10,000 sats to bc1..." / "Send 0.001 L-BTC to lq1..."
+- "Send 10,000 Sats to bc1..." / "Send 0.001 L-BTC to lq1..."
 - "Pay this Lightning invoice: lnbc..."
-- "Receive 50,000 sats via Lightning"
+- "Receive 50,000 Sats via Lightning"
 - "Delete my wallet"
 
 ## Available Tools
@@ -96,8 +96,8 @@ Once connected, you can ask Claude to:
 
 | Tool | Description |
 |------|-------------|
-| `lw_generate_mnemonic` | Generate new BIP39 mnemonic |
-| `lw_import_mnemonic` | Import wallet from mnemonic (also creates Bitcoin wallet) |
+| `lw_generate_mnemonic` | Generate new BIP39 seed |
+| `lw_import_mnemonic` | Import wallet from seed (also creates Bitcoin wallet) |
 | `lw_import_descriptor` | Import watch-only Liquid wallet from CT descriptor |
 | `lw_export_descriptor` | Export Liquid CT descriptor for watch-only use |
 | `btc_import_descriptor` | Import watch-only Bitcoin wallet from BIP84 descriptor |
@@ -114,7 +114,7 @@ Once connected, you can ask Claude to:
 | `lw_balance` | Get wallet balances (all assets) |
 | `lw_address` | Generate Liquid receive address (lq1...) |
 | `lw_send` | Send L-BTC |
-| `lw_send_asset` | Send any Liquid asset (USDT, etc.) |
+| `lw_send_asset` | Send any Liquid asset (USDt, etc.) |
 | `lw_transactions` | Transaction history |
 | `lw_tx_status` | Get transaction status (txid or explorer URL) |
 
@@ -137,7 +137,7 @@ Once connected, you can ask Claude to:
 
 | Tool | Description |
 |------|-------------|
-| `lightning_receive` | Generate a Lightning invoice to receive L-BTC (100–25,000,000 sats) |
+| `lightning_receive` | Generate a Lightning invoice to receive L-BTC (100–25,000,000 Sats) |
 | `lightning_send` | Pay a Lightning invoice using L-BTC via Boltz (~0.1% fee) |
 | `lightning_transaction_status` | Check status of a Lightning swap (send or receive) |
 
@@ -197,11 +197,9 @@ aqua-mcp         # direct MCP entrypoint
 
 Output defaults to a human-readable table on the terminal and JSON when piped. Force a format with `--format json` or `--format pretty`.
 
-> **CLI breaking change:** `aqua wallet import-descriptor` and `aqua wallet export-descriptor` have moved to `aqua liquid import-descriptor` / `aqua liquid export-descriptor`. Use the new `aqua btc import-descriptor` / `aqua btc export-descriptor` for Bitcoin watch-only.
+### Loading seeds safely (env vars from a text file)
 
-### Loading mnemonics safely (env vars from a text file)
-
-Avoid pasting mnemonics into shell prompts or chat with an AI agent — both shell history and agent transcripts may persist them. The recommended workflow is to keep secrets in a local text file with restricted permissions and load them as environment variables.
+Avoid pasting seeds into shell prompts or chat with an AI agent — both shell history and agent transcripts may persist them. The recommended workflow is to keep secrets in a local text file with restricted permissions and load them as environment variables.
 
 1. Create `~/.aqua/secrets.env` (or any path you prefer) and lock it down:
 
@@ -241,7 +239,7 @@ pass show crypto/aqua-mnemonic | aqua-cli wallet import-mnemonic --mnemonic-stdi
 Tips:
 - Never commit `.env` or `secrets.env` files (the project's `.gitignore` already excludes them).
 - Prefer `set -a; . file; set +a` over `export $(cat file)` — the former tolerates spaces and quotes inside values.
-- After importing a wallet, the mnemonic is no longer needed for day-to-day operations; only `AQUA_PASSWORD` is used to sign transactions.
+- After importing a wallet, the seed is no longer needed for day-to-day operations; only `AQUA_PASSWORD` is used to sign transactions.
 
 ## Configuration
 
@@ -264,7 +262,7 @@ Default config location: `~/.aqua/config.json`
 
 ## Security
 
-Mnemonics are encrypted at rest using a password (PBKDF2 + Fernet). Without a password, the mnemonic is stored base64-encoded only — use a password for real funds. **Note:** this password is NOT a BIP39 passphrase; the derived Liquid/Bitcoin keys depend solely on the mnemonic, so the same mnemonic restores identical descriptors in any BIP39-compliant wallet (AQUA, Blockstream Green, Jade, etc.).
+Seeds are encrypted at rest using a password (PBKDF2 + Fernet). Without a password, the seed is stored base64-encoded only — use a password for real funds. **Note:** this password is NOT a BIP39 passphrase; the derived Liquid/Bitcoin keys depend solely on the seed, so the same seed restores identical descriptors in any BIP39-compliant wallet (AQUA, Blockstream App, Jade, etc.).
 
 For maximum security you can:
 1. Generate wallet on an air-gapped device
