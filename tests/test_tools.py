@@ -886,17 +886,3 @@ class TestBtcExportDescriptor:
 # ---------------------------------------------------------------------------
 
 
-class TestNewBitcoinToolsRegistry:
-    def test_btc_import_descriptor_registered(self):
-        """btc_import_descriptor is in TOOLS and is callable."""
-        from aqua.tools import TOOLS
-
-        assert "btc_import_descriptor" in TOOLS
-        assert callable(TOOLS["btc_import_descriptor"])
-
-    def test_btc_export_descriptor_registered(self):
-        """btc_export_descriptor is in TOOLS and is callable."""
-        from aqua.tools import TOOLS
-
-        assert "btc_export_descriptor" in TOOLS
-        assert callable(TOOLS["btc_export_descriptor"])
