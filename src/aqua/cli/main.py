@@ -24,7 +24,15 @@ class AquaContext:
         self.verbose = verbose
 
 
-@click.group(context_settings={"auto_envvar_prefix": "AQUA"})
+class AquaGroup(click.Group):
+    def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        from ..banner import render_banner
+
+        click.echo(render_banner(), nl=False)
+        super().format_help(ctx, formatter)
+
+
+@click.group(cls=AquaGroup, context_settings={"auto_envvar_prefix": "AQUA"})
 @click.option(
     "--format",
     "fmt",
