@@ -95,14 +95,14 @@ def recommend(ctx, amount, direction, network):
     help="Send amount in satoshis.",
 )
 @click.option(
-    "--peg-out", "peg_in_flag", flag_value=False, default=True,
+    "--peg-out", "peg_out", is_flag=True, default=False,
     help="Quote peg-out (L-BTC → BTC). Default: peg-in (BTC → L-BTC).",
 )
 @click.option("--network", type=_NETWORK_OPTION, default="mainnet", show_default=True)
 @click.pass_obj
-def peg_quote(ctx, amount, peg_in_flag, network):
+def peg_quote(ctx, amount, peg_out, network):
     """Quote receive amount for a peg at current SideSwap fees (0.1%)."""
-    run_tool(ctx, lambda: sideswap_peg_quote(amount, peg_in_flag, network))
+    run_tool(ctx, lambda: sideswap_peg_quote(amount, not peg_out, network))
 
 
 @sideswap.command("peg-in")
@@ -294,7 +294,7 @@ def swap(ctx, asset_id, asset_ticker, amount, reverse, wallet_name, skip_confirm
     direction. Without --password-stdin, falls back to AQUA_PASSWORD env var
     or no password.
     """
-    from ..wallet import WalletManager
+    from ..assets import lookup_asset
 
     # Resolve asset using the wallet's network so testnet tickers resolve correctly
     network = "mainnet"
@@ -309,7 +309,21 @@ def swap(ctx, asset_id, asset_ticker, amount, reverse, wallet_name, skip_confirm
 
     asset_id = _resolve_asset(asset_id, asset_ticker, network)
 
-    # Confirmation: show a fresh quote unless the user opted out
+    # Resolve a human-readable label for the non-L-BTC side once.
+    asset_info = lookup_asset(asset_id, network)
+    asset_label = (
+        asset_ticker
+        if asset_ticker is not None
+        else (asset_info.ticker if asset_info is not None else asset_id[:8] + "…")
+    )
+    send_label = asset_label if reverse else "L-BTC"
+    recv_label = "L-BTC" if reverse else asset_label
+
+    # Confirmation: show a fresh quote unless the user opted out, and pin the
+    # confirmed recv_amount as a floor for the executor — protects against
+    # rate drift between this price-stream preview and the mkt::* quote that
+    # actually executes the swap.
+    min_recv_amount: int | None = None
     if not skip_confirm:
         click.echo("Fetching quote from SideSwap…", err=True)
         try:
@@ -320,9 +334,7 @@ def swap(ctx, asset_id, asset_ticker, amount, reverse, wallet_name, skip_confirm
                 network=network,
             )
         except Exception as e:
-            raise click.UsageError(f"Could not fetch quote: {e}") from e
-        send_label = "the asset" if reverse else "L-BTC"
-        recv_label = "L-BTC" if reverse else "the asset"
+            raise click.ClickException(f"Could not fetch quote: {e}") from e
         click.echo(
             f"Send: {preview.get('send_amount')} sats of {send_label}\n"
             f"Recv: {preview.get('recv_amount')} sats of {recv_label}\n"
@@ -331,8 +343,11 @@ def swap(ctx, asset_id, asset_ticker, amount, reverse, wallet_name, skip_confirm
             err=True,
         )
         if preview.get("error_msg"):
-            raise click.UsageError(f"SideSwap quote error: {preview['error_msg']}")
+            raise click.ClickException(f"SideSwap quote error: {preview['error_msg']}")
         click.confirm("Proceed with this swap?", abort=True, err=True)
+        recv = preview.get("recv_amount")
+        if isinstance(recv, int) and recv > 0:
+            min_recv_amount = recv
 
     password = resolve_secret(
         "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
@@ -347,6 +362,7 @@ def swap(ctx, asset_id, asset_ticker, amount, reverse, wallet_name, skip_confirm
                 "wallet_name": wallet_name,
                 "password": password,
                 "send_bitcoins": not reverse,
+                "min_recv_amount": min_recv_amount,
             },
         ),
     )

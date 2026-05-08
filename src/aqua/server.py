@@ -689,6 +689,16 @@ TOOL_SCHEMAS = {
                     "type": "string",
                     "description": "Password to decrypt mnemonic (if encrypted at rest)",
                 },
+                "min_recv_amount": {
+                    "type": "integer",
+                    "description": (
+                        "Optional floor on the dealer's recv_amount in sats. "
+                        "Pass the recv_amount the user just confirmed in "
+                        "sideswap_quote — if the rate moved between preview "
+                        "and execution and the dealer offers less, the swap "
+                        "is rejected before signing."
+                    ),
+                },
             },
             "required": ["asset_id", "send_amount"],
         },
@@ -1356,7 +1366,9 @@ Please:
 7. Ask for explicit confirmation
 8. If wallet is password-encrypted, ask me for the password
 9. Call sideswap_execute_swap with the same asset_id, send_amount, and
-   send_bitcoins flag.
+   send_bitcoins flag. ALSO pass min_recv_amount=<recv_amount from the
+   quote> so the swap aborts if the rate has drifted between the preview
+   I just confirmed and the mkt::* quote that actually executes.
    The tool will: capture a fresh quote (price may have moved by a few
    percent), request the PSET via SideSwap's market.get_quote, VERIFY it
    locally against the quote, sign it, and submit via market.taker_sign.

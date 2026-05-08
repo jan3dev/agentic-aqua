@@ -250,6 +250,63 @@ Or for send swaps (Boltz):
 
 File permissions: `0o600`. Status values: `pending` | `processing` | `completed` | `failed`. The `lightning_transaction_status` tool auto-claims settled receive swaps.
 
+### SideSwap Peg File Structure
+
+Stored at `~/.aqua/sideswap_pegs/{order_id}.json`:
+
+```json
+{
+  "order_id": "abc123",
+  "peg_in": true,
+  "peg_addr": "bc1q...",
+  "recv_addr": "lq1...",
+  "amount": null,
+  "expected_recv": null,
+  "wallet_name": "default",
+  "network": "mainnet",
+  "status": "pending",
+  "created_at": "2026-05-08T12:00:00Z",
+  "expires_at": null,
+  "lockup_txid": null,
+  "payout_txid": null,
+  "detected_confs": null,
+  "total_confs": null,
+  "tx_state": null,
+  "last_checked_at": null,
+  "return_address": null
+}
+```
+
+`peg_in: true` = BTC → L-BTC; `peg_in: false` = L-BTC → BTC. `peg_addr` is where the user sends funds; `recv_addr` is where they receive. `amount` is set for peg-out (user specifies send amount), may be `null` for peg-in. `tx_state` mirrors SideSwap server values: `Detected` | `Processing` | `Done` | `InsufficientAmount`. File written before broadcast and updated on each `sideswap_peg_status` poll.
+
+File permissions: `0o600`. Status values: `pending` → `detected` → `processing` → `completed` | `failed`.
+
+### SideSwap Swap File Structure
+
+Stored at `~/.aqua/sideswap_swaps/{order_id}.json`:
+
+```json
+{
+  "order_id": "mkt_42",
+  "submit_id": "42",
+  "send_asset": "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d",
+  "send_amount": 100000,
+  "recv_asset": "ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2",
+  "recv_amount": 9950000,
+  "price": 99.5,
+  "wallet_name": "default",
+  "network": "mainnet",
+  "status": "pending",
+  "created_at": "2026-05-08T12:00:00Z",
+  "txid": null,
+  "last_error": null
+}
+```
+
+`order_id` is `mkt_{quote_id}`. `send_asset` / `recv_asset` are Liquid asset IDs (hex). File written before PSET verification and updated at each step for crash recovery.
+
+File permissions: `0o600`. Status values: `pending` → `verified` → `signed` → `submitted` → `broadcast` | `failed`.
+
 ### Config Structure
 
 ```json

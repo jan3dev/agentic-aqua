@@ -1244,6 +1244,7 @@ class SideSwapSwapManager:
         wallet_name: str = "default",
         password: Optional[str] = None,
         send_bitcoins: bool = True,
+        min_recv_amount: Optional[int] = None,
         *,
         fee_tolerance_sats: int = DEFAULT_FEE_TOLERANCE_SATS,
         quote_wait_seconds: float = QUOTE_WAIT_SECONDS,
@@ -1374,6 +1375,17 @@ class SideSwapSwapManager:
         if send_amount_q != send_amount:
             raise SideSwapWSError(
                 f"Quote send_amount mismatch: requested {send_amount}, dealer offered {send_amount_q}"
+            )
+        # Reject if the dealer's recv_amount is below the floor the caller
+        # confirmed (typically the price-stream preview the user just OK'd).
+        # mkt::* uses a different price source than subscribe_price_stream so
+        # the rate can move between preview and execution; this guard ensures
+        # the user never settles for less than what they actually saw.
+        if min_recv_amount is not None and recv_amount_q < min_recv_amount:
+            raise SideSwapWSError(
+                f"Quote recv_amount below floor: dealer offered {recv_amount_q} sats, "
+                f"caller required at least {min_recv_amount}. The market moved "
+                "between the preview and execution; refetch a quote and re-confirm."
             )
         recv_amount = recv_amount_q
 
