@@ -14,7 +14,7 @@ Wire formats (mirroring the AQUA Flutter wallet's `sideswap_websocket_provider`)
 
 Methods used here:
 
-- `login_client`           — anonymous (api_key=None), identifies us as agentic-aqua
+- `login_client`           — authenticated with JAN3 API key for revenue attribution
 - `server_status`          — fees, min amounts, hot-wallet balances
 - `peg_fee`                — quote fee for a given amount and direction
 - `peg`                    — initiate peg-in (BTC→L-BTC) or peg-out (L-BTC→BTC)
@@ -53,6 +53,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
@@ -70,6 +71,10 @@ SIDESWAP_WS_URL = {
 
 USER_AGENT = "agentic-aqua"
 PROTOCOL_VERSION = "1.0.0"
+SIDESWAP_API_KEY = os.environ.get(
+    "SIDESWAP_API_KEY",
+    "fee09b63c148b335ccd0c4641c47359c8a7a803c517487bc61ca18edc19a72d5",
+)
 
 # Network defaults: SideSwap surfaces live values via `server_status`; these
 # are conservative fallbacks for when the WS is unreachable. Treat `server_status`
@@ -464,7 +469,7 @@ class SideSwapWSClient:
         return await self.call(
             "login_client",
             {
-                "api_key": None,
+                "api_key": SIDESWAP_API_KEY,
                 "cookie": None,
                 "user_agent": USER_AGENT,
                 "version": PROTOCOL_VERSION,
