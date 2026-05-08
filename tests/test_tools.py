@@ -728,6 +728,8 @@ class TestToolRegistry:
             "sideswap_recommend",
             "sideswap_list_assets",
             "sideswap_quote",
+            "sideswap_execute_swap",
+            "sideswap_swap_status",
         }
         assert set(TOOLS.keys()) == expected
 

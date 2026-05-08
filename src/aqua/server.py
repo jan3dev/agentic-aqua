@@ -619,9 +619,8 @@ TOOL_SCHEMAS = {
         "description": (
             "Get a read-only price quote for a SideSwap Liquid asset swap "
             "(e.g. L-BTC ↔ USDt). Provide exactly one of send_amount or "
-            "recv_amount. NOTE: this is a quote only — atomic swap execution "
-            "is not yet implemented in agentic-aqua (PSET output verification "
-            "needs an audit). To execute, use the AQUA mobile wallet or sideswap.io."
+            "recv_amount. Use this BEFORE sideswap_execute_swap so the user "
+            "can confirm the price."
         ),
         "inputSchema": {
             "type": "object",
@@ -650,6 +649,58 @@ TOOL_SCHEMAS = {
                 },
             },
             "required": ["asset_id"],
+        },
+    },
+    "sideswap_execute_swap": {
+        "description": (
+            "Execute a Liquid atomic swap of L-BTC for an asset on SideSwap. "
+            "Currently L-BTC → asset only (e.g. L-BTC → USDt). The PSET "
+            "returned by SideSwap is verified locally against the agreed "
+            "quote BEFORE signing — the swap is aborted if the wallet's net "
+            "balance change does not exactly match (refusing to sign protects "
+            "against a hostile server). Order is persisted at every step for "
+            "crash recovery. ALWAYS call sideswap_quote first and confirm the "
+            "price with the user before invoking this tool."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "asset_id": {
+                    "type": "string",
+                    "description": "Liquid asset ID to receive (e.g. USDt)",
+                },
+                "send_amount": {
+                    "type": "integer",
+                    "description": "L-BTC sats to send",
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Liquid wallet to sign with",
+                    "default": "default",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Password to decrypt mnemonic (if encrypted at rest)",
+                },
+            },
+            "required": ["asset_id", "send_amount"],
+        },
+    },
+    "sideswap_swap_status": {
+        "description": (
+            "Get persisted status of a SideSwap atomic asset swap. Once the "
+            "swap is broadcast, pass the txid to lw_tx_status to track "
+            "on-chain confirmations."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "order_id": {
+                    "type": "string",
+                    "description": "Order ID returned from sideswap_execute_swap",
+                },
+            },
+            "required": ["order_id"],
         },
     },
 }
@@ -731,9 +782,12 @@ SIDESWAP (BTC ↔ L-BTC pegs and Liquid asset swaps):
 - For VERY LARGE peg-ins that exceed SideSwap's hot-wallet balance, expect the
   cold-wallet path: 102 BTC confirmations (~17 hours). Always check
   sideswap_server_status first and warn the user when this applies.
-- For Liquid asset swaps (e.g. L-BTC ↔ USDt), sideswap_quote returns a quote
-  but does NOT execute the swap — direct the user to the AQUA mobile wallet
-  or sideswap.io to complete it.
+- For Liquid asset swaps (e.g. L-BTC → USDt), sideswap_quote returns a quote
+  and sideswap_execute_swap performs the swap. The PSET returned by SideSwap
+  is verified LOCALLY against the agreed quote before signing — refusing to
+  sign if the recv balance does not match exactly. Currently only L-BTC →
+  asset is supported; for asset → L-BTC, direct the user to the AQUA mobile
+  wallet or sideswap.io.
 
 WHEN TO RECOMMEND A PEG:
 - "I want to move my BTC to Liquid" → if amount ≥ 0.01 BTC, recommend peg-in.
@@ -1275,18 +1329,31 @@ Please:
                         role="user",
                         content=TextContent(
                             type="text",
-                            text="""I want to swap Liquid assets (e.g. L-BTC ↔ USDt) via SideSwap.
+                            text="""I want to swap Liquid assets (e.g. L-BTC → USDt) via SideSwap.
 
 Please:
 1. Call sideswap_list_assets to show what's tradeable on SideSwap right now
-2. Ask me what I want to swap and which direction (sending L-BTC for an asset
-   vs sending an asset for L-BTC)
-3. Ask me for an amount (either send amount or receive amount, not both)
-4. Call sideswap_quote to get a price quote
-5. Show me the result clearly: send X → receive Y at price P, with fixed_fee
-6. IMPORTANT: tell me that agentic-aqua does NOT yet execute SideSwap atomic
-   swaps (PSET output verification needs an audit before live signing). To
-   execute, I need to use the AQUA mobile wallet or sideswap.io.""",
+2. Ask me what I want to swap. Currently agentic-aqua supports L-BTC → asset
+   only; for asset → L-BTC tell me to use the AQUA mobile wallet
+3. Ask me for the send_amount in L-BTC sats (or in BTC and convert)
+4. Show me my current L-BTC balance (lw_balance) so I have context
+5. Call sideswap_quote with send_bitcoins=true to get a price quote
+6. Show me a summary clearly:
+   - Send: X L-BTC sats
+   - Receive: Y sats of [asset]
+   - Price + fixed_fee
+   - Net effective rate
+7. Ask for explicit confirmation
+8. If wallet is password-encrypted, ask me for the password
+9. Call sideswap_execute_swap with the same asset_id and send_amount.
+   The tool will: capture a fresh quote (price may have moved by a few
+   percent), call start_swap_web, request the PSET, VERIFY it locally
+   against the quote, sign it, and submit. If the verification fails the
+   tool aborts WITHOUT signing — that's a safety feature, not a bug; relay
+   the error message to me.
+10. On success show me txid + the explorer link
+11. Tell me to use sideswap_swap_status with the order_id to recall details
+    later, and lw_tx_status with the txid to check on-chain confirmation""",
                         ),
                     )
                 ]

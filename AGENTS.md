@@ -16,7 +16,7 @@ AI Assistant ←→ MCP Server (Python) ←→ LWK (Liquid) ──→ Electrum/E
 
 No local server required. Liquid uses Electrum/Esplora; Bitcoin uses Esplora only. All via Blockstream's public infrastructure.
 
-## Tools (30 total)
+## Tools (32 total)
 
 Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified tools are `unified_*`; Lightning tools are `lightning_*`; SideSwap tools are `sideswap_*`.
 
@@ -85,7 +85,9 @@ Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified 
 | `sideswap_peg_status` | Check status of a peg order (peg-in or peg-out). Returns confs, tx_state, lockup_txid, payout_txid. | `order_id`: string |
 | `sideswap_recommend` | Recommend peg vs swap-market for a BTC ↔ L-BTC conversion. Surfaces time-vs-fee trade-off and warns if amount exceeds hot-wallet liquidity. | `amount` (sats), `direction`: btc_to_lbtc/lbtc_to_btc, `network`: optional |
 | `sideswap_list_assets` | List Liquid assets supported by SideSwap (USDt, EURx, MEX, DePix, etc.). | `network`: optional |
-| `sideswap_quote` | **Read-only.** Get a price quote for a Liquid asset swap (e.g. L-BTC ↔ USDt). Execution is NOT yet implemented in agentic-aqua — direct user to AQUA mobile or sideswap.io. | `asset_id`, `send_amount` (sats) OR `recv_amount` (sats), `send_bitcoins`: optional, `network`: optional |
+| `sideswap_quote` | Read-only price quote for a Liquid asset swap (e.g. L-BTC ↔ USDt). Use BEFORE `sideswap_execute_swap` to confirm price with user. | `asset_id`, `send_amount` (sats) OR `recv_amount` (sats), `send_bitcoins`: optional, `network`: optional |
+| `sideswap_execute_swap` | Execute an atomic swap of L-BTC for an asset. PSET is verified locally against the agreed quote before signing — refuses to sign if balance does not match exactly. **L-BTC → asset only**; reverse direction not supported (use AQUA mobile). | `asset_id`, `send_amount` (sats), `wallet_name`: optional, `password`: optional |
+| `sideswap_swap_status` | Get persisted status of an atomic swap. Pass the txid to `lw_tx_status` for on-chain confirmation. | `order_id`: string |
 
 > ⚠️ **Pegs vs swaps**: pegs charge 0.1% (vs 0.2% for instant swap-market trades) but require waiting for confirmations. Always call `sideswap_recommend` for amounts ≥ 0.01 BTC and surface the trade-off (and any 102-confirmation cold-wallet warning) before initiating a peg-in.
 
@@ -140,6 +142,8 @@ Wallet data stored in `~/.aqua/`:
 │   └── {swap_id}.json   # Contains swap details + status + optional preimage
 ├── sideswap_pegs/       # SideSwap peg orders (peg-in and peg-out)
 │   └── {order_id}.json  # Contains order, addresses, status, tx_state, payout_txid
+├── sideswap_swaps/      # SideSwap atomic asset swap orders (L-BTC → asset)
+│   └── {order_id}.json  # Contains quote, submit_id, status, txid, optional last_error
 └── cache/
     └── <wallet_name>/
         └── btc/
@@ -341,7 +345,16 @@ SideSwap (`sideswap.io`) provides BTC ↔ L-BTC pegs and Liquid asset swaps via 
 - Peg-in: 2 BTC confs (~20 min) hot-wallet path; 102 BTC confs (~17 hours) if amount exceeds `PegInWalletBalance`
 - Peg-out: 2 Liquid confs + federation BTC sweep (typically 15–60 min total)
 
-**Asset swap execution is NOT implemented** in agentic-aqua: the legacy `start_swap_web` + HTTP `swap_start`/`swap_sign` flow requires local PSET output verification before signing (the server is trusted-but-verify; an unaudited verifier could be tricked into signing a PSET that pays the user nothing). `sideswap_quote` returns a price quote only; users execute via the AQUA mobile wallet or sideswap.io.
+**Asset swap execution** (`sideswap_execute_swap`) supports the legacy `start_swap_web` + HTTP `swap_start`/`swap_sign` flow with **local PSET verification before signing**. Direction is currently L-BTC → asset only.
+
+**Verification rules** (`verify_pset_balances` in `src/aqua/sideswap.py`):
+1. Wallet must gain *exactly* `recv_amount` of `recv_asset`.
+2. Wallet must lose at most `send_amount + fee_tolerance_sats` (default 1000) of `send_asset`.
+3. No other asset may have a non-zero balance change.
+
+If any rule fails, `PsetVerificationError` is raised and signing is aborted — the order is persisted as `failed` for forensics. The order is also persisted at every flow step (`pending` → `verified` → `signed` → `broadcast`) for crash recovery.
+
+UTXO selection (`select_swap_utxos`): confidential (asset_bf and value_bf both non-zero), holding the requested send_asset, sorted descending by value, accumulated to cover `send_amount`. wpkh-only (matching the wallet's BIP84 m/84'/1776'/0' descriptor).
 
 ## Bitcoin Implementation Details
 
