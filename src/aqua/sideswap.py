@@ -22,13 +22,15 @@ Methods used here:
 - `assets`                 — list supported assets for swap quoting
 - `subscribe_price_stream` / `unsubscribe_price_stream`
                            — get a price quote for a Liquid asset swap
+- `market.list_markets`    — find the market for an asset pair (mkt::* flow)
+- `market.start_quotes`    — open a quote stream with our UTXOs + addresses
+- `market.get_quote`       — receive the half-built PSET to sign
+- `market.taker_sign`      — submit the locally-signed PSET; server broadcasts
+
+Legacy methods retained for compatibility / debugging only:
+
 - `start_swap_web`         — convert a quote into an order with `upload_url`
-                             for the HTTP `swap_start` / `swap_sign` calls
-
-Plus HTTP (POST to `upload_url` returned by `start_swap_web`):
-
-- `swap_start`             — server returns the half-built PSET to sign
-- `swap_sign`              — submit the locally-signed PSET; server broadcasts
+- HTTP `swap_start` / `swap_sign` to that `upload_url`
 
 PSET verification (security-critical): before signing, we call
 `wollet.pset_details(pset).balance.balances()` and confirm the wallet's net
@@ -521,8 +523,11 @@ class SideSwapWSClient:
         send_amount: int,
         recv_amount: int,
     ) -> dict:
-        """Convert an accepted price quote into an order. Returns an `upload_url`
-        that the HTTP `swap_start` / `swap_sign` calls go to."""
+        """[Legacy] Convert an accepted price quote into an order. Returns an
+        `upload_url` that the HTTP `swap_start` / `swap_sign` calls go to.
+
+        Kept for compatibility/debugging; the live `execute_swap` orchestrator
+        uses the mkt::* flow below."""
         return await self.call(
             "start_swap_web",
             {
@@ -533,6 +538,95 @@ class SideSwapWSClient:
                 "recv_amount": recv_amount,
             },
         )
+
+    # -- mkt::* (modern) ------------------------------------------------------
+    #
+    # All mkt::* requests use top-level method "market" and a single-key
+    # params object whose key is the snake_case mkt::Request variant. The
+    # inner enum's serde tag is `rename_all = "snake_case"`. Per
+    # `sideswap_api/src/mkt.rs`. AssetType and TradeDir do NOT have a serde
+    # rename_all, so they serialise as PascalCase ("Base"/"Quote",
+    # "Buy"/"Sell").
+
+    async def mkt(self, variant: str, params: dict | None = None) -> dict:
+        """Send a `market` request with the given inner variant + params.
+
+        Returns the inner result, unwrapping the {variant: <data>} envelope.
+        """
+        envelope = {variant: (params if params is not None else {})}
+        result = await self.call("market", envelope) or {}
+        # Server wraps responses in {variant_name: <data>} too; unwrap defensively.
+        if isinstance(result, dict) and len(result) == 1 and variant in result:
+            return result[variant]
+        return result
+
+    async def mkt_list_markets(self) -> list[dict]:
+        """List available markets. Returns a list of {asset_pair, fee_asset, type}."""
+        resp = await self.mkt("list_markets", {})
+        return (resp or {}).get("markets", []) or resp.get("list", []) or []
+
+    async def mkt_start_quotes(
+        self,
+        *,
+        asset_pair: dict,
+        asset_type: str,  # "Base" | "Quote"
+        amount: int,
+        trade_dir: str,  # "Buy" | "Sell"
+        utxos: list[dict],
+        receive_address: str,
+        change_address: str,
+        instant_swap: bool = True,
+    ) -> dict:
+        """Open a quote subscription. Returns {quote_sub_id, fee_asset}."""
+        return await self.mkt(
+            "start_quotes",
+            {
+                "asset_pair": asset_pair,
+                "asset_type": asset_type,
+                "amount": amount,
+                "trade_dir": trade_dir,
+                "utxos": utxos,
+                "receive_address": receive_address,
+                "change_address": change_address,
+                "instant_swap": instant_swap,
+            },
+        )
+
+    async def mkt_stop_quotes(self) -> dict:
+        return await self.mkt("stop_quotes", {})
+
+    async def mkt_get_quote(self, quote_id: int) -> dict:
+        """Returns {pset, ttl, receive_ephemeral_sk, change_ephemeral_sk?}."""
+        return await self.mkt("get_quote", {"quote_id": quote_id})
+
+    async def mkt_taker_sign(self, quote_id: int, pset_b64: str) -> dict:
+        """Submit signed PSET. Returns {txid}."""
+        return await self.mkt("taker_sign", {"quote_id": quote_id, "pset": pset_b64})
+
+    async def next_market_notification(
+        self,
+        inner_variant: str,
+        *,
+        timeout: float = WS_TIMEOUT_SECONDS,
+    ) -> dict:
+        """Wait for the next `market` notification whose inner variant matches.
+
+        mkt::* notifications come on the WS as
+        `{"method":"market", "params":{"<inner_variant>":{...}}}`. Returns the
+        inner data. Drops non-matching market notifications and any other
+        method's notifications until one matches or `timeout` elapses.
+        """
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise SideSwapWSError(
+                    f"Timed out waiting for market.{inner_variant} notification"
+                )
+            notif = await self.next_notification("market", timeout=remaining)
+            params = (notif or {}).get("params") or {}
+            if isinstance(params, dict) and inner_variant in params:
+                return params[inner_variant]
 
 
 # ---------------------------------------------------------------------------
@@ -623,6 +717,84 @@ class SideSwapHTTPClient:
                 "pset": signed_pset_b64,
             },
         )
+
+
+# ---------------------------------------------------------------------------
+# Market resolution + quote parsing for the mkt::* flow
+# ---------------------------------------------------------------------------
+
+
+def resolve_market(
+    markets: list[dict],
+    send_asset: str,
+    recv_asset: str,
+) -> tuple[dict, str, str]:
+    """Find the market matching the swap and derive (asset_type, trade_dir).
+
+    SideSwap markets are unordered pairs: a market with `{base: USDt, quote:
+    L-BTC}` covers both directions of L-BTC ↔ USDt. The market never tells you
+    which way to trade — that's controlled by `(asset_type, trade_dir)` on the
+    `start_quotes` request.
+
+    Convention used here for the taker case (we always *sell* whatever side we
+    hold and want to convert): trade_dir = "Sell", asset_type = the side that
+    matches our send_asset.
+
+    Args:
+        markets: List of `{asset_pair: {base, quote}, fee_asset, type}` from
+            `mkt_list_markets`.
+        send_asset: Asset id we are sending.
+        recv_asset: Asset id we are receiving.
+
+    Returns:
+        (market_dict, asset_type, trade_dir). The asset_type / trade_dir
+        strings are PascalCase to match the wire format ("Base" | "Quote",
+        "Buy" | "Sell").
+
+    Raises:
+        SideSwapWSError if no matching market exists.
+    """
+    for market in markets:
+        pair = market.get("asset_pair") or {}
+        base = pair.get("base")
+        quote = pair.get("quote")
+        if base is None or quote is None:
+            continue
+        if {base, quote} != {send_asset, recv_asset}:
+            continue
+        # Match: asset_type names the side that matches send_asset; trade_dir is Sell.
+        asset_type = "Base" if send_asset == base else "Quote"
+        return market, asset_type, "Sell"
+    raise SideSwapWSError(
+        f"No SideSwap market for pair ({send_asset[:8]}…, {recv_asset[:8]}…)"
+    )
+
+
+def parse_quote_status(quote_notif: dict) -> dict:
+    """Extract a quote_id + amounts from a `quote` notification's `status` field.
+
+    The status is one of three variants per `mkt::QuoteStatus`:
+        Success { quote_id, base_amount, quote_amount, server_fee, fixed_fee, ttl }
+        LowBalance { ..., available }
+        Error { error_msg }
+
+    Returns the unwrapped Success dict on success; raises `SideSwapWSError` on
+    LowBalance or Error so the caller never proceeds with an invalid quote.
+    """
+    status = quote_notif.get("status")
+    if not isinstance(status, dict) or not status:
+        raise SideSwapWSError(f"Malformed quote status: {status!r}")
+    if "Success" in status:
+        return status["Success"]
+    if "LowBalance" in status:
+        lb = status["LowBalance"]
+        raise SideSwapWSError(
+            f"Quote unavailable: dealer low balance "
+            f"(available={lb.get('available')}, fixed_fee={lb.get('fixed_fee')})"
+        )
+    if "Error" in status:
+        raise SideSwapWSError(f"Quote error: {status['Error'].get('error_msg')}")
+    raise SideSwapWSError(f"Unknown QuoteStatus: {status!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -1162,19 +1334,28 @@ DEFAULT_FEE_TOLERANCE_SATS = 1_000
 
 
 class SideSwapSwapManager:
-    """Orchestrates a SideSwap atomic asset swap end-to-end.
+    """Orchestrates a SideSwap atomic asset swap end-to-end via the modern
+    `mkt::*` flow.
 
-    Flow (legacy `start_swap_web` + HTTP `swap_start`/`swap_sign`):
+    Flow:
 
-      1. Subscribe to a price stream and capture a quote (price + amounts)
-      2. Send `start_swap_web` with the captured price → returns `upload_url`
-      3. Select confidential UTXOs of `send_asset` covering `send_amount`
-      4. POST `swap_start` with inputs + recv_addr + change_addr → returns PSET
-      5. **Verify** the PSET with the wallet's `pset_details` against the quote.
-         Aborts (raises `PsetVerificationError`) if the PSET doesn't match.
-      6. Sign the PSET with `signer.sign(pset)`
-      7. POST `swap_sign` with the signed PSET → returns `txid`
-      8. Persist throughout; on broadcast, save `txid` and status="broadcast"
+      1. Pick UTXOs of `send_asset` covering `send_amount` and prepare
+         receive + change addresses (mkt::* wants them up-front)
+      2. WS `market.list_markets` to find the market for our asset pair
+      3. WS `market.start_quotes` with the inputs + addresses + asset_type +
+         trade_dir; server begins streaming `quote` notifications
+      4. Wait for a `quote` notification with status=Success and capture
+         the resulting `quote_id` + amounts
+      5. WS `market.get_quote` with the quote_id → returns the PSET
+      6. **Verify** the PSET with the wallet's `pset_details` against the
+         agreed quote. Aborts (raises `PsetVerificationError`) on mismatch.
+      7. Sign the PSET with `signer.sign(pset)`
+      8. WS `market.taker_sign` with the signed PSET → returns `txid`
+      9. Persist at every step; on broadcast, save `txid` and status="broadcast"
+
+    The legacy `start_swap_web` + HTTP `swap_start`/`swap_sign` path is no
+    longer used by this orchestrator; its WS method and HTTP client are kept
+    in this module for compatibility / debugging only.
     """
 
     def __init__(self, storage, wallet_manager) -> None:
@@ -1255,58 +1436,93 @@ class SideSwapSwapManager:
         else:
             send_asset, recv_asset = asset_id, policy_asset
 
-        async def _quote_and_start() -> tuple[dict, dict]:
+        # Build the inputs/addresses up-front; mkt::* wants them on
+        # start_quotes (not as a follow-up call).
+        wollet = self.wallet_manager._get_wollet(wallet_name)
+        inputs = select_swap_utxos(wollet.utxos(), send_asset, send_amount)
+        recv_addr = str(wollet.address(None).address())
+        change_addr = str(wollet.address(None).address())
+
+        async def _quote_to_pset() -> tuple[dict, dict, dict]:
+            """Open WS, run the mkt::* dance, return (market, quote, get_quote_resp)."""
             async with SideSwapWSClient(network) as client:
                 await client.login_client()
-                # Get the streamed price quote
-                initial = await client.subscribe_price_stream(
-                    asset=asset_id,
-                    send_bitcoins=send_bitcoins,
-                    send_amount=send_amount,
+                # Find a market that covers our pair
+                markets = await client.mkt_list_markets()
+                market, asset_type, trade_dir = resolve_market(
+                    markets, send_asset=send_asset, recv_asset=recv_asset
                 )
-                quote = initial or {}
-                if not quote.get("price"):
-                    notif = await client.next_notification(
-                        "update_price_stream", timeout=quote_wait_seconds
-                    )
-                    quote = (notif or {}).get("params") or {}
-                if not quote.get("price"):
-                    raise SideSwapWSError(
-                        "SideSwap did not return a usable price quote"
-                    )
-                if quote.get("error_msg"):
-                    raise SideSwapWSError(f"SideSwap quote error: {quote['error_msg']}")
-                # Accept the price and start the order
-                start_resp = await client.start_swap_web(
-                    asset=asset_id,
-                    price=float(quote["price"]),
-                    send_bitcoins=send_bitcoins,
-                    send_amount=int(quote["send_amount"]),
-                    recv_amount=int(quote["recv_amount"]),
+                # Open quote subscription with our UTXOs + addresses pre-attached
+                await client.mkt_start_quotes(
+                    asset_pair=market["asset_pair"],
+                    asset_type=asset_type,
+                    amount=send_amount,
+                    trade_dir=trade_dir,
+                    utxos=inputs,
+                    receive_address=recv_addr,
+                    change_address=change_addr,
+                    instant_swap=True,
                 )
+                # Wait for the first usable quote — a `quote` notification with
+                # a Success status. parse_quote_status raises on LowBalance/Error.
+                quote_notif = await client.next_market_notification(
+                    "quote", timeout=quote_wait_seconds
+                )
+                quote = parse_quote_status(quote_notif)
+                # Accept the quote and request the half-built PSET
+                get_quote_resp = await client.mkt_get_quote(int(quote["quote_id"]))
+                # Best-effort cleanup
                 try:
-                    await client.unsubscribe_price_stream(asset_id)
+                    await client.mkt_stop_quotes()
                 except Exception:
                     pass
-                return quote, start_resp
+                return market, quote, get_quote_resp
 
-        quote, start_resp = _run(_quote_and_start())
+        market, quote_data, get_quote_resp = _run(_quote_to_pset())
 
-        order_id = start_resp.get("order_id")
-        upload_url = start_resp.get("upload_url")
-        recv_amount = int(start_resp.get("recv_amount") or quote.get("recv_amount"))
-        if not order_id or not upload_url:
-            raise SideSwapWSError(f"Unexpected start_swap_web response: {start_resp!r}")
+        # Decide a stable order_id we control for persistence. SideSwap mkt::*
+        # gives us a `quote_id` (numeric) per quote; the `order_id` field is
+        # only used for marker resting orders. We persist the quote_id as a
+        # string in our `order_id` slot so the rest of the manager (status
+        # lookup, storage path) keeps the same shape.
+        quote_id = int(quote_data["quote_id"])
+        order_id = f"mkt_{quote_id}"
+        recv_amount = int(quote_data["quote_amount"]) if asset_id == market["asset_pair"]["base"] else int(quote_data["base_amount"])
+        # Re-derive recv/send amounts from the quote, not the user's request:
+        # the dealer's quote_amount/base_amount are the canonical numbers.
+        if send_asset == market["asset_pair"].get("base"):
+            send_amount_q = int(quote_data["base_amount"])
+            recv_amount_q = int(quote_data["quote_amount"])
+        else:
+            send_amount_q = int(quote_data["quote_amount"])
+            recv_amount_q = int(quote_data["base_amount"])
+        if send_amount_q != send_amount:
+            raise SideSwapWSError(
+                f"Quote send_amount mismatch: requested {send_amount}, dealer offered {send_amount_q}"
+            )
+        recv_amount = recv_amount_q
 
-        # Persist the in-progress swap before any HTTP work
+        pset_b64 = get_quote_resp.get("pset")
+        if not pset_b64:
+            raise SideSwapWSError(f"Unexpected get_quote response: {get_quote_resp!r}")
+
+        # Persist the in-progress swap before signing.
+        # `submit_id` is reused to hold the quote_id so existing storage stays
+        # backward-compatible with the legacy flow.
+        price = float(quote_data.get("server_fee", 0)) and 0.0  # placeholder; filled below
+        # SideSwap quote doesn't return a single 'price' field on mkt::*; derive
+        # it from amounts. price = quote_amount / base_amount — but client may
+        # interpret either side, so we just store recv/send ratio for reference.
+        price = recv_amount / send_amount if send_amount else 0.0
+
         swap = SideSwapSwap(
             order_id=order_id,
-            submit_id=None,
+            submit_id=str(quote_id),
             send_asset=send_asset,
             send_amount=send_amount,
             recv_asset=recv_asset,
             recv_amount=recv_amount,
-            price=float(quote["price"]),
+            price=price,
             wallet_name=wallet_name,
             network=network,
             status="pending",
@@ -1315,39 +1531,9 @@ class SideSwapSwapManager:
         self.storage.save_sideswap_swap(swap)
 
         try:
-            # Build the inputs/addresses for swap_start. AQUA Flutter selects
-            # only UTXOs of `send_asset` (no separate L-BTC fee inputs); the
-            # SideSwap dealer absorbs the network fee on the reverse direction
-            # and routes it through the user's L-BTC change on the forward
-            # direction. See `lib/features/sideswap/providers/swap_provider.dart`.
-            wollet = self.wallet_manager._get_wollet(wallet_name)
-            inputs = select_swap_utxos(wollet.utxos(), send_asset, send_amount)
-            recv_addr = str(wollet.address(None).address())
-            change_addr = str(wollet.address(None).address())
-
-            http = SideSwapHTTPClient(upload_url)
-            start_payload = http.swap_start(
-                order_id=order_id,
-                inputs=inputs,
-                recv_addr=recv_addr,
-                change_addr=change_addr,
-                send_asset=send_asset,
-                send_amount=send_amount,
-                recv_asset=recv_asset,
-                recv_amount=recv_amount,
-            )
-            submit_id = start_payload.get("submit_id")
-            pset_b64 = start_payload.get("pset")
-            if not submit_id or not pset_b64:
-                raise SideSwapWSError(
-                    f"Unexpected swap_start response: {start_payload!r}"
-                )
-            swap.submit_id = submit_id
-            self.storage.save_sideswap_swap(swap)
-
-            # Verify before signing — security-critical. fee_asset is always
-            # the policy asset (L-BTC); when send_asset != L-BTC the fee
-            # tolerance does NOT relax the constraint on the asset side.
+            # Verify before signing — security-critical. fee_asset is pinned
+            # to the policy asset; on the reverse direction this prevents a
+            # 1000-sat siphon of the asset via the fee tolerance loophole.
             self._verify_pset(
                 pset_b64,
                 wollet,
@@ -1371,13 +1557,16 @@ class SideSwapSwapManager:
             swap.status = "signed"
             self.storage.save_sideswap_swap(swap)
 
-            # Submit signed PSET; server merges & broadcasts
-            sign_payload = http.swap_sign(
-                order_id=order_id, submit_id=submit_id, signed_pset_b64=signed_b64
-            )
+            # Submit signed PSET via mkt::taker_sign; server merges & broadcasts
+            async def _submit() -> dict:
+                async with SideSwapWSClient(network) as client:
+                    await client.login_client()
+                    return await client.mkt_taker_sign(quote_id, signed_b64)
+
+            sign_payload = _run(_submit())
             txid = sign_payload.get("txid")
             if not txid:
-                raise SideSwapWSError(f"Unexpected swap_sign response: {sign_payload!r}")
+                raise SideSwapWSError(f"Unexpected taker_sign response: {sign_payload!r}")
             swap.txid = txid
             swap.status = "broadcast"
             self.storage.save_sideswap_swap(swap)

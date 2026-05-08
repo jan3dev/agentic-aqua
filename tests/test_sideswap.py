@@ -22,8 +22,11 @@ from aqua.sideswap import (
     SideSwapPriceQuote,
     SideSwapServerStatus,
     SideSwapSwap,
+    SideSwapWSError,
     map_peg_status,
+    parse_quote_status,
     recommend_peg_or_swap,
+    resolve_market,
     verify_pset_balances,
 )
 from aqua.storage import Storage
@@ -114,6 +117,39 @@ class FakeWSClient:
     async def next_notification(self, method=None, *, timeout=30.0):  # noqa: ARG002
         FakeWSClient.calls.append(("notification", {"method": method}))
         notif = FakeWSClient.responses.get("__notification__")
+        if isinstance(notif, Exception):
+            raise notif
+        return notif
+
+    # mkt::* helpers — record method names with "mkt." prefix so tests can
+    # script them via FakeWSClient.responses["mkt.list_markets"] etc.
+
+    async def mkt(self, variant, params=None):
+        return await self.call(f"mkt.{variant}", params)
+
+    async def mkt_list_markets(self):
+        resp = await self.call("mkt.list_markets", {}) or {}
+        return resp.get("markets", []) or resp.get("list", []) or []
+
+    async def mkt_start_quotes(self, **params):
+        return await self.call("mkt.start_quotes", params)
+
+    async def mkt_stop_quotes(self):
+        return await self.call("mkt.stop_quotes", {})
+
+    async def mkt_get_quote(self, quote_id):
+        return await self.call("mkt.get_quote", {"quote_id": quote_id})
+
+    async def mkt_taker_sign(self, quote_id, pset_b64):
+        return await self.call(
+            "mkt.taker_sign", {"quote_id": quote_id, "pset": pset_b64}
+        )
+
+    async def next_market_notification(self, inner_variant, *, timeout=30.0):  # noqa: ARG002
+        FakeWSClient.calls.append(("mkt_notification", {"inner": inner_variant}))
+        notif = FakeWSClient.responses.get(f"__mkt_notification__:{inner_variant}")
+        if notif is None:
+            notif = FakeWSClient.responses.get("__mkt_notification__")
         if isinstance(notif, Exception):
             raise notif
         return notif
@@ -734,6 +770,113 @@ class TestServerStatusDataclass:
         d = s.to_dict()
         assert d["min_peg_in_amount"] == 1286
         assert d["server_fee_percent_peg_in"] is None
+
+
+# ---------------------------------------------------------------------------
+# mkt::* helpers — resolve_market and parse_quote_status
+# ---------------------------------------------------------------------------
+
+
+class TestResolveMarket:
+    """Verifies that we pick the right market and derive (asset_type, trade_dir)."""
+
+    _MARKET_USDT_LBTC = {
+        "asset_pair": {"base": USDT, "quote": L_BTC},
+        "fee_asset": "Quote",
+        "type": "Stablecoin",
+    }
+
+    def test_send_quote_side_returns_quote_sell(self):
+        # USDt is base, L-BTC is quote. Sending L-BTC = sending quote.
+        market, asset_type, trade_dir = resolve_market(
+            [self._MARKET_USDT_LBTC], send_asset=L_BTC, recv_asset=USDT
+        )
+        assert market is self._MARKET_USDT_LBTC
+        assert asset_type == "Quote"
+        assert trade_dir == "Sell"
+
+    def test_send_base_side_returns_base_sell(self):
+        # Sending USDt (base) for L-BTC.
+        _, asset_type, trade_dir = resolve_market(
+            [self._MARKET_USDT_LBTC], send_asset=USDT, recv_asset=L_BTC
+        )
+        assert asset_type == "Base"
+        assert trade_dir == "Sell"
+
+    def test_swapped_pair_orientation_still_resolves(self):
+        # If a server returned the pair with base/quote flipped, we still
+        # find it and adjust asset_type accordingly.
+        flipped = {
+            "asset_pair": {"base": L_BTC, "quote": USDT},
+            "fee_asset": "Base",
+            "type": "Stablecoin",
+        }
+        # Sending L-BTC, which is now Base.
+        _, asset_type, _ = resolve_market(
+            [flipped], send_asset=L_BTC, recv_asset=USDT
+        )
+        assert asset_type == "Base"
+
+    def test_no_matching_market_raises(self):
+        with pytest.raises(SideSwapWSError, match="No SideSwap market"):
+            resolve_market(
+                [self._MARKET_USDT_LBTC], send_asset=L_BTC, recv_asset=EVIL
+            )
+
+    def test_skips_markets_with_missing_pair(self):
+        bad = {"asset_pair": {}, "fee_asset": "Quote"}
+        market, _, _ = resolve_market(
+            [bad, self._MARKET_USDT_LBTC], send_asset=L_BTC, recv_asset=USDT
+        )
+        assert market is self._MARKET_USDT_LBTC
+
+
+class TestParseQuoteStatus:
+    """Encodes the contract for SideSwap's three QuoteStatus variants."""
+
+    def test_success_returns_inner(self):
+        notif = {
+            "status": {
+                "Success": {
+                    "quote_id": 42,
+                    "base_amount": 100,
+                    "quote_amount": 200,
+                    "server_fee": 1,
+                    "fixed_fee": 1,
+                    "ttl": 30000,
+                }
+            }
+        }
+        result = parse_quote_status(notif)
+        assert result["quote_id"] == 42
+        assert result["quote_amount"] == 200
+
+    def test_low_balance_raises_with_available(self):
+        notif = {
+            "status": {
+                "LowBalance": {
+                    "base_amount": 0,
+                    "quote_amount": 0,
+                    "server_fee": 0,
+                    "fixed_fee": 0,
+                    "available": 1234,
+                }
+            }
+        }
+        with pytest.raises(SideSwapWSError, match="low balance"):
+            parse_quote_status(notif)
+
+    def test_error_status_raises_with_message(self):
+        with pytest.raises(SideSwapWSError, match="boom"):
+            parse_quote_status({"status": {"Error": {"error_msg": "boom"}}})
+
+    def test_missing_status_raises(self):
+        with pytest.raises(SideSwapWSError):
+            parse_quote_status({})
+
+    def test_unknown_status_variant_raises(self):
+        with pytest.raises(SideSwapWSError, match="Unknown QuoteStatus"):
+            parse_quote_status({"status": {"Surprise": {}}})
 
 
 # ---------------------------------------------------------------------------
@@ -1426,29 +1569,104 @@ def _patch_swap_layers():
     return stack
 
 
+def _setup_mkt_responses_forward():
+    """Script the FakeWSClient with a clean L-BTC → USDt mkt::* flow.
+
+    The market base is USDt and quote is L-BTC, so for sending L-BTC the
+    `asset_type` is "Quote" (matching the wire format).
+    """
+    FakeWSClient.responses["mkt.list_markets"] = {
+        "markets": [
+            {
+                "asset_pair": {"base": USDT, "quote": L_BTC},
+                "fee_asset": "Quote",
+                "type": "Stablecoin",
+            }
+        ]
+    }
+    FakeWSClient.responses["mkt.start_quotes"] = {"quote_sub_id": 7, "fee_asset": "Quote"}
+    FakeWSClient.responses["__mkt_notification__:quote"] = {
+        "quote_sub_id": 7,
+        "asset_pair": {"base": USDT, "quote": L_BTC},
+        "asset_type": "Quote",
+        "amount": 100_000,
+        "trade_dir": "Sell",
+        "status": {
+            "Success": {
+                "quote_id": 42,
+                # market is base=USDt, quote=L-BTC. We're sending L-BTC (Quote).
+                # base_amount is in USDt, quote_amount is in L-BTC.
+                "base_amount": 9_500_000,
+                "quote_amount": 100_000,
+                "server_fee": 100,
+                "fixed_fee": 100,
+                "ttl": 30_000,
+            }
+        },
+    }
+    FakeWSClient.responses["mkt.get_quote"] = {
+        "pset": "cHNldP8BUNSIGNED",
+        "ttl": 30_000,
+        "receive_ephemeral_sk": "00" * 32,
+        "change_ephemeral_sk": "00" * 32,
+    }
+    FakeWSClient.responses["mkt.taker_sign"] = {"txid": "ee" * 32}
+    FakeWSClient.responses["mkt.stop_quotes"] = {}
+
+
+def _setup_mkt_responses_reverse():
+    """Script the FakeWSClient with a clean USDt → L-BTC mkt::* flow."""
+    FakeWSClient.responses["mkt.list_markets"] = {
+        "markets": [
+            {
+                "asset_pair": {"base": USDT, "quote": L_BTC},
+                "fee_asset": "Quote",
+                "type": "Stablecoin",
+            }
+        ]
+    }
+    FakeWSClient.responses["mkt.start_quotes"] = {"quote_sub_id": 7, "fee_asset": "Quote"}
+    FakeWSClient.responses["__mkt_notification__:quote"] = {
+        "quote_sub_id": 7,
+        "asset_pair": {"base": USDT, "quote": L_BTC},
+        "asset_type": "Base",  # we're sending USDt = Base
+        "amount": 9_500_000,
+        "trade_dir": "Sell",
+        "status": {
+            "Success": {
+                "quote_id": 99,
+                "base_amount": 9_500_000,
+                "quote_amount": 100_000,
+                "server_fee": 100,
+                "fixed_fee": 100,
+                "ttl": 30_000,
+            }
+        },
+    }
+    FakeWSClient.responses["mkt.get_quote"] = {
+        "pset": "cHNldP8BUNSIGNED",
+        "ttl": 30_000,
+        "receive_ephemeral_sk": "00" * 32,
+        "change_ephemeral_sk": "00" * 32,
+    }
+    FakeWSClient.responses["mkt.taker_sign"] = {"txid": "ee" * 32}
+    FakeWSClient.responses["mkt.stop_quotes"] = {}
+
+
+def _start_quotes_call_args():
+    """Return the params dict from the most recent `mkt.start_quotes` call."""
+    for method, params in reversed(FakeWSClient.calls):
+        if method == "mkt.start_quotes":
+            return params
+    return None
+
+
 class TestSwapManagerExecute:
-    def _ws_responses_for_quote(self):
-        FakeWSClient.responses["subscribe_price_stream"] = {
-            "asset": USDT,
-            "send_bitcoins": True,
-            "send_amount": 100_000,
-            "recv_amount": 9_500_000,
-            "price": 95.0,
-            "fixed_fee": 100,
-        }
-        FakeWSClient.responses["start_swap_web"] = {
-            "order_id": "ord_happy",
-            "send_asset": L_BTC,
-            "send_amount": 100_000,
-            "recv_asset": USDT,
-            "recv_amount": 9_500_000,
-            "upload_url": "https://api-testnet.sideswap.io/upload/foo",
-        }
-        FakeWSClient.responses["unsubscribe_price_stream"] = {}
+    """Forward direction (L-BTC → USDt) via the mkt::* flow."""
 
     def test_happy_path_end_to_end(self, swap_manager_setup):
         mgr, _, _, fake_signer, storage = swap_manager_setup
-        self._ws_responses_for_quote()
+        _setup_mkt_responses_forward()
 
         with _patch_swap_layers():
             swap = mgr.execute_swap(
@@ -1457,21 +1675,45 @@ class TestSwapManagerExecute:
 
         assert swap.status == "broadcast"
         assert swap.txid == "ee" * 32
-        assert swap.order_id == "ord_happy"
+        # quote_id 42 → order_id "mkt_42" (so the storage layer keeps a
+        # filename-safe stable id even though the protocol identifies a swap
+        # by quote_id, not order_id)
+        assert swap.order_id == "mkt_42"
+        assert swap.submit_id == "42"
         # We did sign exactly once
         assert len(fake_signer.signed) == 1
-        # HTTP layer received the signed PSET
-        assert _FakeHTTPClient.last_swap_sign_call["signed_pset_b64"] == "cHNldP8BSIGNED"
+        # taker_sign call carried the signed PSET
+        taker_sign_calls = [(m, p) for m, p in FakeWSClient.calls if m == "mkt.taker_sign"]
+        assert len(taker_sign_calls) == 1
+        assert taker_sign_calls[0][1]["pset"] == "cHNldP8BSIGNED"
         # Persisted across the whole flow
-        loaded = storage.load_sideswap_swap("ord_happy")
+        loaded = storage.load_sideswap_swap("mkt_42")
         assert loaded is not None
         assert loaded.status == "broadcast"
 
+    def test_start_quotes_uses_sell_and_correct_asset_type(self, swap_manager_setup):
+        # For L-BTC → USDt with a market where USDt is base and L-BTC is quote,
+        # we send the quote side. asset_type must be "Quote", trade_dir "Sell".
+        mgr, _, _, _, _ = swap_manager_setup
+        _setup_mkt_responses_forward()
+        with _patch_swap_layers():
+            mgr.execute_swap(asset_id=USDT, send_amount=100_000, wallet_name="default")
+        params = _start_quotes_call_args()
+        assert params["asset_type"] == "Quote"
+        assert params["trade_dir"] == "Sell"
+        assert params["amount"] == 100_000
+        assert params["instant_swap"] is True
+        assert params["receive_address"] is not None
+        assert params["change_address"] is not None
+        assert params["receive_address"] != params["change_address"]
+        assert all(u["asset"] == L_BTC for u in params["utxos"])
+
     def test_aborts_when_pset_balance_does_not_match(self, swap_manager_setup):
-        # Override the fake wollet to return a malicious balance (server stole funds)
+        # The deadly attack: server crafts a PSET that takes our L-BTC but the
+        # recv_asset balance is 0.
         mgr, _, fake_wollet, fake_signer, storage = swap_manager_setup
-        self._ws_responses_for_quote()
-        fake_wollet._balances = {L_BTC: -100_000, USDT: 0}  # we get nothing!
+        _setup_mkt_responses_forward()
+        fake_wollet._balances = {L_BTC: -100_000, USDT: 0}
 
         with _patch_swap_layers():
             with pytest.raises(PsetVerificationError):
@@ -1479,19 +1721,18 @@ class TestSwapManagerExecute:
                     asset_id=USDT, send_amount=100_000, wallet_name="default"
                 )
 
-        # Critically: we did NOT sign, and we did NOT submit
+        # Critically: never signed, never submitted via taker_sign
         assert len(fake_signer.signed) == 0
-        assert _FakeHTTPClient.last_swap_sign_call is None
-        # And the order is persisted as failed for forensics
-        loaded = storage.load_sideswap_swap("ord_happy")
+        assert not any(m == "mkt.taker_sign" for m, _ in FakeWSClient.calls)
+        # Persisted as failed for forensics
+        loaded = storage.load_sideswap_swap("mkt_42")
         assert loaded is not None
         assert loaded.status == "failed"
         assert "PSET verification failed" in (loaded.last_error or "")
 
     def test_aborts_when_pset_takes_extra_lbtc(self, swap_manager_setup):
         mgr, _, fake_wollet, fake_signer, _ = swap_manager_setup
-        self._ws_responses_for_quote()
-        # Server overcharges: takes 200k instead of 100k
+        _setup_mkt_responses_forward()
         fake_wollet._balances = {L_BTC: -200_000, USDT: 9_500_000}
 
         with _patch_swap_layers():
@@ -1503,7 +1744,7 @@ class TestSwapManagerExecute:
 
     def test_aborts_when_pset_moves_unrelated_asset(self, swap_manager_setup):
         mgr, _, fake_wollet, fake_signer, _ = swap_manager_setup
-        self._ws_responses_for_quote()
+        _setup_mkt_responses_forward()
         fake_wollet._balances = {L_BTC: -100_050, USDT: 9_500_000, EVIL: -500}
 
         with _patch_swap_layers():
@@ -1528,30 +1769,95 @@ class TestSwapManagerExecute:
                 asset_id=USDT, send_amount=100_000, wallet_name="ghost"
             )
 
-    def test_no_quote_returned(self, swap_manager_setup):
+    def test_quote_lowbalance_raises(self, swap_manager_setup):
         from aqua.sideswap import SideSwapWSError
 
         mgr, _, _, _, _ = swap_manager_setup
-        FakeWSClient.responses["subscribe_price_stream"] = {"asset": USDT, "send_bitcoins": True}
-        FakeWSClient.responses["__notification__"] = {
-            "method": "update_price_stream",
-            "params": {"error_msg": "no_liquidity"},
+        FakeWSClient.responses["mkt.list_markets"] = {
+            "markets": [{"asset_pair": {"base": USDT, "quote": L_BTC}, "fee_asset": "Quote", "type": "Stablecoin"}]
+        }
+        FakeWSClient.responses["mkt.start_quotes"] = {"quote_sub_id": 1, "fee_asset": "Quote"}
+        FakeWSClient.responses["__mkt_notification__:quote"] = {
+            "quote_sub_id": 1,
+            "asset_pair": {"base": USDT, "quote": L_BTC},
+            "asset_type": "Quote",
+            "amount": 100_000,
+            "trade_dir": "Sell",
+            "status": {
+                "LowBalance": {
+                    "base_amount": 0,
+                    "quote_amount": 0,
+                    "server_fee": 0,
+                    "fixed_fee": 0,
+                    "available": 1_000,
+                }
+            },
         }
         with _patch_swap_layers():
-            with pytest.raises(SideSwapWSError):
+            with pytest.raises(SideSwapWSError, match="low balance"):
+                mgr.execute_swap(
+                    asset_id=USDT, send_amount=100_000, wallet_name="default"
+                )
+
+    def test_quote_error_raises(self, swap_manager_setup):
+        from aqua.sideswap import SideSwapWSError
+
+        mgr, _, _, _, _ = swap_manager_setup
+        FakeWSClient.responses["mkt.list_markets"] = {
+            "markets": [{"asset_pair": {"base": USDT, "quote": L_BTC}, "fee_asset": "Quote", "type": "Stablecoin"}]
+        }
+        FakeWSClient.responses["mkt.start_quotes"] = {"quote_sub_id": 1, "fee_asset": "Quote"}
+        FakeWSClient.responses["__mkt_notification__:quote"] = {
+            "quote_sub_id": 1,
+            "asset_pair": {"base": USDT, "quote": L_BTC},
+            "asset_type": "Quote",
+            "amount": 100_000,
+            "trade_dir": "Sell",
+            "status": {"Error": {"error_msg": "no_dealers"}},
+        }
+        with _patch_swap_layers():
+            with pytest.raises(SideSwapWSError, match="no_dealers"):
+                mgr.execute_swap(
+                    asset_id=USDT, send_amount=100_000, wallet_name="default"
+                )
+
+    def test_no_market_for_pair_raises(self, swap_manager_setup):
+        from aqua.sideswap import SideSwapWSError
+
+        mgr, _, _, _, _ = swap_manager_setup
+        # Empty market list — no L-BTC/USDt pair available
+        FakeWSClient.responses["mkt.list_markets"] = {"markets": []}
+        with _patch_swap_layers():
+            with pytest.raises(SideSwapWSError, match="No SideSwap market"):
+                mgr.execute_swap(
+                    asset_id=USDT, send_amount=100_000, wallet_name="default"
+                )
+
+    def test_quote_send_amount_mismatch_raises(self, swap_manager_setup):
+        # If the dealer's quote contradicts what we asked for, abort. This is
+        # an additional belt-and-braces check on top of the PSET verifier.
+        from aqua.sideswap import SideSwapWSError
+
+        mgr, _, _, _, _ = swap_manager_setup
+        _setup_mkt_responses_forward()
+        # Pretend the dealer offered 200k of L-BTC instead of the 100k we asked
+        FakeWSClient.responses["__mkt_notification__:quote"]["status"]["Success"]["quote_amount"] = 200_000
+
+        with _patch_swap_layers():
+            with pytest.raises(SideSwapWSError, match="send_amount mismatch"):
                 mgr.execute_swap(
                     asset_id=USDT, send_amount=100_000, wallet_name="default"
                 )
 
     def test_swap_status_returns_persisted(self, swap_manager_setup):
-        mgr, _, _, _, storage = swap_manager_setup
-        self._ws_responses_for_quote()
+        mgr, _, _, _, _ = swap_manager_setup
+        _setup_mkt_responses_forward()
         with _patch_swap_layers():
             mgr.execute_swap(
                 asset_id=USDT, send_amount=100_000, wallet_name="default"
             )
-        result = mgr.status("ord_happy")
-        assert result["order_id"] == "ord_happy"
+        result = mgr.status("mkt_42")
+        assert result["order_id"] == "mkt_42"
         assert result["status"] == "broadcast"
         assert result["txid"] == "ee" * 32
         assert result["recv_asset"] == USDT
@@ -1564,40 +1870,19 @@ class TestSwapManagerExecute:
 
 
 class TestSwapManagerReverseExecute:
-    """Reverse direction: asset → L-BTC.
+    """Reverse direction: asset → L-BTC via the mkt::* flow.
 
     The dealer absorbs the network fee from their L-BTC contribution, so the
     wallet's effect is exact on both sides: -send_amount of asset and
-    +recv_amount of L-BTC. Crucially, the verifier must NOT allow any siphon
-    of the asset side via fee_tolerance — `fee_asset` is pinned to L-BTC.
+    +recv_amount of L-BTC. The verifier MUST NOT allow any siphon of the
+    asset side via fee_tolerance — `fee_asset` is pinned to L-BTC.
     """
-
-    def _ws_responses_reverse_quote(self):
-        FakeWSClient.responses["subscribe_price_stream"] = {
-            "asset": USDT,
-            "send_bitcoins": False,
-            "send_amount": 9_500_000,
-            "recv_amount": 100_000,
-            "price": 95.0,
-            "fixed_fee": 100,
-        }
-        FakeWSClient.responses["start_swap_web"] = {
-            "order_id": "ord_reverse",
-            "send_asset": USDT,
-            "send_amount": 9_500_000,
-            "recv_asset": L_BTC,
-            "recv_amount": 100_000,
-            "upload_url": "https://api-testnet.sideswap.io/upload/foo",
-        }
-        FakeWSClient.responses["unsubscribe_price_stream"] = {}
 
     def test_reverse_happy_path_end_to_end(self, swap_manager_setup):
         mgr, _, fake_wollet, fake_signer, storage = swap_manager_setup
-        # Wallet now holds USDt UTXOs and pset_details reflects the reverse
-        # direction's exact balance (no fee on either side; dealer absorbs)
         fake_wollet._utxos = [_FakeUtxo("aa" * 32, 0, USDT, 50_000_000)]
         fake_wollet._balances = {USDT: -9_500_000, L_BTC: 100_000}
-        self._ws_responses_reverse_quote()
+        _setup_mkt_responses_reverse()
 
         with _patch_swap_layers():
             swap = mgr.execute_swap(
@@ -1612,28 +1897,28 @@ class TestSwapManagerReverseExecute:
         assert swap.send_amount == 9_500_000
         assert swap.recv_asset == L_BTC
         assert swap.recv_amount == 100_000
-        # Must have signed and submitted
+        # Manager asked SideSwap with asset_type=Base, trade_dir=Sell
+        params = _start_quotes_call_args()
+        assert params["asset_type"] == "Base"
+        assert params["trade_dir"] == "Sell"
+        assert all(u["asset"] == USDT for u in params["utxos"])
+        # Signed once, submitted once
         assert len(fake_signer.signed) == 1
-        assert _FakeHTTPClient.last_swap_sign_call is not None
-        # Manager should have asked SideSwap with send_bitcoins=False
-        ws_calls = {m: p for m, p in FakeWSClient.calls}
-        assert ws_calls["subscribe_price_stream"]["send_bitcoins"] is False
-        assert ws_calls["start_swap_web"]["send_bitcoins"] is False
-        # Persisted
-        loaded = storage.load_sideswap_swap("ord_reverse")
+        taker_sign_calls = [(m, p) for m, p in FakeWSClient.calls if m == "mkt.taker_sign"]
+        assert len(taker_sign_calls) == 1
+        loaded = storage.load_sideswap_swap("mkt_99")
         assert loaded is not None
         assert loaded.send_asset == USDT
         assert loaded.recv_asset == L_BTC
 
     def test_reverse_aborts_on_asset_siphon_within_lbtc_tolerance(self, swap_manager_setup):
-        # The hostile case: server crafts a PSET that takes 9_500_500 USDT
-        # (500 sat siphon) but delivers the agreed L-BTC. If fee_asset were
-        # accidentally USDT, the 1000-sat tolerance would let this through.
-        # We ensure fee_asset is pinned to L-BTC, so the asset side is exact.
+        # Server takes 500 sat extra USDT but delivers correct L-BTC. If
+        # fee_asset were accidentally USDT, the 1000-sat tolerance would let
+        # this slip through. We pin fee_asset=L-BTC so the asset side is exact.
         mgr, _, fake_wollet, fake_signer, _ = swap_manager_setup
         fake_wollet._utxos = [_FakeUtxo("aa" * 32, 0, USDT, 50_000_000)]
-        fake_wollet._balances = {USDT: -9_500_500, L_BTC: 100_000}  # siphon 500 USDT
-        self._ws_responses_reverse_quote()
+        fake_wollet._balances = {USDT: -9_500_500, L_BTC: 100_000}
+        _setup_mkt_responses_reverse()
 
         with _patch_swap_layers():
             with pytest.raises(PsetVerificationError, match="more than the agreed"):
@@ -1643,16 +1928,14 @@ class TestSwapManagerReverseExecute:
                     wallet_name="default",
                     send_bitcoins=False,
                 )
-        # And critically: did NOT sign, did NOT submit
         assert len(fake_signer.signed) == 0
-        assert _FakeHTTPClient.last_swap_sign_call is None
+        assert not any(m == "mkt.taker_sign" for m, _ in FakeWSClient.calls)
 
     def test_reverse_aborts_on_short_lbtc_delivery(self, swap_manager_setup):
         mgr, _, fake_wollet, fake_signer, _ = swap_manager_setup
         fake_wollet._utxos = [_FakeUtxo("aa" * 32, 0, USDT, 50_000_000)]
-        # Server delivers 99k L-BTC instead of 100k
         fake_wollet._balances = {USDT: -9_500_000, L_BTC: 99_000}
-        self._ws_responses_reverse_quote()
+        _setup_mkt_responses_reverse()
 
         with _patch_swap_layers():
             with pytest.raises(PsetVerificationError, match="delivers 99000"):
@@ -1668,7 +1951,7 @@ class TestSwapManagerReverseExecute:
         mgr, _, fake_wollet, fake_signer, _ = swap_manager_setup
         fake_wollet._utxos = [_FakeUtxo("aa" * 32, 0, USDT, 50_000_000)]
         fake_wollet._balances = {USDT: -9_500_000, L_BTC: 100_000, EVIL: -1}
-        self._ws_responses_reverse_quote()
+        _setup_mkt_responses_reverse()
 
         with _patch_swap_layers():
             with pytest.raises(PsetVerificationError, match="unexpectedly moves"):
@@ -1682,13 +1965,12 @@ class TestSwapManagerReverseExecute:
 
     def test_reverse_picks_asset_utxos_not_lbtc(self, swap_manager_setup):
         mgr, _, fake_wollet, _, _ = swap_manager_setup
-        # Wallet has both USDt and L-BTC; manager must select USDT only.
         fake_wollet._utxos = [
             _FakeUtxo("aa" * 32, 0, L_BTC, 5_000_000),
             _FakeUtxo("bb" * 32, 0, USDT, 50_000_000),
         ]
         fake_wollet._balances = {USDT: -9_500_000, L_BTC: 100_000}
-        self._ws_responses_reverse_quote()
+        _setup_mkt_responses_reverse()
 
         with _patch_swap_layers():
             mgr.execute_swap(
@@ -1697,15 +1979,15 @@ class TestSwapManagerReverseExecute:
                 wallet_name="default",
                 send_bitcoins=False,
             )
-        sent_inputs = _FakeHTTPClient.last_swap_start_call["inputs"]
-        assert all(u["asset"] == USDT for u in sent_inputs)
-        assert len(sent_inputs) == 1
+        params = _start_quotes_call_args()
+        assert all(u["asset"] == USDT for u in params["utxos"])
+        assert len(params["utxos"]) == 1
 
     def test_reverse_insufficient_asset_balance_raises(self, swap_manager_setup):
         mgr, _, fake_wollet, _, _ = swap_manager_setup
-        fake_wollet._utxos = [_FakeUtxo("aa" * 32, 0, USDT, 1_000_000)]  # only 1M USDT
+        fake_wollet._utxos = [_FakeUtxo("aa" * 32, 0, USDT, 1_000_000)]
         fake_wollet._balances = {USDT: -9_500_000, L_BTC: 100_000}
-        self._ws_responses_reverse_quote()
+        _setup_mkt_responses_reverse()
 
         with _patch_swap_layers():
             with pytest.raises(ValueError, match="Insufficient confidential balance"):

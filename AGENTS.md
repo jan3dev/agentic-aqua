@@ -332,6 +332,7 @@ SideSwap (`sideswap.io`) provides BTC ↔ L-BTC pegs and Liquid asset swaps via 
 - `server_status` — fees, mins, hot-wallet balances
 - `peg_fee`, `peg`, `peg_status` — peg flow
 - `assets`, `subscribe_price_stream`, `unsubscribe_price_stream` — asset swap quoting
+- `market.list_markets`, `market.start_quotes`, `market.get_quote`, `market.taker_sign` — atomic asset swap execution (the modern `mkt::*` flow). Wire format wraps the inner variant in a single-key object: `{"id": N, "method": "market", "params": {"<variant_in_snake_case>": {...}}}`. `AssetType` and `TradeDir` are PascalCase on the wire (`"Base"|"Quote"`, `"Buy"|"Sell"`).
 
 **Fees**:
 - Pegs: 0.1% on send amount + small second-chain fee (~286 sats Liquid claim on peg-in)
@@ -345,10 +346,22 @@ SideSwap (`sideswap.io`) provides BTC ↔ L-BTC pegs and Liquid asset swaps via 
 - Peg-in: 2 BTC confs (~20 min) hot-wallet path; 102 BTC confs (~17 hours) if amount exceeds `PegInWalletBalance`
 - Peg-out: 2 Liquid confs + federation BTC sweep (typically 15–60 min total)
 
-**Asset swap execution** (`sideswap_execute_swap`) supports the legacy `start_swap_web` + HTTP `swap_start`/`swap_sign` flow in **both directions**:
+**Asset swap execution** (`sideswap_execute_swap`) uses SideSwap's modern `mkt::*` flow over WebSocket only (no HTTP dance) and supports **both directions**:
 
 - **L-BTC → asset** (`send_bitcoins=True`): user's L-BTC change pays the network fee. Wallet net effect: `L-BTC: -(send_amount + fee)`, `asset: +recv_amount`.
 - **asset → L-BTC** (`send_bitcoins=False`): SideSwap dealer absorbs the network fee from their L-BTC contribution. Wallet net effect: `asset: -send_amount` (exact), `L-BTC: +recv_amount` (exact).
+
+**mkt::* flow steps**:
+1. `market.list_markets` — fetch available pairs and find one matching ours
+2. Resolve `(asset_type, trade_dir)` via `resolve_market` — always `Sell` with the asset_type matching the side we're sending
+3. `market.start_quotes` with our UTXOs + receive/change addresses + `instant_swap=true`
+4. Wait for a `quote` notification with `status=Success`; `parse_quote_status` raises on `LowBalance` / `Error`
+5. `market.get_quote {quote_id}` → returns the half-built PSET
+6. **Verify** with `wollet.pset_details(pset)` against the agreed quote — refuses to sign on mismatch
+7. `signer.sign(pset)` locally
+8. `market.taker_sign {quote_id, pset}` → server merges & broadcasts; returns the txid
+
+The legacy `start_swap_web` + HTTP `swap_start`/`swap_sign` path is no longer the live execution path. `SideSwapHTTPClient` and `start_swap_web` are kept in the module for compatibility / debugging only.
 
 **Verification rules** (`verify_pset_balances` in `src/aqua/sideswap.py`):
 1. Wallet must gain *exactly* `recv_amount` of `recv_asset`.
