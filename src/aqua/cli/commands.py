@@ -12,12 +12,14 @@ def register_commands(cli):
     from .lightning import lightning
     from .liquid import liquid
     from .serve import serve
+    from .sideswap import sideswap
     from .wallet import wallet
 
     cli.add_command(wallet)
     cli.add_command(liquid)
     cli.add_command(btc)
     cli.add_command(lightning)
+    cli.add_command(sideswap)
     cli.add_command(serve)
     cli.add_command(balance)
 

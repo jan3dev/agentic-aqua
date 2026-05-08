@@ -372,6 +372,23 @@ If any rule fails, `PsetVerificationError` is raised and signing is aborted — 
 
 UTXO selection (`select_swap_utxos`): confidential (asset_bf and value_bf both non-zero), holding the requested send_asset, sorted descending by value, accumulated to cover `send_amount`. wpkh-only (matching the wallet's BIP84 m/84'/1776'/0' descriptor). No separate L-BTC fee inputs are required on either direction (mirroring AQUA Flutter's `swap_provider.dart`).
 
+**CLI surface** (`aqua sideswap …`, mirrors the MCP tool surface):
+
+```
+aqua sideswap status [--network mainnet|testnet]
+aqua sideswap recommend --amount <sats> --direction btc_to_lbtc|lbtc_to_btc
+aqua sideswap peg-quote --amount <sats> [--peg-out]
+aqua sideswap peg-in [--wallet-name NAME]
+aqua sideswap peg-out --amount <sats> --btc-address bc1q… [--wallet-name NAME]
+aqua sideswap peg-status --order-id ORD
+aqua sideswap assets [--network mainnet|testnet]
+aqua sideswap quote --asset-ticker USDt --send-amount <sats> [--reverse]
+aqua sideswap swap   --asset-ticker USDt --amount <sats> [--reverse] [--yes]
+aqua sideswap swap-status --order-id ORD
+```
+
+The `swap` subcommand fetches a fresh quote and prompts for confirmation by default; pass `--yes` to skip the prompt. Password resolution follows the same pattern as the rest of the CLI: `--password-stdin` flag → `AQUA_PASSWORD` env var → no password.
+
 ## Bitcoin Implementation Details
 
 ### BDK Constants
@@ -491,7 +508,18 @@ agentic-aqua/
 │       ├── ankara.py   # Ankara backend integration (Lightning receive)
 │       ├── sideswap.py # SideSwap WS+HTTP client, peg manager, swap quoting
 │       ├── assets.py   # Asset registry
-│       └── storage.py  # Persistence layer (encryption, config, wallet data)
+│       ├── storage.py  # Persistence layer (encryption, config, wallet data)
+│       └── cli/
+│           ├── main.py       # Root `aqua` Click group
+│           ├── commands.py   # Subcommand registration
+│           ├── liquid.py     # `aqua liquid …`
+│           ├── btc.py        # `aqua btc …`
+│           ├── lightning.py  # `aqua lightning …`
+│           ├── sideswap.py   # `aqua sideswap …` (pegs + atomic swaps)
+│           ├── wallet.py     # `aqua wallet …`
+│           ├── serve.py      # `aqua serve` (MCP server)
+│           ├── output.py     # JSON / pretty rendering
+│           └── password.py   # Secret resolution helpers
 └── tests/
     ├── test_tools.py
     ├── test_lightning.py
