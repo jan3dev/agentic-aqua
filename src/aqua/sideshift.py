@@ -30,8 +30,7 @@ Endpoints used (all REST/JSON, base `https://sideshift.ai/api/v2`):
 Auth: anonymous, identified by `affiliateId` in request body (publicly visible
 in any client; commission accrues to that affiliate's account). The affiliate
 ID we ship with is `PVmPh4Mp3` — JAN3's AQUA wallet ID, also used by the
-AQUA Flutter app. Override with the `SIDESHIFT_AFFILIATE_ID` env var if you
-need a different one for testing or analytics.
+AQUA Flutter app.
 """
 
 from __future__ import annotations
@@ -50,9 +49,8 @@ logger = logging.getLogger(__name__)
 
 
 # Public constants — same affiliate id AQUA Flutter ships with. Commission
-# accrues to JAN3's SideShift account; override for analytics by setting
-# SIDESHIFT_AFFILIATE_ID in the environment.
-DEFAULT_AFFILIATE_ID = os.environ.get("SIDESHIFT_AFFILIATE_ID", "PVmPh4Mp3")
+# accrues to JAN3's SideShift account.
+AFFILIATE_ID = "PVmPh4Mp3"
 SIDESHIFT_BASE_URL = os.environ.get("SIDESHIFT_BASE_URL", "https://sideshift.ai/api/v2")
 USER_AGENT = "agentic-aqua"
 HTTP_TIMEOUT_SECONDS = 30.0
@@ -247,7 +245,7 @@ class SideShiftClient:
             base_url: Override the default API base.
         """
         if affiliate_id is None:
-            affiliate_id = DEFAULT_AFFILIATE_ID
+            affiliate_id = AFFILIATE_ID
         # Empty string explicitly disables; any other falsy value also disables.
         self.affiliate_id = affiliate_id or None
         self.base_url = (base_url or SIDESHIFT_BASE_URL).rstrip("/")

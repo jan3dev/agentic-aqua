@@ -18,8 +18,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from aqua.sideshift import (
+    AFFILIATE_ID,
     ALLOWED_PAIRS,
-    DEFAULT_AFFILIATE_ID,
     SideShiftClient,
     SideShiftManager,
     SideShiftShift,
@@ -377,9 +377,9 @@ class TestStorage:
 
 class TestSideShiftClient:
     def test_default_affiliate_id_is_aqua_id(self):
-        # Default to JAN3's AQUA Flutter affiliate ID. Override with env var.
+        # Default to JAN3's AQUA Flutter affiliate ID.
         client = SideShiftClient()
-        assert client.affiliate_id == DEFAULT_AFFILIATE_ID
+        assert client.affiliate_id == AFFILIATE_ID
         assert client.affiliate_id == "PVmPh4Mp3"
 
     def test_explicit_none_affiliate_id_disables_it(self):

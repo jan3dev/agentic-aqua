@@ -318,7 +318,7 @@ SideShift.ai (`https://sideshift.ai/api/v2`) is a custodial multi-chain swap ser
 
 **API**: REST/JSON, anonymous (no auth), affiliate ID identifies us in request bodies.
 
-**Affiliate ID**: `PVmPh4Mp3` — same one AQUA Flutter wallet ships with (publicly committed in their `lib/config/constants/api_keys.dart`). Commission accrues to JAN3's SideShift account. Override with `SIDESHIFT_AFFILIATE_ID` env var. Pass an empty string to `SideShiftClient(affiliate_id="")` to disable affiliate identification (no commission).
+**Affiliate ID**: `PVmPh4Mp3` — same one AQUA Flutter wallet ships with (publicly committed in their `lib/config/constants/api_keys.dart`). Commission accrues to JAN3's SideShift account. Pass an empty string to `SideShiftClient(affiliate_id="")` to disable affiliate identification (no commission).
 
 **Curated pair allowlist**: `ALLOWED_PAIRS` in `src/aqua/sideshift.py` mirrors AQUA Flutter's `SideshiftAsset` factories — USDt across 7 chains (ethereum, tron, bsc, solana, polygon, ton, liquid) plus BTC mainchain. `send_shift` / `receive_shift` validate both legs against this set; off-allowlist pairs raise `ValueError`. Set `SIDESHIFT_ALLOW_ALL_NETWORKS=1` to bypass. Drift from AQUA's list is detected by `tests/test_sideshift.py::TestAllowedPairs::test_allowlist_matches_aqua_flutter` so any change forces a conscious update of both sides.
 
