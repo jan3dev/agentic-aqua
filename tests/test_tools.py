@@ -720,6 +720,14 @@ class TestToolRegistry:
             "delete_wallet",
             "btc_import_descriptor",
             "btc_export_descriptor",
+            "sideswap_server_status",
+            "sideswap_peg_quote",
+            "sideswap_peg_in",
+            "sideswap_peg_out",
+            "sideswap_peg_status",
+            "sideswap_recommend",
+            "sideswap_list_assets",
+            "sideswap_quote",
         }
         assert set(TOOLS.keys()) == expected
 

@@ -28,6 +28,7 @@ EXPLORER_URLS = {
 _manager: WalletManager | None = None
 _btc_manager: BitcoinWalletManager | None = None
 _lightning_manager: "LightningManager | None" = None
+_sideswap_peg_manager: "SideSwapPegManager | None" = None
 
 
 def get_manager() -> WalletManager:
@@ -57,6 +58,20 @@ def get_lightning_manager() -> "LightningManager":
             wallet_manager=get_manager(),
         )
     return _lightning_manager
+
+
+def get_sideswap_peg_manager() -> "SideSwapPegManager":
+    """Get or create SideSwap peg manager (shares storage + wallet managers)."""
+    global _sideswap_peg_manager
+    if _sideswap_peg_manager is None:
+        from .sideswap import SideSwapPegManager
+
+        _sideswap_peg_manager = SideSwapPegManager(
+            storage=get_manager().storage,
+            wallet_manager=get_manager(),
+            btc_wallet_manager=get_btc_manager(),
+        )
+    return _sideswap_peg_manager
 
 
 # Tool implementations
@@ -751,6 +766,250 @@ def lightning_transaction_status(swap_id: str) -> dict[str, Any]:
     return manager.get_swap_status(swap_id)
 
 
+# ---------------------------------------------------------------------------
+# SideSwap (Liquid asset swaps + BTC ↔ L-BTC pegs)
+# ---------------------------------------------------------------------------
+
+
+def sideswap_server_status(network: str = "mainnet") -> dict[str, Any]:
+    """Fetch SideSwap server status: live fees, minimum amounts, hot-wallet balance.
+
+    Use this BEFORE recommending a peg or swap so values reflect current
+    SideSwap state. Falls back to documented defaults if SideSwap is unreachable.
+
+    Args:
+        network: "mainnet" or "testnet". Default: "mainnet"
+
+    Returns:
+        elements_fee_rate, min_peg_in_amount, min_peg_out_amount,
+        server_fee_percent_peg_in, server_fee_percent_peg_out,
+        peg_in_wallet_balance, peg_out_wallet_balance, optional warning
+    """
+    manager = get_sideswap_peg_manager()
+    return manager.get_server_status(network)
+
+
+def sideswap_peg_quote(
+    amount: int,
+    peg_in: bool = True,
+    network: str = "mainnet",
+) -> dict[str, Any]:
+    """Quote the receive amount for a peg (BTC ↔ L-BTC) at current fees.
+
+    SideSwap charges 0.1% on the send amount + a small fixed second-chain fee
+    (~286 sats for the Liquid claim tx on peg-in). The quote returns the exact
+    amount the user will receive.
+
+    Args:
+        amount: Send amount in satoshis
+        peg_in: True for BTC → L-BTC (peg-in); False for L-BTC → BTC (peg-out). Default: True
+        network: "mainnet" or "testnet". Default: "mainnet"
+
+    Returns:
+        send_amount, recv_amount, fee_amount (send - recv), peg_in
+    """
+    manager = get_sideswap_peg_manager()
+    return manager.quote_peg(amount, peg_in, network)
+
+
+def sideswap_peg_in(
+    wallet_name: str = "default",
+    password: str | None = None,
+) -> dict[str, Any]:
+    """Initiate a SideSwap peg-in (BTC → L-BTC).
+
+    Returns a Bitcoin deposit address. The user (or the agent via btc_send)
+    must send BTC to this address. After 2 BTC confirmations (~20 min, hot
+    wallet path) or 102 confs (~17 hours, cold wallet path for very large
+    amounts), L-BTC arrives in the Liquid wallet.
+
+    Fees: 0.1% + ~286 sats Liquid claim fee.
+
+    Args:
+        wallet_name: Liquid wallet to receive L-BTC. Default: "default"
+        password: Password to decrypt mnemonic (used to derive the receive address)
+
+    Returns:
+        order_id, peg_addr (BTC deposit address), recv_addr (Liquid receive address),
+        expected_recv (if known), expires_at, message
+    """
+    manager = get_sideswap_peg_manager()
+    peg = manager.peg_in(wallet_name, password)
+    return {
+        "order_id": peg.order_id,
+        "peg_addr": peg.peg_addr,
+        "recv_addr": peg.recv_addr,
+        "expected_recv": peg.expected_recv,
+        "expires_at": peg.expires_at,
+        "wallet_name": peg.wallet_name,
+        "network": peg.network,
+        "message": (
+            f"Send BTC to {peg.peg_addr}. After 2 BTC confirmations "
+            f"(~20 min for typical amounts; up to ~17 hours for very large peg-ins "
+            f"that exceed SideSwap's hot-wallet liquidity), L-BTC will arrive at "
+            f"{peg.recv_addr}. Track status with sideswap_peg_status using "
+            f"order_id={peg.order_id!r}."
+        ),
+    }
+
+
+def sideswap_peg_out(
+    wallet_name: str,
+    amount: int,
+    btc_address: str,
+    password: str | None = None,
+) -> dict[str, Any]:
+    """Initiate a SideSwap peg-out (L-BTC → BTC) and broadcast the L-BTC send.
+
+    Sends `amount` sats of L-BTC from the local wallet to a SideSwap deposit
+    address. After 2 Liquid confirmations (~2 min) the federation releases BTC
+    to `btc_address` (total time usually 15–60 min).
+
+    Fees: 0.1% + Bitcoin network fee (paid by the federation, deducted from payout).
+
+    Args:
+        wallet_name: Liquid wallet to send L-BTC from
+        amount: Amount in satoshis to peg out
+        btc_address: Destination Bitcoin address (bc1...)
+        password: Password to decrypt mnemonic (if encrypted at rest)
+
+    Returns:
+        order_id, lockup_txid (L-BTC send txid), peg_addr (Liquid deposit addr),
+        recv_addr (target BTC addr), amount, expected_recv (if known), expires_at, message
+    """
+    manager = get_sideswap_peg_manager()
+    peg = manager.peg_out(wallet_name, amount, btc_address, password)
+    return {
+        "order_id": peg.order_id,
+        "lockup_txid": peg.lockup_txid,
+        "peg_addr": peg.peg_addr,
+        "recv_addr": peg.recv_addr,
+        "amount": peg.amount,
+        "expected_recv": peg.expected_recv,
+        "expires_at": peg.expires_at,
+        "wallet_name": peg.wallet_name,
+        "network": peg.network,
+        "status": peg.status,
+        "message": (
+            f"L-BTC sent to SideSwap deposit address {peg.peg_addr} "
+            f"(lockup_txid={peg.lockup_txid}). After 2 Liquid confirmations "
+            f"(~2 min) and the federation BTC sweep (typically 15–60 min total), "
+            f"BTC will arrive at {peg.recv_addr}. Track with sideswap_peg_status "
+            f"using order_id={peg.order_id!r}."
+        ),
+    }
+
+
+def sideswap_peg_status(order_id: str) -> dict[str, Any]:
+    """Check the status of a SideSwap peg order (peg-in or peg-out).
+
+    Args:
+        order_id: Order ID from sideswap_peg_in or sideswap_peg_out
+
+    Returns:
+        order_id, peg_in, status (pending/processing/completed/failed),
+        amount, expected_recv, peg_addr, recv_addr, optional tx_state,
+        confirmations ("X/Y"), lockup_txid, payout_txid, warning
+    """
+    manager = get_sideswap_peg_manager()
+    return manager.status(order_id)
+
+
+def sideswap_recommend(
+    amount: int,
+    direction: str,
+    network: str = "mainnet",
+) -> dict[str, Any]:
+    """Recommend a peg vs an instant swap-market trade for a BTC ↔ L-BTC conversion.
+
+    Surfaces the trade-off (lower fee but slower) and warns when the amount
+    exceeds SideSwap's hot-wallet liquidity (would trigger the 102-confirmation
+    cold-wallet path on peg-in).
+
+    Args:
+        amount: Amount in satoshis to convert
+        direction: "btc_to_lbtc" (BTC → L-BTC) or "lbtc_to_btc" (L-BTC → BTC)
+        network: "mainnet" or "testnet". Default: "mainnet"
+
+    Returns:
+        recommendation ("peg" | "swap" | "either"), reason (human-readable),
+        peg_pros, peg_cons, plus the live server_status snapshot.
+    """
+    from .sideswap import recommend_peg_or_swap
+
+    server = get_sideswap_peg_manager().get_server_status(network)
+    rec = recommend_peg_or_swap(amount, direction, server)
+    rec["server_status"] = server
+    rec["amount"] = amount
+    rec["direction"] = direction
+    return rec
+
+
+def sideswap_list_assets(network: str = "mainnet") -> dict[str, Any]:
+    """List Liquid assets that SideSwap supports for atomic swaps.
+
+    Args:
+        network: "mainnet" or "testnet". Default: "mainnet"
+
+    Returns:
+        network, count, assets (list of {asset_id, ticker, name, precision, instant_swaps, icon_url})
+    """
+    from .sideswap import fetch_assets
+
+    assets = fetch_assets(network)
+    return {
+        "network": network,
+        "count": len(assets),
+        "assets": [a.to_dict() for a in assets],
+    }
+
+
+def sideswap_quote(
+    asset_id: str,
+    send_amount: int | None = None,
+    recv_amount: int | None = None,
+    send_bitcoins: bool = True,
+    network: str = "mainnet",
+) -> dict[str, Any]:
+    """Get a price quote for a SideSwap Liquid asset swap (read-only, no execution).
+
+    Subscribes to the SideSwap price stream, captures one quote, then
+    unsubscribes. NOTE: this tool does not execute the swap — for execution,
+    direct the user to the AQUA mobile wallet or sideswap.io. Local PSET
+    signing for atomic swaps requires careful output verification that is not
+    yet implemented in agentic-aqua.
+
+    Provide exactly one of `send_amount` or `recv_amount`.
+
+    Args:
+        asset_id: Liquid asset ID to swap with L-BTC
+        send_amount: Amount the user is sending (in sats)
+        recv_amount: Amount the user wants to receive (in sats)
+        send_bitcoins: True if sending L-BTC for the asset; False if sending the asset for L-BTC
+        network: "mainnet" or "testnet". Default: "mainnet"
+
+    Returns:
+        asset_id, send_bitcoins, send_amount, recv_amount, price, fixed_fee, optional error_msg.
+        Includes a `note` directing the user to the AQUA app or sideswap.io for execution.
+    """
+    from .sideswap import fetch_swap_quote
+
+    quote = fetch_swap_quote(
+        asset_id=asset_id,
+        send_amount=send_amount,
+        recv_amount=recv_amount,
+        send_bitcoins=send_bitcoins,
+        network=network,
+    )
+    result = quote.to_dict()
+    result["note"] = (
+        "This is a read-only quote. Atomic swap execution is not yet implemented "
+        "in agentic-aqua (local PSET output verification needs an audit before "
+        "live signing). To execute, use the AQUA mobile wallet or sideswap.io."
+    )
+    return result
+
+
 # Tool registry for MCP
 TOOLS = {
     "lw_generate_mnemonic": lw_generate_mnemonic,
@@ -776,4 +1035,12 @@ TOOLS = {
     "lightning_receive": lightning_receive,
     "lightning_send": lightning_send,
     "lightning_transaction_status": lightning_transaction_status,
+    "sideswap_server_status": sideswap_server_status,
+    "sideswap_peg_quote": sideswap_peg_quote,
+    "sideswap_peg_in": sideswap_peg_in,
+    "sideswap_peg_out": sideswap_peg_out,
+    "sideswap_peg_status": sideswap_peg_status,
+    "sideswap_recommend": sideswap_recommend,
+    "sideswap_list_assets": sideswap_list_assets,
+    "sideswap_quote": sideswap_quote,
 }

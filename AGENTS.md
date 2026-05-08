@@ -16,9 +16,9 @@ AI Assistant ←→ MCP Server (Python) ←→ LWK (Liquid) ──→ Electrum/E
 
 No local server required. Liquid uses Electrum/Esplora; Bitcoin uses Esplora only. All via Blockstream's public infrastructure.
 
-## Tools (22 total)
+## Tools (30 total)
 
-Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified tools are `unified_*`; Lightning tools are `lightning_*`.
+Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified tools are `unified_*`; Lightning tools are `lightning_*`; SideSwap tools are `sideswap_*`.
 
 ### Wallet Management
 
@@ -74,6 +74,21 @@ Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified 
 | `lightning_send` | Pay a Lightning invoice using L-BTC via Boltz submarine swap. Fees: ~0.1% + miner fees. Limits: 100 – 25,000,000 sats | `invoice`: BOLT11 string (lnbc... or lntb...), `wallet_name`: optional, `password`: optional |
 | `lightning_transaction_status` | Check status of a Lightning swap (send or receive). For receive: auto-claims L-BTC when settled. For send: retrieves preimage when claimed. | `swap_id`: string |
 
+### SideSwap (BTC ↔ L-BTC Pegs and Liquid Asset Swaps)
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `sideswap_server_status` | Fetch SideSwap server status: live fees, minimums, hot-wallet balances. Call BEFORE recommending or initiating a peg. | `network`: optional (mainnet/testnet) |
+| `sideswap_peg_quote` | Quote receive amount for a peg at current fees (0.1% + ~286 sats Liquid claim fee on peg-in). | `amount`: sats, `peg_in`: optional (default: true), `network`: optional |
+| `sideswap_peg_in` | Initiate a peg-in (BTC → L-BTC). Returns BTC deposit address. After 2 BTC confs (~20 min hot path; up to ~17 hours cold path for very large amounts) L-BTC arrives. Recommended for amounts ≥ ~0.01 BTC. | `wallet_name`: optional, `password`: optional |
+| `sideswap_peg_out` | Initiate a peg-out (L-BTC → BTC) and broadcast the L-BTC send. After 2 Liquid confs and federation BTC sweep (~15-60 min total), BTC arrives. Standard path for L-BTC → BTC. | `wallet_name`, `amount` (sats), `btc_address`, `password`: optional |
+| `sideswap_peg_status` | Check status of a peg order (peg-in or peg-out). Returns confs, tx_state, lockup_txid, payout_txid. | `order_id`: string |
+| `sideswap_recommend` | Recommend peg vs swap-market for a BTC ↔ L-BTC conversion. Surfaces time-vs-fee trade-off and warns if amount exceeds hot-wallet liquidity. | `amount` (sats), `direction`: btc_to_lbtc/lbtc_to_btc, `network`: optional |
+| `sideswap_list_assets` | List Liquid assets supported by SideSwap (USDt, EURx, MEX, DePix, etc.). | `network`: optional |
+| `sideswap_quote` | **Read-only.** Get a price quote for a Liquid asset swap (e.g. L-BTC ↔ USDt). Execution is NOT yet implemented in agentic-aqua — direct user to AQUA mobile or sideswap.io. | `asset_id`, `send_amount` (sats) OR `recv_amount` (sats), `send_bitcoins`: optional, `network`: optional |
+
+> ⚠️ **Pegs vs swaps**: pegs charge 0.1% (vs 0.2% for instant swap-market trades) but require waiting for confirmations. Always call `sideswap_recommend` for amounts ≥ 0.01 BTC and surface the trade-off (and any 102-confirmation cold-wallet warning) before initiating a peg-in.
+
 ## Resources (3 total)
 
 MCP resources provide static documentation to AI assistants.
@@ -84,7 +99,7 @@ MCP resources provide static documentation to AI assistants.
 | `aqua://docs/networks` | Network Reference | Bitcoin and Liquid network details, address formats, explorers, common assets |
 | `aqua://docs/security` | Security Best Practices | Password usage, at-rest encryption, backup, watch-only wallets, recovery |
 
-## Prompts (14 total)
+## Prompts (17 total)
 
 MCP prompts provide pre-built conversation starters for common workflows.
 
@@ -104,6 +119,9 @@ MCP prompts provide pre-built conversation starters for common workflows.
 | `export_descriptor` | Export descriptor for watch-only wallet | `wallet_name`: optional |
 | `delete_wallet` | Safely delete a wallet with balance check and seed backup reminder | `wallet_name`: required |
 | `pay_lightning` | Pay a Lightning invoice using Liquid Bitcoin | `wallet_name`: optional |
+| `peg_in` | Move BTC to Liquid (BTC → L-BTC) via SideSwap peg-in, with quote, recommendation, and time warning | `wallet_name`: optional |
+| `peg_out` | Move L-BTC to Bitcoin (L-BTC → BTC) via SideSwap peg-out, with quote and time estimate | `wallet_name`: optional |
+| `swap_assets` | Quote a Liquid asset swap (e.g. L-BTC ↔ USDt) via SideSwap (read-only; execution requires AQUA mobile or sideswap.io) | (none) |
 
 ## Data Storage
 
@@ -120,6 +138,8 @@ Wallet data stored in `~/.aqua/`:
 │   └── {swap_id}.json   # Contains swap details + preimage when settled
 ├── lightning_swaps/     # Unified Lightning swap data (send & receive)
 │   └── {swap_id}.json   # Contains swap details + status + optional preimage
+├── sideswap_pegs/       # SideSwap peg orders (peg-in and peg-out)
+│   └── {order_id}.json  # Contains order, addresses, status, tx_state, payout_txid
 └── cache/
     └── <wallet_name>/
         └── btc/
@@ -269,6 +289,7 @@ File permissions: `0o600`. Status values: `pending` | `processing` | `completed`
 - `mcp` - Model Context Protocol SDK
 - `cryptography` - For mnemonic encryption (PBKDF2 + Fernet)
 - `coincurve` - secp256k1 for Boltz swap keypair generation
+- `websockets` - WebSocket client for SideSwap JSON-RPC (>=12.0)
 
 ## Ankara Integration
 
@@ -282,6 +303,45 @@ Ankara backend (`test.aquabtc.com`) provides Lightning → L-BTC swaps (receive 
 - `GET /api/v1/lightning/lnurlp/verify/{swap_id}` - Verify settlement status
 
 **Amount Limits**: 100 – 25,000,000 sats (no authentication required)
+
+## SideSwap Integration
+
+SideSwap (`sideswap.io`) provides BTC ↔ L-BTC pegs and Liquid asset swaps via WebSocket JSON-RPC.
+
+**WebSocket endpoints**:
+- Mainnet: `wss://api.sideswap.io/json-rpc-ws`
+- Testnet: `wss://api-testnet.sideswap.io/json-rpc-ws`
+
+**Wire format** (mirrors AQUA Flutter wallet):
+```json
+// Request
+{"id": <int>, "method": "<snake_case>", "params": {...}}
+// Response
+{"id": <int>, "method": "<method>", "result": {...}}
+{"id": <int>, "error": {"code": <int>, "message": "<str>"}}
+// Notification (no id)
+{"method": "<method>", "params": {...}}
+```
+
+**Methods used**:
+- `login_client` (anonymous, `user_agent: "agentic-aqua"`)
+- `server_status` — fees, mins, hot-wallet balances
+- `peg_fee`, `peg`, `peg_status` — peg flow
+- `assets`, `subscribe_price_stream`, `unsubscribe_price_stream` — asset swap quoting
+
+**Fees**:
+- Pegs: 0.1% on send amount + small second-chain fee (~286 sats Liquid claim on peg-in)
+- Swap-market taker: 0.2% (or 500 sats minimum, whichever higher)
+
+**Peg minimums** (read live values from `server_status`):
+- Peg-in: 1,286 sats (~0.00001286 BTC)
+- Peg-out: 100,000 sats (0.001 BTC) on the SideSwap server, 25,000 sats in the AQUA app
+
+**Peg timing**:
+- Peg-in: 2 BTC confs (~20 min) hot-wallet path; 102 BTC confs (~17 hours) if amount exceeds `PegInWalletBalance`
+- Peg-out: 2 Liquid confs + federation BTC sweep (typically 15–60 min total)
+
+**Asset swap execution is NOT implemented** in agentic-aqua: the legacy `start_swap_web` + HTTP `swap_start`/`swap_sign` flow requires local PSET output verification before signing (the server is trusted-but-verify; an unaudited verifier could be tricked into signing a PSET that pays the user nothing). `sideswap_quote` returns a price quote only; users execute via the AQUA mobile wallet or sideswap.io.
 
 ## Bitcoin Implementation Details
 
@@ -394,12 +454,13 @@ agentic-aqua/
 │   └── aqua/
 │       ├── __init__.py
 │       ├── server.py   # MCP server entry point (tools, resources, prompts)
-│       ├── tools.py    # Tool implementations (lw_*, btc_*, unified_*, lightning_*)
+│       ├── tools.py    # Tool implementations (lw_*, btc_*, unified_*, lightning_*, sideswap_*)
 │       ├── wallet.py   # Liquid wallet (LWK)
 │       ├── bitcoin.py  # Bitcoin wallet (BDK)
 │       ├── lightning.py # Lightning abstraction layer (unified send/receive manager)
 │       ├── boltz.py    # Boltz Exchange integration (submarine swaps, send)
 │       ├── ankara.py   # Ankara backend integration (Lightning receive)
+│       ├── sideswap.py # SideSwap WS+HTTP client, peg manager, swap quoting
 │       ├── assets.py   # Asset registry
 │       └── storage.py  # Persistence layer (encryption, config, wallet data)
 └── tests/
@@ -409,6 +470,7 @@ agentic-aqua/
     ├── test_bitcoin.py
     ├── test_boltz.py
     ├── test_ankara.py
+    ├── test_sideswap.py
     └── test_server.py
 ```
 

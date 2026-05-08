@@ -453,6 +453,205 @@ TOOL_SCHEMAS = {
             "required": ["swap_id"],
         },
     },
+    "sideswap_server_status": {
+        "description": (
+            "Fetch SideSwap server status: live fees, minimum amounts, and "
+            "hot-wallet balances. Call this BEFORE recommending a peg or swap "
+            "so values reflect current SideSwap state."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "network": {
+                    "type": "string",
+                    "enum": ["mainnet", "testnet"],
+                    "default": "mainnet",
+                },
+            },
+        },
+    },
+    "sideswap_peg_quote": {
+        "description": (
+            "Quote the receive amount for a SideSwap peg (BTC ↔ L-BTC) at "
+            "current fees (0.1% + ~286 sats Liquid claim fee on peg-in). "
+            "Returns send_amount, recv_amount, fee_amount."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "integer",
+                    "description": "Send amount in Satoshis",
+                },
+                "peg_in": {
+                    "type": "boolean",
+                    "description": "True for BTC → L-BTC, False for L-BTC → BTC",
+                    "default": True,
+                },
+                "network": {
+                    "type": "string",
+                    "enum": ["mainnet", "testnet"],
+                    "default": "mainnet",
+                },
+            },
+            "required": ["amount"],
+        },
+    },
+    "sideswap_peg_in": {
+        "description": (
+            "Initiate a SideSwap peg-in (BTC → L-BTC). Returns a Bitcoin deposit "
+            "address; the user (or btc_send) must send BTC to it. After 2 BTC "
+            "confirmations (~20 min hot path; up to ~17 hours cold path for "
+            "very large amounts), L-BTC arrives in the Liquid wallet. "
+            "Recommended over a swap-market trade for amounts ≥ ~0.01 BTC: "
+            "lower fee (0.1% vs 0.2%) at the cost of waiting. "
+            "ALWAYS call sideswap_recommend first for large amounts so the user "
+            "understands the trade-off."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Liquid wallet to receive L-BTC",
+                    "default": "default",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Password to decrypt mnemonic (if encrypted at rest)",
+                },
+            },
+        },
+    },
+    "sideswap_peg_out": {
+        "description": (
+            "Initiate a SideSwap peg-out (L-BTC → BTC) and broadcast the L-BTC "
+            "send. After 2 Liquid confirmations (~2 min) and the federation BTC "
+            "sweep (typically 15–60 min total), BTC arrives at the user's "
+            "Bitcoin address. Fees: 0.1% + Bitcoin network fee. Standard way to "
+            "move L-BTC back to Bitcoin mainchain."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Liquid wallet to send L-BTC from",
+                },
+                "amount": {
+                    "type": "integer",
+                    "description": "Amount in Satoshis to peg out",
+                },
+                "btc_address": {
+                    "type": "string",
+                    "description": "Destination Bitcoin address (bc1...)",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Password to decrypt mnemonic (if encrypted at rest)",
+                },
+            },
+            "required": ["wallet_name", "amount", "btc_address"],
+        },
+    },
+    "sideswap_peg_status": {
+        "description": (
+            "Check the status of a SideSwap peg order (peg-in or peg-out). "
+            "Returns confirmations progress (X/Y), tx_state, lockup_txid, "
+            "payout_txid when complete."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "order_id": {
+                    "type": "string",
+                    "description": "Order ID from sideswap_peg_in or sideswap_peg_out",
+                },
+            },
+            "required": ["order_id"],
+        },
+    },
+    "sideswap_recommend": {
+        "description": (
+            "Recommend a peg vs an instant swap-market trade for a BTC ↔ L-BTC "
+            "conversion. Surfaces the trade-off (lower fee but slower) and "
+            "warns when the amount exceeds SideSwap's hot-wallet liquidity. "
+            "ALWAYS call this for large conversions before initiating a peg."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "integer",
+                    "description": "Amount in Satoshis to convert",
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["btc_to_lbtc", "lbtc_to_btc"],
+                    "description": "Direction of conversion",
+                },
+                "network": {
+                    "type": "string",
+                    "enum": ["mainnet", "testnet"],
+                    "default": "mainnet",
+                },
+            },
+            "required": ["amount", "direction"],
+        },
+    },
+    "sideswap_list_assets": {
+        "description": (
+            "List Liquid assets that SideSwap supports for atomic swaps "
+            "(e.g. L-BTC, USDt, EURx, MEX, DePix)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "network": {
+                    "type": "string",
+                    "enum": ["mainnet", "testnet"],
+                    "default": "mainnet",
+                },
+            },
+        },
+    },
+    "sideswap_quote": {
+        "description": (
+            "Get a read-only price quote for a SideSwap Liquid asset swap "
+            "(e.g. L-BTC ↔ USDt). Provide exactly one of send_amount or "
+            "recv_amount. NOTE: this is a quote only — atomic swap execution "
+            "is not yet implemented in agentic-aqua (PSET output verification "
+            "needs an audit). To execute, use the AQUA mobile wallet or sideswap.io."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "asset_id": {
+                    "type": "string",
+                    "description": "Liquid asset ID (hex) to swap with L-BTC",
+                },
+                "send_amount": {
+                    "type": "integer",
+                    "description": "Amount the user is sending (Satoshis)",
+                },
+                "recv_amount": {
+                    "type": "integer",
+                    "description": "Amount the user wants to receive (Satoshis)",
+                },
+                "send_bitcoins": {
+                    "type": "boolean",
+                    "description": "True if sending L-BTC for the asset; False if sending the asset for L-BTC",
+                    "default": True,
+                },
+                "network": {
+                    "type": "string",
+                    "enum": ["mainnet", "testnet"],
+                    "default": "mainnet",
+                },
+            },
+            "required": ["asset_id"],
+        },
+    },
 }
 
 
@@ -519,6 +718,30 @@ LIGHTNING:
 - Use lightning_send to pay a BOLT11 invoice using L-BTC (submarine swap via Boltz)
   Fees: ~0.1% + miner fees, Limits: 100 - 25,000,000 Sats
 - Use lightning_transaction_status to check status of any Lightning swap (send or receive)
+
+SIDESWAP (BTC ↔ L-BTC pegs and Liquid asset swaps):
+- Pegs are the canonical way to move funds between Bitcoin mainchain and Liquid.
+- Peg-in (BTC → L-BTC): user sends BTC to a SideSwap deposit address; after 2
+  BTC confirmations (~20 min), L-BTC arrives in their Liquid wallet.
+- Peg-out (L-BTC → BTC): user sends L-BTC to a SideSwap deposit address; after
+  2 Liquid confs and the federation sweep (~15-60 min total), BTC arrives.
+- Fees: 0.1% on each peg + a small second-chain fee (~286 sats on peg-in).
+- BEFORE initiating a peg for ≥ 0.01 BTC (~1,000,000 sats), call
+  sideswap_recommend to surface the time-vs-fee trade-off and warn the user.
+- For VERY LARGE peg-ins that exceed SideSwap's hot-wallet balance, expect the
+  cold-wallet path: 102 BTC confirmations (~17 hours). Always check
+  sideswap_server_status first and warn the user when this applies.
+- For Liquid asset swaps (e.g. L-BTC ↔ USDt), sideswap_quote returns a quote
+  but does NOT execute the swap — direct the user to the AQUA mobile wallet
+  or sideswap.io to complete it.
+
+WHEN TO RECOMMEND A PEG:
+- "I want to move my BTC to Liquid" → if amount ≥ 0.01 BTC, recommend peg-in.
+  Below that, instant atomic swaps may be preferable for speed.
+- "I want to move my L-BTC to Bitcoin" → recommend peg-out (it is the standard
+  path; swap-market liquidity for L-BTC → BTC is shallow).
+- ALWAYS explain the time trade-off and ask the user to confirm they want to
+  wait the expected duration before broadcasting.
 
 WATCH-ONLY WALLETS:
 - For a Bitcoin-only watch wallet: btc_import_descriptor (BIP84 wpkh xpub).
@@ -650,6 +873,26 @@ WALLET DELETION:
                 arguments=[
                     PromptArgument(name="wallet_name", description="Wallet name", required=False),
                 ],
+            ),
+            # SideSwap
+            Prompt(
+                name="peg_in",
+                description="Move BTC to Liquid (BTC → L-BTC) via SideSwap peg-in",
+                arguments=[
+                    PromptArgument(name="wallet_name", description="Wallet name", required=False),
+                ],
+            ),
+            Prompt(
+                name="peg_out",
+                description="Move L-BTC to Bitcoin (L-BTC → BTC) via SideSwap peg-out",
+                arguments=[
+                    PromptArgument(name="wallet_name", description="Wallet name", required=False),
+                ],
+            ),
+            Prompt(
+                name="swap_assets",
+                description="Quote a Liquid asset swap (e.g. L-BTC ↔ USDt) via SideSwap (read-only)",
+                arguments=[],
             ),
         ]
 
@@ -952,6 +1195,98 @@ Please follow this safety workflow:
 5. Ask me for EXPLICIT confirmation: "Are you sure you want to delete wallet '{wallet_name}'? This cannot be undone."
 6. Only after I explicitly confirm, call delete_wallet with wallet_name='{wallet_name}'
 7. Confirm deletion was successful""",
+                        ),
+                    )
+                ]
+            )
+
+        elif name == "peg_in":
+            return GetPromptResult(
+                messages=[
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text=f"""I want to peg in (move BTC into L-BTC) using my '{wallet_name}' wallet.
+
+Please:
+1. Ask me how much BTC I want to peg in (in BTC or Sats)
+2. If I haven't given a clear amount yet, also show my current Bitcoin balance
+   (btc_balance) so I have context
+3. Call sideswap_server_status to fetch live fees, minimums, and hot-wallet balance
+4. Call sideswap_recommend with direction="btc_to_lbtc" and the amount to confirm
+   peg-in is appropriate, and surface the trade-off:
+   - Lower fee (0.1% vs ~0.2% on instant swaps)
+   - Slower: usually 20–40 min for 2 BTC confirmations
+   - For very large amounts: may require 102 confs (~17 hours) if it exceeds
+     SideSwap's hot-wallet liquidity. WARN clearly if this applies.
+5. Call sideswap_peg_quote to show the exact receive amount after fees
+6. Show me a summary BEFORE proceeding:
+   - Send amount (BTC) → Receive amount (L-BTC)
+   - Fee breakdown
+   - Expected time (and any 102-conf warning)
+7. Ask for explicit confirmation
+8. Call sideswap_peg_in to get the BTC deposit address (peg_addr)
+9. Ask me whether I want to fund it from my local Bitcoin wallet (btc_send) or
+   send manually from another wallet
+10. If from local: ask for password (if encrypted), then btc_send to peg_addr
+11. Show me the order_id and tell me to use sideswap_peg_status to track progress""",
+                        ),
+                    )
+                ]
+            )
+
+        elif name == "peg_out":
+            return GetPromptResult(
+                messages=[
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text=f"""I want to peg out (move L-BTC into Bitcoin) from my '{wallet_name}' wallet.
+
+Please:
+1. Show my current L-BTC balance (lw_balance)
+2. Ask me:
+   - How much L-BTC to peg out (Sats)
+   - Destination Bitcoin address (bc1...)
+3. Call sideswap_server_status to fetch live minimums and fees
+4. Call sideswap_recommend with direction="lbtc_to_btc" — peg-out is the
+   standard path for L-BTC → BTC and you should communicate that
+5. Call sideswap_peg_quote (peg_in=false) to show the exact receive amount
+6. Show me a summary BEFORE proceeding:
+   - Send: X L-BTC → Receive: Y BTC at {{btc_address}}
+   - Fee breakdown (0.1% + Bitcoin network fee, deducted from payout)
+   - Expected time: usually 15–60 minutes
+7. Ask for explicit confirmation
+8. If wallet is password-encrypted, ask for the password
+9. Call sideswap_peg_out — this broadcasts the L-BTC send to the SideSwap
+   deposit address. Show the order_id and lockup_txid
+10. Tell me to track progress with sideswap_peg_status""",
+                        ),
+                    )
+                ]
+            )
+
+        elif name == "swap_assets":
+            return GetPromptResult(
+                messages=[
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text="""I want to swap Liquid assets (e.g. L-BTC ↔ USDt) via SideSwap.
+
+Please:
+1. Call sideswap_list_assets to show what's tradeable on SideSwap right now
+2. Ask me what I want to swap and which direction (sending L-BTC for an asset
+   vs sending an asset for L-BTC)
+3. Ask me for an amount (either send amount or receive amount, not both)
+4. Call sideswap_quote to get a price quote
+5. Show me the result clearly: send X → receive Y at price P, with fixed_fee
+6. IMPORTANT: tell me that agentic-aqua does NOT yet execute SideSwap atomic
+   swaps (PSET output verification needs an audit before live signing). To
+   execute, I need to use the AQUA mobile wallet or sideswap.io.""",
                         ),
                     )
                 ]
