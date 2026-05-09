@@ -8,6 +8,7 @@ import pytest
 
 from aqua.lnurl import (
     LNURL_HTTP_TIMEOUT,
+    _http_get_json,
     is_lightning_address,
     resolve_lightning_address,
 )
@@ -88,6 +89,20 @@ class TestIsLightningAddress:
     )
     def test_rejects_invalid(self, addr):
         assert is_lightning_address(addr) is False
+
+
+# ===========================================================================
+# _http_get_json
+# ===========================================================================
+
+
+class TestHttpGetJson:
+    def test_rejects_non_https_url_before_request(self):
+        with patch("aqua.lnurl.urllib.request.urlopen") as mock_urlopen:
+            with pytest.raises(RuntimeError, match="LNURL-pay URL must use HTTPS"):
+                _http_get_json("http://example.com/.well-known/lnurlp/u")
+
+            mock_urlopen.assert_not_called()
 
 
 # ===========================================================================
@@ -297,3 +312,59 @@ class TestResolveLightningAddress:
     def test_rejects_invalid_address_format(self):
         with pytest.raises(ValueError, match="Invalid Lightning Address"):
             resolve_lightning_address("not-an-address", 50)
+
+    @pytest.mark.parametrize(
+        "callback",
+        [
+            "https://192.168.1.1/pay",
+            "https://10.0.0.1/pay",
+            "https://172.16.0.1/pay",
+            "https://127.0.0.1/pay",
+            "https://169.254.169.254/pay",  # AWS metadata
+            "https://[::1]/pay",            # IPv6 loopback
+        ],
+    )
+    def test_rejects_private_ip_callback(self, callback):
+        """Callback URL with private/loopback IP is rejected before fetch (SSRF guard)."""
+        with patch("aqua.lnurl.urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = _mock_response(_payreq(callback=callback))
+            with pytest.raises(ValueError, match="non-public address"):
+                resolve_lightning_address("u@x.io", 50)
+            assert mock_urlopen.call_count == 1
+
+    @pytest.mark.parametrize("hostname", ["localhost", "localhost.localdomain", "ip6-localhost"])
+    def test_rejects_localhost_callback(self, hostname):
+        """Callback URL with localhost hostname is rejected before fetch."""
+        with patch("aqua.lnurl.urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = _mock_response(
+                _payreq(callback=f"https://{hostname}/pay")
+            )
+            with pytest.raises(ValueError, match="hostname not allowed"):
+                resolve_lightning_address("u@x.io", 50)
+
+    def test_accepts_float_sendable_values(self):
+        """minSendable/maxSendable as JSON floats are accepted (real-world servers)."""
+        with patch("aqua.lnurl.urllib.request.urlopen") as mock_urlopen, patch(
+            "aqua.lnurl.decode_bolt11_amount_sats", return_value=50_000
+        ):
+            payreq_data = _payreq()
+            payreq_data["minSendable"] = 1_000.0
+            payreq_data["maxSendable"] = 100_000_000_000.0
+            mock_urlopen.side_effect = [
+                _mock_response(payreq_data, final_url="https://x.io/.well-known/lnurlp/u"),
+                _mock_response({"pr": INVOICE_50000_SATS}),
+            ]
+            assert resolve_lightning_address("u@x.io", 50_000) == INVOICE_50000_SATS
+
+    def test_preserves_user_case_in_lookup_url(self):
+        """User part of LN address is NOT lowercased — domain part is."""
+        with patch("aqua.lnurl.urllib.request.urlopen") as mock_urlopen, patch(
+            "aqua.lnurl.decode_bolt11_amount_sats", return_value=50_000
+        ):
+            mock_urlopen.side_effect = [
+                _mock_response(_payreq(), final_url="https://getalby.com/.well-known/lnurlp/Alice"),
+                _mock_response({"pr": INVOICE_50000_SATS}),
+            ]
+            resolve_lightning_address("Alice@GETALBY.COM", 50_000)
+            req = mock_urlopen.call_args_list[0].args[0]
+            assert req.full_url == "https://getalby.com/.well-known/lnurlp/Alice"

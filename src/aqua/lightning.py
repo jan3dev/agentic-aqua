@@ -165,6 +165,7 @@ class LightningManager:
         Returns:
             LightningSwap with pending status and lockup_txid
         """
+        from_lightning_address = False
         if is_lightning_address(invoice):
             if amount_sats is None:
                 raise ValueError(
@@ -176,6 +177,7 @@ class LightningManager:
                     f"({BOLTZ_MIN_SATS}-{BOLTZ_MAX_SATS} sats)"
                 )
             invoice = resolve_lightning_address(invoice, amount_sats)
+            from_lightning_address = True
 
         valid_prefixes = ("lnbc", "lntb")
         if not invoice or not any(invoice.startswith(p) for p in valid_prefixes):
@@ -185,6 +187,11 @@ class LightningManager:
 
         if amount_sats is not None:
             decoded = decode_bolt11_amount_sats(invoice)
+            if from_lightning_address and decoded is None:
+                raise ValueError(
+                    f"Lightning Address resolved to a zero-amount invoice; "
+                    f"decode_bolt11_amount_sats returned None for amount_sats={amount_sats}"
+                )
             if decoded is not None and decoded != amount_sats:
                 raise ValueError(
                     f"amount_sats ({amount_sats}) does not match BOLT11 invoice amount ({decoded})"

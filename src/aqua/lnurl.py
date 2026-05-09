@@ -9,9 +9,11 @@ AQUA Flutter's pragmatic compatibility behaviour. Strict-mode verification is
 a possible future hardening.
 """
 
+import ipaddress
 import json
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .boltz import decode_bolt11_amount_sats
@@ -21,18 +23,51 @@ _LN_ADDRESS_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
 LNURL_HTTP_TIMEOUT = 30
 
+_BLOCKED_HOSTNAMES = frozenset({"localhost", "localhost.localdomain", "ip6-localhost", "broadcasthost"})
+
 
 def is_lightning_address(s: str) -> bool:
     """True if `s` matches the LN-address email-like format. Pure syntactic check."""
     return bool(s and _LN_ADDRESS_RE.match(s))
 
 
+def _reject_if_private_ip(host: str, label: str) -> None:
+    """Raise ValueError if `host` is a literal private/reserved/loopback/link-local IP."""
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return  # Domain name, not a literal IP — allow
+    if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast:
+        raise ValueError(f"LNURL-pay {label} points to a non-public address: {host!r}")
+
+
+def _validate_safe_https_url(url: str, label: str) -> None:
+    """Raise ValueError if `url` is not a safe public HTTPS URL.
+
+    Guards against SSRF by rejecting non-HTTPS schemes, localhost aliases, and
+    literal private/loopback/link-local/reserved IP addresses in the hostname.
+    """
+    if not isinstance(url, str) or not url.startswith("https://"):
+        raise ValueError(f"LNURL-pay {label} must be an https URL")
+    try:
+        host = urllib.parse.urlparse(url).hostname or ""
+    except Exception:
+        raise ValueError(f"LNURL-pay {label} is not a valid URL")
+    if not host or host.lower() in _BLOCKED_HOSTNAMES:
+        raise ValueError(f"LNURL-pay {label} hostname not allowed: {host!r}")
+    _reject_if_private_ip(host, label)
+
+
 def _http_get_json(url: str) -> dict:
     """GET `url` and return parsed JSON.
 
     Raises:
-        RuntimeError on HTTP / network failure, redirect to non-https, or malformed JSON.
+        RuntimeError on non-HTTPS URL, HTTP / network failure, redirect to non-https,
+        or malformed JSON.
     """
+    if not url.startswith("https://"):
+        raise RuntimeError(f"LNURL-pay URL must use HTTPS: {url}")
+
     req = urllib.request.Request(url, headers={"User-Agent": "agentic-aqua"})
     try:
         with urllib.request.urlopen(req, timeout=LNURL_HTTP_TIMEOUT) as resp:
@@ -88,7 +123,6 @@ def resolve_lightning_address(address: str, amount_sats: int) -> str:
         raise ValueError(f"Invalid Lightning Address: {address!r}")
 
     user, domain = address.split("@", 1)
-    user = user.lower()
     domain = domain.lower()
 
     lnurlp_url = f"https://{domain}/.well-known/lnurlp/{user}"
@@ -112,12 +146,13 @@ def resolve_lightning_address(address: str, amount_sats: int) -> str:
     max_sendable = payreq.get("maxSendable")
     metadata = payreq.get("metadata")
 
-    if not isinstance(callback, str) or not callback.startswith("https://"):
-        raise ValueError("LNURL-pay 'callback' must be an https URL")
-    if not isinstance(min_sendable, int) or not isinstance(max_sendable, int):
+    _validate_safe_https_url(callback, "'callback'")
+    if not isinstance(min_sendable, (int, float)) or not isinstance(max_sendable, (int, float)):
         raise ValueError(
-            "LNURL-pay 'minSendable' and 'maxSendable' must be integers (msat)"
+            "LNURL-pay 'minSendable' and 'maxSendable' must be numbers (msat)"
         )
+    min_sendable = int(min_sendable)
+    max_sendable = int(max_sendable)
     if not isinstance(metadata, str):
         raise ValueError("LNURL-pay 'metadata' must be a string")
 

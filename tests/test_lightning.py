@@ -1051,8 +1051,38 @@ class TestLightningTools:
             )
 
             mock_manager.pay_invoice.assert_called_once_with(
-                "alice@getalby.com", "default", None, 50_000
+                "alice@getalby.com",
+                "default",
+                password=None,
+                amount_sats=50_000,
             )
+
+    def test_lightning_send_tool_ln_address_requires_amount_sats(self):
+        """lightning_send rejects Lightning Address without amount_sats before manager."""
+        with patch("aqua.tools.get_lightning_manager") as mock_get:
+            with pytest.raises(
+                ValueError, match="amount_sats is required when paying a Lightning Address"
+            ):
+                lightning_send("alice@getalby.com", "default")
+
+            mock_get.assert_not_called()
+
+    def test_lightning_send_tool_rejects_non_positive_amount_sats(self):
+        """Invalid amount_sats uses same ValueError style as lw_send."""
+        with patch("aqua.tools.get_lightning_manager") as mock_get:
+            with pytest.raises(ValueError, match="Amount must be positive"):
+                lightning_send(VALID_INVOICE_MAINNET, "default", amount_sats=0)
+
+            mock_get.assert_not_called()
+
+    def test_lightning_send_tool_rejects_non_int_amount_sats(self):
+        with patch("aqua.tools.get_lightning_manager") as mock_get:
+            with pytest.raises(ValueError, match="amount_sats must be a positive integer"):
+                lightning_send(
+                    VALID_INVOICE_MAINNET, "default", amount_sats=50_000.0
+                )
+
+            mock_get.assert_not_called()
 
     def test_lightning_transaction_status_tool(self):
         """lightning_transaction_status tool delegates to manager.get_swap_status."""
