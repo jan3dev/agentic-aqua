@@ -387,7 +387,7 @@ class TestPegOut:
             peg = mgr.peg_out(
                 wallet_name="default",
                 amount=200_000,
-                btc_address="bc1quserdest",
+                btc_address="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
             )
         assert peg.lockup_txid is not None
         assert peg.status == "processing"
@@ -406,7 +406,7 @@ class TestPegOut:
                 mgr.peg_out(
                     wallet_name="default",
                     amount=50_000,
-                    btc_address="bc1q",
+                    btc_address="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
                 )
 
     def test_peg_out_insufficient_balance_rejected(self, manager_setup):
@@ -418,7 +418,7 @@ class TestPegOut:
                 mgr.peg_out(
                     wallet_name="default",
                     amount=200_000,
-                    btc_address="bc1q",
+                    btc_address="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
                 )
 
     def test_peg_out_send_failure_marks_failed_and_persists(self, manager_setup):
@@ -432,7 +432,7 @@ class TestPegOut:
         wm.send = boom  # type: ignore[assignment]
         with _patch_ws():
             with pytest.raises(RuntimeError, match="broadcast failed"):
-                mgr.peg_out(wallet_name="default", amount=200_000, btc_address="bc1q")
+                mgr.peg_out(wallet_name="default", amount=200_000, btc_address="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4")
         # Order persisted as failed for recovery
         loaded = storage.load_sideswap_peg("po_2")
         assert loaded is not None
@@ -500,6 +500,50 @@ class TestPegStatusPolling:
             result = mgr.status("poll2")
         assert result["status"] == "processing"
         assert result["confirmations"] == "1/2"
+
+    def test_status_multi_tx_does_not_regress_completed_state(self, manager_setup):
+        # Regression: SideSwap returns one entry per detected deposit on the
+        # peg address. If the user reuses the address, a fresh `Detected`
+        # deposit can appear AFTER a completed `Done` deposit. Picking just
+        # `txns[-1]` would let the persisted state regress to processing
+        # and lose the original payout_txid.
+        mgr, _, storage = manager_setup
+        peg = SideSwapPeg(
+            order_id="poll_multi",
+            peg_in=True,
+            peg_addr="bc1q",
+            recv_addr="lq1q",
+            amount=None,
+            expected_recv=None,
+            wallet_name="default",
+            network="mainnet",
+            status="processing",
+            created_at="2026-05-07T12:00:00+00:00",
+        )
+        storage.save_sideswap_peg(peg)
+        FakeWSClient.responses["peg_status"] = {
+            "list": [
+                {
+                    "tx_state": "Done",
+                    "detected_confs": 2,
+                    "total_confs": 2,
+                    "payout_txid": "originalpayout",
+                },
+                {
+                    "tx_state": "Detected",
+                    "detected_confs": 1,
+                    "total_confs": 2,
+                    "payout_txid": None,
+                },
+            ]
+        }
+        with _patch_ws():
+            result = mgr.status("poll_multi")
+        # The completed Done wins over the new Detected; payout_txid is
+        # preserved.
+        assert result["status"] == "completed"
+        assert result["tx_state"] == "Done"
+        assert result["payout_txid"] == "originalpayout"
 
     def test_status_unknown_order_raises(self, manager_setup):
         mgr, _, _ = manager_setup

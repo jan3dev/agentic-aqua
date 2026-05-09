@@ -35,11 +35,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Optional
+
+import websockets
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +80,29 @@ PEG_RECOMMENDATION_THRESHOLD_SATS = 1_000_000
 WS_TIMEOUT_SECONDS = 30.0
 QUOTE_WAIT_SECONDS = 10.0
 
+# Reserved for the Liquid network fee on a peg-out broadcast. Liquid fees are
+# fixed-rate and tiny (~50–100 sats in practice); 200 sats is a comfortable
+# upper bound that prevents balance-check pass / broadcast-fail races without
+# blocking realistic peg-outs.
+LIQUID_FEE_RESERVE_SATS = 200
+
+
+def _validate_btc_address(address: str, network: str) -> None:
+    """Raise ValueError if `address` doesn't parse on the matching Bitcoin network.
+
+    Uses BDK's address parser since it's already a project dep and recognises
+    the same mainnet/testnet network names we use elsewhere.
+    """
+    import bdkpython as bdk
+
+    bdk_network = bdk.Network.BITCOIN if network == "mainnet" else bdk.Network.TESTNET
+    try:
+        bdk.Address(address, bdk_network)
+    except Exception as e:
+        raise ValueError(
+            f"Invalid Bitcoin {network} address {address!r}: {e}"
+        ) from e
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -102,7 +128,11 @@ class SideSwapPeg:
     payout_txid: Optional[str] = None  # Server's payout tx (set on completion)
     detected_confs: Optional[int] = None
     total_confs: Optional[int] = None
-    tx_state: Optional[str] = None  # InsufficientAmount | Detected | Processing | Done
+    # SideSwap server enum only — Detected | Processing | Done | InsufficientAmount.
+    # Local errors (insufficient L-BTC, broadcast failure, etc.) live in
+    # `local_error` so this field always reflects what SideSwap reports.
+    tx_state: Optional[str] = None
+    local_error: Optional[str] = None
     last_checked_at: Optional[str] = None
     return_address: Optional[str] = None
 
@@ -119,6 +149,7 @@ class SideSwapPeg:
             "detected_confs",
             "total_confs",
             "tx_state",
+            "local_error",
             "last_checked_at",
             "return_address",
         ):
@@ -216,10 +247,6 @@ class SideSwapWSClient:
         await self.close()
 
     async def connect(self) -> None:
-        # Imported lazily so tests that don't exercise the network never need
-        # the optional `websockets` dependency.
-        import websockets
-
         self._ws = await asyncio.wait_for(
             websockets.connect(self.url, max_size=4 * 1024 * 1024),
             timeout=WS_TIMEOUT_SECONDS,
@@ -378,8 +405,6 @@ def _run(coro):
     # If we're already in a loop, use a separate loop in a new thread to avoid
     # deadlocking on the running loop. This is the case under pytest-asyncio
     # auto mode and may apply to some MCP transports.
-    import threading
-
     result_box: dict[str, Any] = {}
     exc_box: dict[str, BaseException] = {}
 
@@ -503,15 +528,14 @@ def fetch_swap_quote(
             )
             quote_data = initial or {}
             # First subscribe response often contains the quote already; if not,
-            # wait for the streamed notification.
+            # wait for the streamed notification. Let any timeout/connection
+            # error propagate — silently returning a price=0.0 quote here
+            # would look like a free swap to the caller.
             if not quote_data.get("price"):
-                try:
-                    notif = await client.next_notification(
-                        "update_price_stream", timeout=quote_wait_seconds
-                    )
-                    quote_data = (notif or {}).get("params") or {}
-                except SideSwapWSError:
-                    pass
+                notif = await client.next_notification(
+                    "update_price_stream", timeout=quote_wait_seconds
+                )
+                quote_data = (notif or {}).get("params") or {}
             try:
                 await client.unsubscribe_price_stream(asset_id)
             except Exception:
@@ -544,6 +568,36 @@ def map_peg_status(tx_state: Optional[str], list_empty: bool) -> str:
         "Done": "completed",
         "InsufficientAmount": "failed",
     }.get(tx_state or "", "pending")
+
+
+# Higher number = more progressed. SideSwap returns one txn per detected
+# deposit on the peg address; if the user reuses the address, a completed
+# Done can sit alongside a fresh Detected and we want to surface the Done.
+# `InsufficientAmount` ranks above `Detected` because it's a terminal local
+# verdict (the user underpaid) rather than an in-flight state.
+_TX_STATE_RANK = {
+    "Done": 4,
+    "Processing": 3,
+    "InsufficientAmount": 2,
+    "Detected": 1,
+    None: 0,
+    "": 0,
+}
+
+
+def _pick_most_progressed_txn(txns: list[dict]) -> dict:
+    """Return the txns list entry whose tx_state is furthest along.
+
+    Ties go to the later entry (i.e. the txn the server reported last).
+    """
+    best_idx = 0
+    best_rank = -1
+    for i, t in enumerate(txns):
+        rank = _TX_STATE_RANK.get(t.get("tx_state"), 0)
+        if rank >= best_rank:
+            best_rank = rank
+            best_idx = i
+    return txns[best_idx]
 
 
 class SideSwapPegManager:
@@ -614,13 +668,9 @@ class SideSwapPegManager:
             raise ValueError(
                 "Watch-only wallet cannot receive a peg-in (no Liquid receive address)"
             )
-        # Decrypt mnemonic if needed; not strictly required to receive but matches
-        # the precondition pattern used by other flows.
-        if wallet_data.encrypted_mnemonic and self.storage.is_mnemonic_encrypted(
-            wallet_data.encrypted_mnemonic
-        ):
-            if password:
-                self.wallet_manager.load_wallet(wallet_name, password)
+        # Receiving a peg-in only needs the wallet's next address — never the
+        # mnemonic, encrypted or not. The `password` kwarg is accepted for
+        # signature symmetry with peg_out and other flows that do need to sign.
 
         addr = self.wallet_manager.get_address(wallet_name)
         recv_addr = addr.address
@@ -662,11 +712,16 @@ class SideSwapPegManager:
         """Initiate a peg-out and broadcast the L-BTC send to the deposit address.
 
         The flow:
-          1. Fetch SideSwap server_status for min_peg_out_amount and validate.
-          2. WS `peg(peg_in=False, recv_addr=<user BTC addr>)` → returns a Liquid
+          1. Validate inputs and decrypt the mnemonic up-front (so a wrong
+             password fails fast, before any SideSwap order is created).
+          2. Fetch SideSwap server_status for min_peg_out_amount and validate.
+          3. Validate `btc_address` parses as a Bitcoin address on the matching
+             network, so the SideSwap server isn't asked to peg out to a string
+             we can't actually pay to.
+          4. WS `peg(peg_in=False, recv_addr=<user BTC addr>)` → returns a Liquid
              deposit address (`peg_addr`).
-          3. Send `amount` sats of L-BTC from the wallet to `peg_addr`.
-          4. Persist the peg with `lockup_txid` populated; status="processing".
+          5. Send `amount` sats of L-BTC from the wallet to `peg_addr`.
+          6. Persist the peg with `lockup_txid` populated; status="processing".
         """
         if amount <= 0:
             raise ValueError("amount must be positive")
@@ -675,11 +730,24 @@ class SideSwapPegManager:
             raise ValueError(f"Wallet '{wallet_name}' not found")
         if wallet_data.watch_only:
             raise ValueError("Watch-only wallet cannot peg out (cannot sign)")
+
+        # Decrypt the mnemonic BEFORE creating a SideSwap order. Without this,
+        # a wrong password would only surface at broadcast time — leaving an
+        # orphaned SideSwap peg order behind for every retry. Watch-only and
+        # unencrypted wallets skip this check (no mnemonic to decrypt).
         if wallet_data.encrypted_mnemonic and self.storage.is_mnemonic_encrypted(
             wallet_data.encrypted_mnemonic
         ):
             if not password:
                 raise ValueError("Password required to decrypt mnemonic")
+            # `load_wallet` raises on bad password; let that propagate before
+            # we contact SideSwap.
+            self.wallet_manager.load_wallet(wallet_name, password)
+
+        # Validate the recipient BTC address parses on the matching network.
+        # Catches typos and wrong-network addresses (e.g. mainnet bc1 sent to
+        # testnet) before SideSwap is involved.
+        _validate_btc_address(btc_address, wallet_data.network)
 
         # Validate min/max against server
         try:
@@ -692,13 +760,19 @@ class SideSwapPegManager:
         except SideSwapWSError as e:
             logger.warning("Skipping min-amount check: %s", e)
 
-        # Balance check (best-effort)
+        # Balance check: a peg-out broadcast pays a Liquid network fee on top
+        # of `amount`. Liquid fees are tiny and stable (~50–100 sats); use a
+        # small reservation so a wallet whose balance equals `amount` exactly
+        # doesn't fail at broadcast time with the actual-fee error.
         try:
             balances = self.wallet_manager.get_balance(wallet_name)
             lbtc_balance = next((b.amount for b in balances if b.ticker == "L-BTC"), 0)
-            if lbtc_balance < amount:
+            required = amount + LIQUID_FEE_RESERVE_SATS
+            if lbtc_balance < required:
                 raise ValueError(
-                    f"Insufficient L-BTC: have {lbtc_balance} sats, need at least {amount} sats"
+                    f"Insufficient L-BTC: have {lbtc_balance} sats, need at least "
+                    f"{required} sats ({amount} + {LIQUID_FEE_RESERVE_SATS} reserved "
+                    "for the Liquid network fee)"
                 )
         except ValueError:
             raise
@@ -737,7 +811,9 @@ class SideSwapPegManager:
             )
         except Exception as e:
             peg.status = "failed"
-            peg.tx_state = "InsufficientAmount" if "insufficient" in str(e).lower() else None
+            # Local broadcast failures live in `local_error`; `tx_state`
+            # is reserved for SideSwap server enums.
+            peg.local_error = str(e)
             self.storage.save_sideswap_peg(peg)
             raise
 
@@ -764,17 +840,38 @@ class SideSwapPegManager:
             resp = _run(_go())
             txns = (resp or {}).get("list") or []
             list_empty = len(txns) == 0
-            tx_state = txns[-1].get("tx_state") if txns else None
+
+            # SideSwap returns one entry per detected deposit on the peg
+            # address, so a completed `Done` deposit followed by a fresh
+            # `Detected` deposit (e.g. user reused the address) shows up as
+            # two entries. Picking just `txns[-1]` would let an earlier
+            # `Done` regress to `Detected` and lose its `payout_txid`.
+            #
+            # Rule: pick the most-progressed entry by `tx_state`, falling
+            # back to the most-recent. Preserve any already-known
+            # `payout_txid` — it's set once on completion and must never
+            # be cleared.
+            most_progressed = _pick_most_progressed_txn(txns) if txns else None
+            tx_state = most_progressed.get("tx_state") if most_progressed else None
             new_status = map_peg_status(tx_state, list_empty)
             peg.status = new_status
             peg.tx_state = tx_state
-            if txns:
-                last = txns[-1]
-                peg.detected_confs = last.get("detected_confs")
-                peg.total_confs = last.get("total_confs")
-                payout = last.get("payout_txid")
+            if most_progressed:
+                # confs come from the most-progressed entry too; if the
+                # latest `Detected` deposit hasn't accumulated confs yet,
+                # the completed `Done` value is more meaningful for callers.
+                peg.detected_confs = most_progressed.get("detected_confs")
+                peg.total_confs = most_progressed.get("total_confs")
+                payout = most_progressed.get("payout_txid")
                 if payout:
                     peg.payout_txid = payout
+                elif any(t.get("payout_txid") for t in txns):
+                    # No payout on the chosen entry but another entry has
+                    # one — keep what we already have rather than blanking.
+                    for t in txns:
+                        if t.get("payout_txid"):
+                            peg.payout_txid = peg.payout_txid or t["payout_txid"]
+                            break
             peg.last_checked_at = datetime.now(UTC).isoformat()
             self.storage.save_sideswap_peg(peg)
         except Exception as e:

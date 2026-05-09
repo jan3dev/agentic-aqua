@@ -369,6 +369,29 @@ class Storage:
             if SWAP_ID_PATTERN.fullmatch(p.stem)
         ]
 
+    def delete_sideswap_pegs_for_wallet(self, wallet_name: str) -> int:
+        """Delete SideSwap peg records whose `wallet_name` matches.
+
+        Idempotent — returns 0 silently if the directory or matching files
+        don't exist. Returns the number of files removed.
+        """
+        if not self.sideswap_pegs_dir.exists():
+            return 0
+        removed = 0
+        for path in self.sideswap_pegs_dir.glob("*.json"):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if data.get("wallet_name") == wallet_name:
+                try:
+                    path.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        return removed
+
     # Cache operations
 
     def get_cache_path(self, wallet_name: str) -> Path:
