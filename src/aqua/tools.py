@@ -28,6 +28,7 @@ EXPLORER_URLS = {
 _manager: WalletManager | None = None
 _btc_manager: BitcoinWalletManager | None = None
 _lightning_manager: "LightningManager | None" = None
+_pix_manager: "PixManager | None" = None
 
 
 def get_manager() -> WalletManager:
@@ -57,6 +58,19 @@ def get_lightning_manager() -> "LightningManager":
             wallet_manager=get_manager(),
         )
     return _lightning_manager
+
+
+def get_pix_manager() -> "PixManager":
+    """Get or create Pix manager (shares storage and wallet manager)."""
+    global _pix_manager
+    if _pix_manager is None:
+        from .pix import PixManager
+
+        _pix_manager = PixManager(
+            storage=get_manager().storage,
+            wallet_manager=get_manager(),
+        )
+    return _pix_manager
 
 
 # Tool implementations
@@ -751,6 +765,79 @@ def lightning_transaction_status(swap_id: str) -> dict[str, Any]:
     return manager.get_swap_status(swap_id)
 
 
+# ---------------------------------------------------------------------------
+# Pix → DePix tools (Brazilian Real on-ramp via Eulen)
+# ---------------------------------------------------------------------------
+
+
+def pix_receive(
+    amount_cents: int,
+    wallet_name: str = "default",
+    password: str | None = None,
+) -> dict[str, Any]:
+    """Mint a Pix charge that pays out DePix to your Liquid wallet.
+
+    Pix is Brazil's instant payment system; DePix is a BRL-pegged Liquid asset
+    issued by Eulen. The user pays the returned `qr_copy_paste` string in their
+    banking app's "Pix Copia e Cola" field (or scans `qr_image_url` from a
+    second device); Eulen credits DePix to the wallet's next address.
+
+    Requires the EULEN_API_TOKEN environment variable.
+
+    Args:
+        amount_cents: Amount in BRL cents (100 = R$1.00). NOT reais.
+        wallet_name: Liquid wallet to receive DePix into. Default: "default".
+        password: Accepted for symmetry; receiving DePix needs only an address.
+
+    Returns:
+        swap_id, qr_copy_paste, qr_image_url, amount_cents, amount_brl,
+        depix_address, expiration, message.
+    """
+    manager = get_pix_manager()
+    swap = manager.create_deposit(amount_cents, wallet_name, password)
+
+    from .pix import _format_brl
+
+    amount_brl = _format_brl(swap.amount_cents)
+    all_wallets = get_manager().storage.list_wallets()
+    wallet_note = f" in wallet '{wallet_name}'" if len(all_wallets) > 1 else ""
+    return {
+        "swap_id": swap.swap_id,
+        "qr_copy_paste": swap.qr_copy_paste,
+        "qr_image_url": swap.qr_image_url,
+        "amount_cents": swap.amount_cents,
+        "amount_brl": amount_brl,
+        "depix_address": swap.depix_address,
+        "expiration": swap.expiration,
+        "wallet_name": wallet_name,
+        "message": (
+            f"Pay {amount_brl} via Pix to receive DePix{wallet_note}. "
+            "Paste qr_copy_paste into your banking app's 'Pix Copia e Cola' field, "
+            "or open qr_image_url on your phone and scan with your bank app. "
+            f"Check status with swap_id: {swap.swap_id}"
+        ),
+    }
+
+
+def pix_status(swap_id: str) -> dict[str, Any]:
+    """Check the status of a Pix → DePix deposit.
+
+    Eulen pushes DePix automatically once the Pix payment settles, so there is
+    no claim step. Status values from the upstream API: pending, depix_sent,
+    under_review, canceled, error, refunded, expired.
+
+    Args:
+        swap_id: Swap ID returned from pix_receive.
+
+    Returns:
+        swap_id, status, amount_cents, amount_brl, wallet_name, depix_address,
+        network, message; optionally blockchain_txid, payer_name, expiration,
+        warning.
+    """
+    manager = get_pix_manager()
+    return manager.get_deposit_status(swap_id)
+
+
 # Tool registry for MCP
 TOOLS = {
     "lw_generate_mnemonic": lw_generate_mnemonic,
@@ -776,4 +863,6 @@ TOOLS = {
     "lightning_receive": lightning_receive,
     "lightning_send": lightning_send,
     "lightning_transaction_status": lightning_transaction_status,
+    "pix_receive": pix_receive,
+    "pix_status": pix_status,
 }

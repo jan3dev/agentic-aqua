@@ -16,9 +16,9 @@ AI Assistant ←→ MCP Server (Python) ←→ LWK (Liquid) ──→ Electrum/E
 
 No local server required. Liquid uses Electrum/Esplora; Bitcoin uses Esplora only. All via Blockstream's public infrastructure.
 
-## Tools (22 total)
+## Tools (24 total)
 
-Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified tools are `unified_*`; Lightning tools are `lightning_*`.
+Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified tools are `unified_*`; Lightning tools are `lightning_*`; Pix → DePix tools are `pix_*`.
 
 ### Wallet Management
 
@@ -74,6 +74,13 @@ Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified 
 | `lightning_send` | Pay a Lightning invoice using L-BTC via Boltz submarine swap. Fees: ~0.1% + miner fees. Limits: 100 – 25,000,000 sats | `invoice`: BOLT11 string (lnbc... or lntb...), `wallet_name`: optional, `password`: optional |
 | `lightning_transaction_status` | Check status of a Lightning swap (send or receive). For receive: auto-claims L-BTC when settled. For send: retrieves preimage when claimed. | `swap_id`: string |
 
+### Pix → DePix (Brazilian Real on-ramp)
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `pix_receive` | Mint a Pix charge that pays out DePix (BRL stablecoin on Liquid) to the wallet's next address. Returns Pix Copia e Cola string + hosted QR image URL. Amount is in BRL **cents** (100 = R$1.00). Requires `EULEN_API_TOKEN`. | `amount_cents`: int, `wallet_name`: optional, `password`: optional |
+| `pix_status` | Check the status of a Pix → DePix deposit. Eulen pushes DePix automatically; no claim step. | `swap_id`: string |
+
 ## Resources (3 total)
 
 MCP resources provide static documentation to AI assistants.
@@ -84,7 +91,7 @@ MCP resources provide static documentation to AI assistants.
 | `aqua://docs/networks` | Network Reference | Bitcoin and Liquid network details, address formats, explorers, common assets |
 | `aqua://docs/security` | Security Best Practices | Password usage, at-rest encryption, backup, watch-only wallets, recovery |
 
-## Prompts (14 total)
+## Prompts (15 total)
 
 MCP prompts provide pre-built conversation starters for common workflows.
 
@@ -104,6 +111,7 @@ MCP prompts provide pre-built conversation starters for common workflows.
 | `export_descriptor` | Export descriptor for watch-only wallet | `wallet_name`: optional |
 | `delete_wallet` | Safely delete a wallet with balance check and seed backup reminder | `wallet_name`: required |
 | `pay_lightning` | Pay a Lightning invoice using Liquid Bitcoin | `wallet_name`: optional |
+| `receive_via_pix` | Receive DePix by paying a Pix charge in your Brazilian banking app | `wallet_name`: optional |
 
 ## Data Storage
 
@@ -120,6 +128,8 @@ Wallet data stored in `~/.aqua/`:
 │   └── {swap_id}.json   # Contains swap details + preimage when settled
 ├── lightning_swaps/     # Unified Lightning swap data (send & receive)
 │   └── {swap_id}.json   # Contains swap details + status + optional preimage
+├── pix_swaps/           # Pix → DePix deposit records (Eulen)
+│   └── {swap_id}.json   # Contains Pix charge details + status + optional blockchain_txid
 └── cache/
     └── <wallet_name>/
         └── btc/
@@ -226,6 +236,27 @@ Or for send swaps (Boltz):
 
 File permissions: `0o600`. Status values: `pending` | `processing` | `completed` | `failed`. The `lightning_transaction_status` tool auto-claims settled receive swaps.
 
+### Pix Swap File Structure
+
+```json
+{
+  "swap_id": "eulen_deposit_uuid",
+  "amount_cents": 5000,
+  "wallet_name": "default",
+  "depix_address": "lq1qq...",
+  "qr_copy_paste": "00020126580014br.gov.bcb.pix...",
+  "qr_image_url": "https://depix.eulen.app/qr/...png",
+  "status": "pending",
+  "network": "mainnet",
+  "created_at": "2026-05-08T12:00:00Z",
+  "expiration": "2026-05-08T23:59:59Z",
+  "blockchain_txid": null,
+  "payer_name": null
+}
+```
+
+File permissions: `0o600`. Status values (raw from Eulen): `pending` | `depix_sent` | `under_review` | `canceled` | `error` | `refunded` | `expired`. There is no claim step — Eulen pushes DePix to `depix_address` automatically once the Pix payment settles.
+
 ### Config Structure
 
 ```json
@@ -269,6 +300,22 @@ File permissions: `0o600`. Status values: `pending` | `processing` | `completed`
 - `mcp` - Model Context Protocol SDK
 - `cryptography` - For mnemonic encryption (PBKDF2 + Fernet)
 - `coincurve` - secp256k1 for Boltz swap keypair generation
+
+## Pix / Eulen Integration
+
+Eulen runs the public Pix → DePix REST API. AQUA mints a Pix charge, the user pays it in their Brazilian banking app, and Eulen credits DePix (BRL stablecoin on Liquid) to the address bound at deposit creation.
+
+**Configuration**:
+- `EULEN_API_TOKEN` (required): Bearer token. Obtain from https://depix.info/#partners.
+- `EULEN_API_URL` (optional): defaults to `https://depix.eulen.app/api`.
+
+**Endpoints used**:
+- `POST /deposit` with body `{ amountInCents, depixAddress }` → `{ id, qrCopyPaste, qrImageUrl, expiration }`. Headers: `Authorization: Bearer <token>`, `X-Nonce: <uuid4-hex>`.
+- `GET /deposit-status?id={id}` → `{ status, valueInCents, payerName?, blockchainTxID?, expiration? }`.
+
+**Amount Limits**: `amount_cents` is in BRL **cents** (100 = R$1.00). Eulen's absolute floor is R$1.00; first-time users typically have a daily limit around R$500 that scales up over time. There are no fixed published fees — verify current rates at depix.info.
+
+**Status semantics**: Eulen delivers DePix automatically; AQUA only polls. Terminal states are `depix_sent` (success), `canceled` / `error` / `refunded` / `expired` (failure).
 
 ## Ankara Integration
 
@@ -400,6 +447,7 @@ agentic-aqua/
 │       ├── lightning.py # Lightning abstraction layer (unified send/receive manager)
 │       ├── boltz.py    # Boltz Exchange integration (submarine swaps, send)
 │       ├── ankara.py   # Ankara backend integration (Lightning receive)
+│       ├── pix.py      # Pix → DePix integration (Eulen API)
 │       ├── assets.py   # Asset registry
 │       └── storage.py  # Persistence layer (encryption, config, wallet data)
 └── tests/
@@ -409,6 +457,7 @@ agentic-aqua/
     ├── test_bitcoin.py
     ├── test_boltz.py
     ├── test_ankara.py
+    ├── test_pix.py
     └── test_server.py
 ```
 
@@ -445,4 +494,4 @@ Use standard Grep/Glob only for: exact string matches, simple file lookups, conf
 
 ---
 
-*Last updated: 2026-03-17*
+*Last updated: 2026-05-08*

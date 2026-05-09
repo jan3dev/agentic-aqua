@@ -453,6 +453,41 @@ TOOL_SCHEMAS = {
             "required": ["swap_id"],
         },
     },
+    "pix_receive": {
+        "description": "Mint a Pix charge (Brazil) that pays out DePix (BRL stablecoin on Liquid) to the named wallet's next address. Returns the Pix Copia e Cola string and a hosted QR image URL — the user pays from their banking app. Amount is in BRL CENTS (100 = R$1.00). Requires EULEN_API_TOKEN env var.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "amount_cents": {
+                    "type": "integer",
+                    "description": "Amount in BRL cents (100 = R$1.00). NOT reais — be precise about the unit.",
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Liquid wallet to receive DePix into",
+                    "default": "default",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Accepted for symmetry; not currently used by Pix receive (no signing needed).",
+                },
+            },
+            "required": ["amount_cents"],
+        },
+    },
+    "pix_status": {
+        "description": "Check the status of a Pix → DePix deposit. Status values: pending, depix_sent, under_review, canceled, error, refunded, expired. Eulen delivers DePix automatically — no claim step.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "swap_id": {
+                    "type": "string",
+                    "description": "Swap ID returned from pix_receive",
+                },
+            },
+            "required": ["swap_id"],
+        },
+    },
 }
 
 
@@ -519,6 +554,19 @@ LIGHTNING:
 - Use lightning_send to pay a BOLT11 invoice using L-BTC (submarine swap via Boltz)
   Fees: ~0.1% + miner fees, Limits: 100 - 25,000,000 Sats
 - Use lightning_transaction_status to check status of any Lightning swap (send or receive)
+
+PIX → DEPIX (Brazilian Real on-ramp via Eulen):
+- Use pix_receive to mint a Pix charge that pays out DePix (BRL stablecoin on Liquid)
+  Amount is in BRL CENTS (100 = R$1.00). Be very explicit about the unit when asking the user.
+  Requires the EULEN_API_TOKEN environment variable; if missing, tell the user to set it
+  (token comes from https://depix.info/#partners).
+- The tool returns a `qr_copy_paste` string (EMV BR-Code) and a `qr_image_url`. Show BOTH
+  to the user and explain they can either paste the string into their banking app's
+  "Pix Copia e Cola" field, or open the URL on their phone and scan the QR.
+- After the user pays, call pix_status with the swap_id until status="depix_sent".
+  Eulen pushes DePix automatically — no claim step.
+- First-time users on Eulen typically have a low limit (around R$500); limits scale up
+  with usage. If a deposit fails with an amount error, suggest a smaller amount.
 
 WATCH-ONLY WALLETS:
 - For a Bitcoin-only watch wallet: btc_import_descriptor (BIP84 wpkh xpub).
@@ -649,6 +697,16 @@ WALLET DELETION:
                 description="Pay a Lightning invoice using Liquid Bitcoin (via Boltz submarine swap)",
                 arguments=[
                     PromptArgument(name="wallet_name", description="Wallet name", required=False),
+                ],
+            ),
+            # Pix → DePix
+            Prompt(
+                name="receive_via_pix",
+                description="Receive DePix (BRL stablecoin on Liquid) by paying a Pix charge in your Brazilian banking app",
+                arguments=[
+                    PromptArgument(
+                        name="wallet_name", description="Wallet name", required=False
+                    ),
                 ],
             ),
         ]
@@ -981,6 +1039,31 @@ Please:
    - Preimage (proof of payment)
    - Explorer link for lockup transaction
 8. If swap fails, explain that L-BTC is locked until timeout and can be refunded""",
+                        ),
+                    )
+                ]
+            )
+
+        elif name == "receive_via_pix":
+            return GetPromptResult(
+                messages=[
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text=f"""I want to receive DePix (BRL stablecoin on Liquid) into my wallet '{wallet_name}' by paying via Pix.
+
+Please:
+1. Verify the EULEN_API_TOKEN environment variable is set. If not, tell me to obtain one from https://depix.info/#partners and stop here.
+2. Ask me how much I want to deposit, IN REAIS (e.g. "R$50"). Convert to cents (R$50 → 5000 cents) before calling pix_receive. Be explicit about the unit so I do not get a 100× error.
+3. Mention the practical first-time limit on Eulen is around R$500; offer to use a smaller amount if mine is higher.
+4. Call pix_receive(amount_cents=…, wallet_name='{wallet_name}').
+5. Show me BOTH:
+   - The `qr_copy_paste` string (EMV BR-Code) — I can paste this into my banking app's "Pix Copia e Cola" field.
+   - The `qr_image_url` — I can open this on my phone and scan the QR with my bank app.
+   Explain I only need to do ONE of those, not both.
+6. After I confirm I have paid, call pix_status(swap_id=…) and report the status. Re-check on request until status="depix_sent" (DePix delivered) or a terminal failure.
+7. When delivered, show the `blockchain_txid` (Liquid txid) so I can verify on a block explorer.""",
                         ),
                     )
                 ]
