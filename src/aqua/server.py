@@ -689,6 +689,17 @@ TOOL_SCHEMAS = {
                     "type": "string",
                     "description": "Password to decrypt mnemonic (if encrypted at rest)",
                 },
+                "flexible_small_amount": {
+                    "type": "boolean",
+                    "description": (
+                        "When True, accept dealer-rounded send_amount up to "
+                        "±3000 sats from what was requested. SideSwap's mkt::* "
+                        "dealer rounds internally; small swaps (e.g. 5k–25k "
+                        "sats) often come back at a slightly different amount. "
+                        "Off by default — strict equality is safer at scale."
+                    ),
+                    "default": False,
+                },
             },
             "required": ["asset_id", "send_amount"],
         },

@@ -1232,6 +1232,15 @@ class SideSwapSwapManager:
         self.storage = storage
         self.wallet_manager = wallet_manager
 
+    # Tolerance applied when `flexible_small_amount=True` accepts a dealer
+    # send_amount that differs from the user's request. SideSwap's mkt::*
+    # dealer rounds amounts internally; on small swaps (e.g. 5_000 sats →
+    # USDt) the dealer's quote can come back at e.g. 5_050 sats. Accept the
+    # adjusted amount up to this delta so the user isn't bounced for
+    # rounding alone. Larger drift indicates a real price move and should
+    # still reject.
+    SMALL_AMOUNT_TOLERANCE_SATS = 3_000
+
     def execute_swap(
         self,
         asset_id: str,
@@ -1239,6 +1248,7 @@ class SideSwapSwapManager:
         wallet_name: str = "default",
         password: Optional[str] = None,
         send_bitcoins: bool = True,
+        flexible_small_amount: bool = False,
         *,
         fee_tolerance_sats: int = DEFAULT_FEE_TOLERANCE_SATS,
         quote_wait_seconds: float = QUOTE_WAIT_SECONDS,
@@ -1367,9 +1377,21 @@ class SideSwapSwapManager:
             send_amount_q = int(quote_data["quote_amount"])
             recv_amount_q = int(quote_data["base_amount"])
         if send_amount_q != send_amount:
-            raise SideSwapWSError(
-                f"Quote send_amount mismatch: requested {send_amount}, dealer offered {send_amount_q}"
-            )
+            delta = abs(send_amount_q - send_amount)
+            if flexible_small_amount and delta <= self.SMALL_AMOUNT_TOLERANCE_SATS:
+                # Dealer rounded the send amount slightly; caller has opted
+                # in to accepting the adjustment. The PSET verifier still
+                # checks the wallet's actual balance change against
+                # send_amount_q below, so the user is never debited more
+                # than the dealer's quote.
+                send_amount = send_amount_q
+            else:
+                raise SideSwapWSError(
+                    f"Quote send_amount mismatch: requested {send_amount}, "
+                    f"dealer offered {send_amount_q} (delta={delta} sats). "
+                    "Pass flexible_small_amount=True to accept dealer "
+                    f"adjustments up to ±{self.SMALL_AMOUNT_TOLERANCE_SATS} sats."
+                )
         recv_amount = recv_amount_q
 
         pset_b64 = get_quote_resp.get("pset")
@@ -1379,7 +1401,6 @@ class SideSwapSwapManager:
         # Persist the in-progress swap before signing.
         # `submit_id` is reused to hold the quote_id so existing storage stays
         # backward-compatible with the legacy flow.
-        price = float(quote_data.get("server_fee", 0)) and 0.0  # placeholder; filled below
         # SideSwap quote doesn't return a single 'price' field on mkt::*; derive
         # it from amounts. price = quote_amount / base_amount — but client may
         # interpret either side, so we just store recv/send ratio for reference.

@@ -1021,6 +1021,7 @@ def sideswap_execute_swap(
     wallet_name: str = "default",
     password: str | None = None,
     send_bitcoins: bool = True,
+    flexible_small_amount: bool = False,
 ) -> dict[str, Any]:
     """Execute a Liquid atomic swap on SideSwap. Both directions are supported.
 
@@ -1054,6 +1055,11 @@ def sideswap_execute_swap(
         wallet_name: Liquid wallet to sign with. Default: "default"
         password: Password to decrypt mnemonic (if encrypted at rest)
         send_bitcoins: True = L-BTC → asset; False = asset → L-BTC.
+        flexible_small_amount: When True, accept dealer-rounded send_amount
+            adjustments up to ±3000 sats. SideSwap's mkt::* dealer rounds
+            internally; small swaps (<25k sats) often come back at e.g.
+            5_050 sats when 5_000 was requested. Default False keeps the
+            strict equality check that's safer for larger amounts.
 
     Returns:
         order_id, submit_id, send_asset, send_amount, recv_asset, recv_amount,
@@ -1068,6 +1074,7 @@ def sideswap_execute_swap(
         wallet_name=wallet_name,
         password=password,
         send_bitcoins=send_bitcoins,
+        flexible_small_amount=flexible_small_amount,
     )
     return {
         "order_id": swap.order_id,

@@ -1688,6 +1688,68 @@ class TestSwapManagerExecute:
                     asset_id=USDT, send_amount=100_000, wallet_name="default"
                 )
 
+    def test_flexible_small_amount_within_tolerance_accepts(
+        self, swap_manager_setup
+    ):
+        # Small swap where the dealer rounds the send amount slightly. With
+        # flexible_small_amount=True the manager accepts the dealer's number
+        # rather than rejecting on strict equality. The PSET verifier still
+        # checks the wallet's actual balance change, so the user can't be
+        # debited more than the dealer's quote either way.
+        mgr, _, fake_wollet, _, _ = swap_manager_setup
+        _setup_mkt_responses_forward()
+        # Forward = L-BTC → USDt; send (L-BTC) is the "quote" side of the market.
+        FakeWSClient.responses["__mkt_notification__:quote"]["status"]["Success"]["quote_amount"] = 102_000
+        # Honest wallet balance change matches the dealer's adjusted send.
+        fake_wollet._balances = {L_BTC: -102_050, USDT: 9_500_000}
+
+        with _patch_swap_layers():
+            swap = mgr.execute_swap(
+                asset_id=USDT,
+                send_amount=100_000,
+                wallet_name="default",
+                flexible_small_amount=True,
+            )
+        # Manager records the dealer's adjusted send_amount.
+        assert swap.send_amount == 102_000
+
+    def test_flexible_small_amount_outside_tolerance_rejects(
+        self, swap_manager_setup
+    ):
+        # Beyond ±3000 sats the rounding explanation no longer fits — the
+        # dealer is offering a materially different quote, so reject even
+        # with the flag set. Protects against accepting a real price move
+        # disguised as rounding.
+        from aqua.sideswap import SideSwapWSError
+
+        mgr, _, _, _, _ = swap_manager_setup
+        _setup_mkt_responses_forward()
+        FakeWSClient.responses["__mkt_notification__:quote"]["status"]["Success"]["quote_amount"] = 110_000
+
+        with _patch_swap_layers():
+            with pytest.raises(SideSwapWSError, match="send_amount mismatch"):
+                mgr.execute_swap(
+                    asset_id=USDT,
+                    send_amount=100_000,
+                    wallet_name="default",
+                    flexible_small_amount=True,
+                )
+
+    def test_flexible_small_amount_default_off_strict(self, swap_manager_setup):
+        # Without the flag, even a small dealer rounding still rejects —
+        # preserves prior behavior for non-interactive callers.
+        from aqua.sideswap import SideSwapWSError
+
+        mgr, _, _, _, _ = swap_manager_setup
+        _setup_mkt_responses_forward()
+        FakeWSClient.responses["__mkt_notification__:quote"]["status"]["Success"]["quote_amount"] = 100_500
+
+        with _patch_swap_layers():
+            with pytest.raises(SideSwapWSError, match="send_amount mismatch"):
+                mgr.execute_swap(
+                    asset_id=USDT, send_amount=100_000, wallet_name="default"
+                )
+
     def test_swap_status_returns_persisted(self, swap_manager_setup):
         mgr, _, _, _, _ = swap_manager_setup
         _setup_mkt_responses_forward()
