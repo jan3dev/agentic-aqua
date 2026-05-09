@@ -189,8 +189,7 @@ class LightningManager:
             decoded = decode_bolt11_amount_sats(invoice)
             if from_lightning_address and decoded is None:
                 raise ValueError(
-                    f"Lightning Address resolved to a zero-amount invoice; "
-                    f"decode_bolt11_amount_sats returned None for amount_sats={amount_sats}"
+                    f"Lightning Address resolved to a zero-amount invoice (expected {amount_sats} sats)"
                 )
             if decoded is not None and decoded != amount_sats:
                 raise ValueError(
