@@ -405,6 +405,7 @@ class Storage:
             for p in self.sideswap_swaps_dir.glob("*.json")
             if SWAP_ID_PATTERN.fullmatch(p.stem)
         ]
+
     def delete_sideswap_pegs_for_wallet(self, wallet_name: str) -> int:
         """Delete SideSwap peg records whose `wallet_name` matches.
 

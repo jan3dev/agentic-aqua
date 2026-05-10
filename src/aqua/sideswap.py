@@ -14,7 +14,7 @@ Wire formats (mirroring the AQUA Flutter wallet's `sideswap_websocket_provider`)
 
 Methods used here:
 
-- `login_client`           — anonymous (api_key=None), identifies us as agentic-aqua
+- `login_client`           — authentication
 - `server_status`          — fees, min amounts, hot-wallet balances
 - `peg_fee`                — quote fee for a given amount and direction
 - `peg`                    — initiate peg-in (BTC→L-BTC) or peg-out (L-BTC→BTC)
@@ -73,6 +73,7 @@ SIDESWAP_WS_URL = {
 
 USER_AGENT = "agentic-aqua"
 PROTOCOL_VERSION = "1.0.0"
+SIDESWAP_API_KEY = "fee09b63c148b335ccd0c4641c47359c8a7a803c517487bc61ca18edc19a72d5"
 
 # Network defaults: SideSwap surfaces live values via `server_status`; these
 # are conservative fallbacks for when the WS is unreachable. Treat `server_status`
@@ -491,7 +492,7 @@ class SideSwapWSClient:
         return await self.call(
             "login_client",
             {
-                "api_key": None,
+                "api_key": SIDESWAP_API_KEY,
                 "cookie": None,
                 "user_agent": USER_AGENT,
                 "version": PROTOCOL_VERSION,
@@ -1364,6 +1365,7 @@ class SideSwapSwapManager:
         wallet_name: str = "default",
         password: Optional[str] = None,
         send_bitcoins: bool = True,
+        min_recv_amount: Optional[int] = None,
         flexible_small_amount: bool = False,
         *,
         fee_tolerance_sats: int = DEFAULT_FEE_TOLERANCE_SATS,
@@ -1506,6 +1508,19 @@ class SideSwapSwapManager:
                             "Pass flexible_small_amount=True to accept dealer "
                             f"adjustments up to ±{self.SMALL_AMOUNT_TOLERANCE_SATS} sats."
                         )
+                # Reject if the dealer's recv_amount is below the floor the
+                # caller confirmed (typically the price-stream preview the
+                # user just OK'd). mkt::* uses a different price source than
+                # subscribe_price_stream, so the rate can move between
+                # preview and execution; this guard ensures the user never
+                # settles for less than what they actually saw.
+                if min_recv_amount is not None and recv_amount_q < min_recv_amount:
+                    raise SideSwapWSError(
+                        f"Quote recv_amount below floor: dealer offered "
+                        f"{recv_amount_q} sats, caller required at least "
+                        f"{min_recv_amount}. The market moved between the "
+                        "preview and execution; refetch a quote and re-confirm."
+                    )
                 recv_amount = recv_amount_q
 
                 pset_b64 = get_quote_resp.get("pset")

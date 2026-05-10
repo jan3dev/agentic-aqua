@@ -250,6 +250,63 @@ Or for send swaps (Boltz):
 
 File permissions: `0o600`. Status values: `pending` | `processing` | `completed` | `failed`. The `lightning_transaction_status` tool auto-claims settled receive swaps.
 
+### SideSwap Peg File Structure
+
+Stored at `~/.aqua/sideswap_pegs/{order_id}.json`:
+
+```json
+{
+  "order_id": "abc123",
+  "peg_in": true,
+  "peg_addr": "bc1q...",
+  "recv_addr": "lq1...",
+  "amount": null,
+  "expected_recv": null,
+  "wallet_name": "default",
+  "network": "mainnet",
+  "status": "pending",
+  "created_at": "2026-05-08T12:00:00Z",
+  "expires_at": null,
+  "lockup_txid": null,
+  "payout_txid": null,
+  "detected_confs": null,
+  "total_confs": null,
+  "tx_state": null,
+  "last_checked_at": null,
+  "return_address": null
+}
+```
+
+`peg_in: true` = BTC → L-BTC; `peg_in: false` = L-BTC → BTC. `peg_addr` is where the user sends funds; `recv_addr` is where they receive. `amount` is set for peg-out (user specifies send amount), may be `null` for peg-in. `tx_state` mirrors SideSwap server values: `Detected` | `Processing` | `Done` | `InsufficientAmount`. File written before broadcast and updated on each `sideswap_peg_status` poll.
+
+File permissions: `0o600`. Status values: `pending` → `detected` → `processing` → `completed` | `failed`.
+
+### SideSwap Swap File Structure
+
+Stored at `~/.aqua/sideswap_swaps/{order_id}.json`:
+
+```json
+{
+  "order_id": "mkt_42",
+  "submit_id": "42",
+  "send_asset": "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d",
+  "send_amount": 100000,
+  "recv_asset": "ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2",
+  "recv_amount": 9950000,
+  "price": 99.5,
+  "wallet_name": "default",
+  "network": "mainnet",
+  "status": "pending",
+  "created_at": "2026-05-08T12:00:00Z",
+  "txid": null,
+  "last_error": null
+}
+```
+
+`order_id` is `mkt_{quote_id}`. `send_asset` / `recv_asset` are Liquid asset IDs (hex). File written before PSET verification and updated at each step for crash recovery.
+
+File permissions: `0o600`. Status values: `pending` → `verified` → `signed` → `submitted` → `broadcast` | `failed`.
+
 ### Config Structure
 
 ```json
@@ -371,6 +428,22 @@ The manager always passes `fee_asset = policy_asset` (L-BTC) regardless of direc
 If any rule fails, `PsetVerificationError` is raised and signing is aborted — the order is persisted as `failed` for forensics. The order is also persisted at every flow step (`pending` → `verified` → `signed` → `broadcast`) for crash recovery.
 
 UTXO selection (`select_swap_utxos`): confidential (asset_bf and value_bf both non-zero), holding the requested send_asset, sorted descending by value, accumulated to cover `send_amount`. wpkh-only (matching the wallet's BIP84 m/84'/1776'/0' descriptor). No separate L-BTC fee inputs are required on either direction (mirroring AQUA Flutter's `swap_provider.dart`).
+**CLI surface** (`aqua sideswap …`, mirrors the MCP tool surface):
+
+```
+aqua sideswap status [--network mainnet|testnet]
+aqua sideswap recommend --amount <sats> --direction btc_to_lbtc|lbtc_to_btc
+aqua sideswap peg-quote --amount <sats> [--peg-out]
+aqua sideswap peg-in [--wallet-name NAME]
+aqua sideswap peg-out --amount <sats> --btc-address bc1q… [--wallet-name NAME]
+aqua sideswap peg-status --order-id ORD
+aqua sideswap assets [--network mainnet|testnet]
+aqua sideswap quote --asset-ticker USDt --send-amount <sats> [--reverse]
+aqua sideswap swap   --asset-ticker USDt --amount <sats> [--reverse] [--yes]
+aqua sideswap swap-status --order-id ORD
+```
+
+The `swap` subcommand fetches a fresh quote and prompts for confirmation by default; pass `--yes` to skip the prompt. Password resolution follows the same pattern as the rest of the CLI: `--password-stdin` flag → `AQUA_PASSWORD` env var → no password.
 
 ## Bitcoin Implementation Details
 
@@ -491,7 +564,18 @@ agentic-aqua/
 │       ├── ankara.py   # Ankara backend integration (Lightning receive)
 │       ├── sideswap.py # SideSwap WS+HTTP client, peg manager, swap quoting
 │       ├── assets.py   # Asset registry
-│       └── storage.py  # Persistence layer (encryption, config, wallet data)
+│       ├── storage.py  # Persistence layer (encryption, config, wallet data)
+│       └── cli/
+│           ├── main.py       # Root `aqua` Click group
+│           ├── commands.py   # Subcommand registration
+│           ├── liquid.py     # `aqua liquid …`
+│           ├── btc.py        # `aqua btc …`
+│           ├── lightning.py  # `aqua lightning …`
+│           ├── sideswap.py   # `aqua sideswap …` (pegs + atomic swaps)
+│           ├── wallet.py     # `aqua wallet …`
+│           ├── serve.py      # `aqua serve` (MCP server)
+│           ├── output.py     # JSON / pretty rendering
+│           └── password.py   # Secret resolution helpers
 └── tests/
     ├── test_tools.py
     ├── test_lightning.py
