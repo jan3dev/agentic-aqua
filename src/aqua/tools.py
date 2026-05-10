@@ -688,8 +688,17 @@ def delete_wallet(wallet_name: str) -> dict[str, Any]:
     btc._persisters.pop(wallet_name, None)
     btc._networks.pop(wallet_name, None)
 
+    # SideSwap peg records reference this wallet by name; delete them too so
+    # the user doesn't keep stale entries pointing at a wallet that no
+    # longer exists. Idempotent — silent if no records exist.
+    pegs_removed = manager.storage.delete_sideswap_pegs_for_wallet(wallet_name)
+
     manager.storage.delete_wallet(wallet_name)
-    return {"deleted": True, "wallet_name": wallet_name}
+    return {
+        "deleted": True,
+        "wallet_name": wallet_name,
+        "sideswap_pegs_removed": pegs_removed,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -822,6 +831,8 @@ def sideswap_peg_quote(
     Returns:
         send_amount, recv_amount, fee_amount (send - recv), peg_in
     """
+    if amount <= 0:
+        raise ValueError("Amount must be positive")
     manager = get_sideswap_peg_manager()
     return manager.quote_peg(amount, peg_in, network)
 
@@ -891,6 +902,8 @@ def sideswap_peg_out(
         order_id, lockup_txid (L-BTC send txid), peg_addr (Liquid deposit addr),
         recv_addr (target BTC addr), amount, expected_recv (if known), expires_at, message
     """
+    if amount <= 0:
+        raise ValueError("Amount must be positive")
     manager = get_sideswap_peg_manager()
     peg = manager.peg_out(wallet_name, amount, btc_address, password)
     return {
