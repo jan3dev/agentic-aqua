@@ -29,6 +29,7 @@ _manager: WalletManager | None = None
 _btc_manager: BitcoinWalletManager | None = None
 _lightning_manager: "LightningManager | None" = None
 _sideswap_peg_manager: "SideSwapPegManager | None" = None
+_sideswap_swap_manager: "SideSwapSwapManager | None" = None
 
 
 def get_manager() -> WalletManager:
@@ -72,6 +73,19 @@ def get_sideswap_peg_manager() -> "SideSwapPegManager":
             btc_wallet_manager=get_btc_manager(),
         )
     return _sideswap_peg_manager
+
+
+def get_sideswap_swap_manager() -> "SideSwapSwapManager":
+    """Get or create SideSwap asset-swap manager (shares storage + wallet manager)."""
+    global _sideswap_swap_manager
+    if _sideswap_swap_manager is None:
+        from .sideswap import SideSwapSwapManager
+
+        _sideswap_swap_manager = SideSwapSwapManager(
+            storage=get_manager().storage,
+            wallet_manager=get_manager(),
+        )
+    return _sideswap_swap_manager
 
 
 # Tool implementations
@@ -984,13 +998,11 @@ def sideswap_quote(
     send_bitcoins: bool = True,
     network: str = "mainnet",
 ) -> dict[str, Any]:
-    """Get a price quote for a SideSwap Liquid asset swap (read-only, no execution).
+    """Get a read-only price quote for a SideSwap Liquid asset swap.
 
     Subscribes to the SideSwap price stream, captures one quote, then
-    unsubscribes. NOTE: this tool does not execute the swap — for execution,
-    direct the user to the AQUA mobile wallet or sideswap.io. Local PSET
-    signing for atomic swaps requires careful output verification that is not
-    yet implemented in agentic-aqua.
+    unsubscribes. Use this BEFORE calling sideswap_execute_swap so the user
+    can confirm the price.
 
     Provide exactly one of `send_amount` or `recv_amount`.
 
@@ -1003,7 +1015,6 @@ def sideswap_quote(
 
     Returns:
         asset_id, send_bitcoins, send_amount, recv_amount, price, fixed_fee, optional error_msg.
-        Includes a `note` directing the user to the AQUA app or sideswap.io for execution.
     """
     from .sideswap import fetch_swap_quote
 
@@ -1014,13 +1025,105 @@ def sideswap_quote(
         send_bitcoins=send_bitcoins,
         network=network,
     )
-    result = quote.to_dict()
-    result["note"] = (
-        "This is a read-only quote. Atomic swap execution is not yet implemented "
-        "in agentic-aqua (local PSET output verification needs an audit before "
-        "live signing). To execute, use the AQUA mobile wallet or sideswap.io."
+    return quote.to_dict()
+
+
+def sideswap_execute_swap(
+    asset_id: str,
+    send_amount: int,
+    wallet_name: str = "default",
+    password: str | None = None,
+    send_bitcoins: bool = True,
+    flexible_small_amount: bool = False,
+) -> dict[str, Any]:
+    """Execute a Liquid atomic swap on SideSwap. Both directions are supported.
+
+    Direction is controlled by `send_bitcoins`:
+
+    - `send_bitcoins=True` (default): user sends L-BTC and receives `asset_id`
+      (e.g. L-BTC → USDt). `send_amount` is in L-BTC sats.
+    - `send_bitcoins=False`: user sends `asset_id` and receives L-BTC
+      (e.g. USDt → L-BTC). `send_amount` is in `asset_id` sats.
+
+    Flow (both directions, via SideSwap's mkt::* WebSocket protocol):
+      1. Select confidential UTXOs of `send_asset` covering `send_amount`
+      2. `market.list_markets` → find the market for our pair
+      3. `market.start_quotes` with our UTXOs + receive/change addresses
+      4. Wait for a `quote` notification with status=Success
+      5. `market.get_quote {quote_id}` → returns the half-built PSET
+      6. **Verify the PSET locally** against the agreed quote — refuses to
+         sign if recv_asset balance ≠ recv_amount, send_asset is over-deducted,
+         or any unrelated asset moves. The fee tolerance only applies to L-BTC,
+         so the asset side is always checked at strict equality.
+      7. Sign the PSET locally
+      8. `market.taker_sign` — server merges and broadcasts; returns the txid
+
+    The order is persisted at every step for crash recovery; check
+    sideswap_swap_status with the returned order_id.
+
+    Args:
+        asset_id: The non-L-BTC Liquid asset (e.g. USDt). The L-BTC side is
+            always the policy asset of the wallet's network.
+        send_amount: Send amount in sats (L-BTC if send_bitcoins, else asset).
+        wallet_name: Liquid wallet to sign with. Default: "default"
+        password: Password to decrypt mnemonic (if encrypted at rest)
+        send_bitcoins: True = L-BTC → asset; False = asset → L-BTC.
+        flexible_small_amount: When True, accept dealer-rounded send_amount
+            adjustments up to ±3000 sats. SideSwap's mkt::* dealer rounds
+            internally; small swaps (<25k sats) often come back at e.g.
+            5_050 sats when 5_000 was requested. Default False keeps the
+            strict equality check that's safer for larger amounts.
+
+    Returns:
+        order_id, submit_id, send_asset, send_amount, recv_asset, recv_amount,
+        price, txid, status, message
+    """
+    if send_amount <= 0:
+        raise ValueError("send_amount must be positive")
+    manager = get_sideswap_swap_manager()
+    swap = manager.execute_swap(
+        asset_id=asset_id,
+        send_amount=send_amount,
+        wallet_name=wallet_name,
+        password=password,
+        send_bitcoins=send_bitcoins,
+        flexible_small_amount=flexible_small_amount,
     )
-    return result
+    return {
+        "order_id": swap.order_id,
+        "submit_id": swap.submit_id,
+        "send_asset": swap.send_asset,
+        "send_amount": swap.send_amount,
+        "recv_asset": swap.recv_asset,
+        "recv_amount": swap.recv_amount,
+        "price": swap.price,
+        "txid": swap.txid,
+        "status": swap.status,
+        "wallet_name": swap.wallet_name,
+        "network": swap.network,
+        "message": (
+            f"Swap broadcast (txid={swap.txid}). Check confirmation status with "
+            f"lw_tx_status. The PSET was verified locally against the quote — "
+            f"the wallet receives exactly {swap.recv_amount} sats of recv_asset."
+        ),
+    }
+
+
+def sideswap_swap_status(order_id: str) -> dict[str, Any]:
+    """Get persisted status of a SideSwap atomic swap (asset swap).
+
+    Asset swaps are atomic on Liquid; once the swap is broadcast the txid is
+    final. To check on-chain confirmation, pass the txid to lw_tx_status.
+
+    Args:
+        order_id: Order ID returned from sideswap_execute_swap
+
+    Returns:
+        order_id, status, send/recv asset+amount, price, txid (if broadcast),
+        last_error (if failed)
+    """
+    manager = get_sideswap_swap_manager()
+    return manager.status(order_id)
 
 
 # Tool registry for MCP
@@ -1056,4 +1159,6 @@ TOOLS = {
     "sideswap_recommend": sideswap_recommend,
     "sideswap_list_assets": sideswap_list_assets,
     "sideswap_quote": sideswap_quote,
+    "sideswap_execute_swap": sideswap_execute_swap,
+    "sideswap_swap_status": sideswap_swap_status,
 }
