@@ -688,8 +688,17 @@ def delete_wallet(wallet_name: str) -> dict[str, Any]:
     btc._persisters.pop(wallet_name, None)
     btc._networks.pop(wallet_name, None)
 
+    # SideSwap peg records reference this wallet by name; delete them too so
+    # the user doesn't keep stale entries pointing at a wallet that no
+    # longer exists. Idempotent — silent if no records exist.
+    pegs_removed = manager.storage.delete_sideswap_pegs_for_wallet(wallet_name)
+
     manager.storage.delete_wallet(wallet_name)
-    return {"deleted": True, "wallet_name": wallet_name}
+    return {
+        "deleted": True,
+        "wallet_name": wallet_name,
+        "sideswap_pegs_removed": pegs_removed,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -822,6 +831,8 @@ def sideswap_peg_quote(
     Returns:
         send_amount, recv_amount, fee_amount (send - recv), peg_in
     """
+    if amount <= 0:
+        raise ValueError("Amount must be positive")
     manager = get_sideswap_peg_manager()
     return manager.quote_peg(amount, peg_in, network)
 
@@ -891,6 +902,8 @@ def sideswap_peg_out(
         order_id, lockup_txid (L-BTC send txid), peg_addr (Liquid deposit addr),
         recv_addr (target BTC addr), amount, expected_recv (if known), expires_at, message
     """
+    if amount <= 0:
+        raise ValueError("Amount must be positive")
     manager = get_sideswap_peg_manager()
     peg = manager.peg_out(wallet_name, amount, btc_address, password)
     return {
@@ -1022,6 +1035,7 @@ def sideswap_execute_swap(
     password: str | None = None,
     send_bitcoins: bool = True,
     min_recv_amount: int | None = None,
+    flexible_small_amount: bool = False,
 ) -> dict[str, Any]:
     """Execute a Liquid atomic swap on SideSwap. Both directions are supported.
 
@@ -1061,6 +1075,11 @@ def sideswap_execute_swap(
             CLI passes the recv_amount the user just confirmed in the
             preview, so a rate move between preview and execution can no
             longer surprise the user with a worse settlement.
+        flexible_small_amount: When True, accept dealer-rounded send_amount
+            adjustments up to ±3000 sats. SideSwap's mkt::* dealer rounds
+            internally; small swaps (<25k sats) often come back at e.g.
+            5_050 sats when 5_000 was requested. Default False keeps the
+            strict equality check that's safer for larger amounts.
 
     Returns:
         order_id, submit_id, send_asset, send_amount, recv_asset, recv_amount,
@@ -1076,6 +1095,7 @@ def sideswap_execute_swap(
         password=password,
         send_bitcoins=send_bitcoins,
         min_recv_amount=min_recv_amount,
+        flexible_small_amount=flexible_small_amount,
     )
     return {
         "order_id": swap.order_id,

@@ -431,7 +431,7 @@ class TestPegOut:
             peg = mgr.peg_out(
                 wallet_name="default",
                 amount=200_000,
-                btc_address="bc1quserdest",
+                btc_address="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
             )
         assert peg.lockup_txid is not None
         assert peg.status == "processing"
@@ -450,7 +450,7 @@ class TestPegOut:
                 mgr.peg_out(
                     wallet_name="default",
                     amount=50_000,
-                    btc_address="bc1q",
+                    btc_address="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
                 )
 
     def test_peg_out_insufficient_balance_rejected(self, manager_setup):
@@ -462,7 +462,7 @@ class TestPegOut:
                 mgr.peg_out(
                     wallet_name="default",
                     amount=200_000,
-                    btc_address="bc1q",
+                    btc_address="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
                 )
 
     def test_peg_out_send_failure_marks_failed_and_persists(self, manager_setup):
@@ -476,7 +476,7 @@ class TestPegOut:
         wm.send = boom  # type: ignore[assignment]
         with _patch_ws():
             with pytest.raises(RuntimeError, match="broadcast failed"):
-                mgr.peg_out(wallet_name="default", amount=200_000, btc_address="bc1q")
+                mgr.peg_out(wallet_name="default", amount=200_000, btc_address="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4")
         # Order persisted as failed for recovery
         loaded = storage.load_sideswap_peg("po_2")
         assert loaded is not None
@@ -544,6 +544,50 @@ class TestPegStatusPolling:
             result = mgr.status("poll2")
         assert result["status"] == "processing"
         assert result["confirmations"] == "1/2"
+
+    def test_status_multi_tx_does_not_regress_completed_state(self, manager_setup):
+        # Regression: SideSwap returns one entry per detected deposit on the
+        # peg address. If the user reuses the address, a fresh `Detected`
+        # deposit can appear AFTER a completed `Done` deposit. Picking just
+        # `txns[-1]` would let the persisted state regress to processing
+        # and lose the original payout_txid.
+        mgr, _, storage = manager_setup
+        peg = SideSwapPeg(
+            order_id="poll_multi",
+            peg_in=True,
+            peg_addr="bc1q",
+            recv_addr="lq1q",
+            amount=None,
+            expected_recv=None,
+            wallet_name="default",
+            network="mainnet",
+            status="processing",
+            created_at="2026-05-07T12:00:00+00:00",
+        )
+        storage.save_sideswap_peg(peg)
+        FakeWSClient.responses["peg_status"] = {
+            "list": [
+                {
+                    "tx_state": "Done",
+                    "detected_confs": 2,
+                    "total_confs": 2,
+                    "payout_txid": "originalpayout",
+                },
+                {
+                    "tx_state": "Detected",
+                    "detected_confs": 1,
+                    "total_confs": 2,
+                    "payout_txid": None,
+                },
+            ]
+        }
+        with _patch_ws():
+            result = mgr.status("poll_multi")
+        # The completed Done wins over the new Detected; payout_txid is
+        # preserved.
+        assert result["status"] == "completed"
+        assert result["tx_state"] == "Done"
+        assert result["payout_txid"] == "originalpayout"
 
     def test_status_unknown_order_raises(self, manager_setup):
         mgr, _, _ = manager_setup
@@ -865,6 +909,42 @@ class TestParseQuoteStatus:
     def test_unknown_status_variant_raises(self):
         with pytest.raises(SideSwapWSError, match="Unknown QuoteStatus"):
             parse_quote_status({"status": {"Surprise": {}}})
+
+    def test_success_missing_quote_id_raises_ws_error_not_keyerror(self):
+        # Without validation, the int() in execute_swap would KeyError —
+        # which surfaces as a generic exception far from the cause.
+        with pytest.raises(SideSwapWSError, match="missing 'quote_id'"):
+            parse_quote_status(
+                {
+                    "status": {
+                        "Success": {
+                            "base_amount": 1,
+                            "quote_amount": 2,
+                            "server_fee": 0,
+                            "fixed_fee": 0,
+                            "ttl": 30000,
+                        }
+                    }
+                }
+            )
+
+    def test_success_non_integer_amount_raises_ws_error(self):
+        with pytest.raises(SideSwapWSError, match="not an integer"):
+            parse_quote_status(
+                {
+                    "status": {
+                        "Success": {
+                            "quote_id": 1,
+                            "base_amount": "not-a-number",
+                            "quote_amount": 2,
+                        }
+                    }
+                }
+            )
+
+    def test_success_non_dict_payload_raises(self):
+        with pytest.raises(SideSwapWSError, match="Malformed Success"):
+            parse_quote_status({"status": {"Success": "stringified"}})
 
 
 # ---------------------------------------------------------------------------
@@ -1681,6 +1761,68 @@ class TestSwapManagerExecute:
         _setup_mkt_responses_forward()
         # Pretend the dealer offered 200k of L-BTC instead of the 100k we asked
         FakeWSClient.responses["__mkt_notification__:quote"]["status"]["Success"]["quote_amount"] = 200_000
+
+        with _patch_swap_layers():
+            with pytest.raises(SideSwapWSError, match="send_amount mismatch"):
+                mgr.execute_swap(
+                    asset_id=USDT, send_amount=100_000, wallet_name="default"
+                )
+
+    def test_flexible_small_amount_within_tolerance_accepts(
+        self, swap_manager_setup
+    ):
+        # Small swap where the dealer rounds the send amount slightly. With
+        # flexible_small_amount=True the manager accepts the dealer's number
+        # rather than rejecting on strict equality. The PSET verifier still
+        # checks the wallet's actual balance change, so the user can't be
+        # debited more than the dealer's quote either way.
+        mgr, _, fake_wollet, _, _ = swap_manager_setup
+        _setup_mkt_responses_forward()
+        # Forward = L-BTC → USDt; send (L-BTC) is the "quote" side of the market.
+        FakeWSClient.responses["__mkt_notification__:quote"]["status"]["Success"]["quote_amount"] = 102_000
+        # Honest wallet balance change matches the dealer's adjusted send.
+        fake_wollet._balances = {L_BTC: -102_050, USDT: 9_500_000}
+
+        with _patch_swap_layers():
+            swap = mgr.execute_swap(
+                asset_id=USDT,
+                send_amount=100_000,
+                wallet_name="default",
+                flexible_small_amount=True,
+            )
+        # Manager records the dealer's adjusted send_amount.
+        assert swap.send_amount == 102_000
+
+    def test_flexible_small_amount_outside_tolerance_rejects(
+        self, swap_manager_setup
+    ):
+        # Beyond ±3000 sats the rounding explanation no longer fits — the
+        # dealer is offering a materially different quote, so reject even
+        # with the flag set. Protects against accepting a real price move
+        # disguised as rounding.
+        from aqua.sideswap import SideSwapWSError
+
+        mgr, _, _, _, _ = swap_manager_setup
+        _setup_mkt_responses_forward()
+        FakeWSClient.responses["__mkt_notification__:quote"]["status"]["Success"]["quote_amount"] = 110_000
+
+        with _patch_swap_layers():
+            with pytest.raises(SideSwapWSError, match="send_amount mismatch"):
+                mgr.execute_swap(
+                    asset_id=USDT,
+                    send_amount=100_000,
+                    wallet_name="default",
+                    flexible_small_amount=True,
+                )
+
+    def test_flexible_small_amount_default_off_strict(self, swap_manager_setup):
+        # Without the flag, even a small dealer rounding still rejects —
+        # preserves prior behavior for non-interactive callers.
+        from aqua.sideswap import SideSwapWSError
+
+        mgr, _, _, _, _ = swap_manager_setup
+        _setup_mkt_responses_forward()
+        FakeWSClient.responses["__mkt_notification__:quote"]["status"]["Success"]["quote_amount"] = 100_500
 
         with _patch_swap_layers():
             with pytest.raises(SideSwapWSError, match="send_amount mismatch"):

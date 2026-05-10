@@ -699,6 +699,17 @@ TOOL_SCHEMAS = {
                         "is rejected before signing."
                     ),
                 },
+                "flexible_small_amount": {
+                    "type": "boolean",
+                    "description": (
+                        "When True, accept dealer-rounded send_amount up to "
+                        "±3000 sats from what was requested. SideSwap's mkt::* "
+                        "dealer rounds internally; small swaps (e.g. 5k–25k "
+                        "sats) often come back at a slightly different amount. "
+                        "Off by default — strict equality is safer at scale."
+                    ),
+                    "default": False,
+                },
             },
             "required": ["asset_id", "send_amount"],
         },
@@ -794,7 +805,7 @@ SIDESWAP (BTC ↔ L-BTC pegs and Liquid asset swaps):
 - Peg-out (L-BTC → BTC): user sends L-BTC to a SideSwap deposit address; after
   2 Liquid confs and the federation sweep (~15-60 min total), BTC arrives.
 - Fees: 0.1% on each peg + a small second-chain fee (~286 sats on peg-in).
-- BEFORE initiating a peg for ≥ 0.01 BTC (~1,000,000 sats), call
+- BEFORE initiating a peg for ≥ 0.01 BTC (1,000,000 sats), call
   sideswap_recommend to surface the time-vs-fee trade-off and warn the user.
 - For VERY LARGE peg-ins that exceed SideSwap's hot-wallet balance, expect the
   cold-wallet path: 102 BTC confirmations (~17 hours). Always check
@@ -1285,8 +1296,9 @@ Please:
 2. If I haven't given a clear amount yet, also show my current Bitcoin balance
    (btc_balance) so I have context
 3. Call sideswap_server_status to fetch live fees, minimums, and hot-wallet balance
-4. Call sideswap_recommend with direction="btc_to_lbtc" and the amount to confirm
-   peg-in is appropriate, and surface the trade-off:
+4. If the amount is >= 0.01 BTC (1,000,000 sats), call sideswap_recommend with
+   direction="btc_to_lbtc" and the amount to confirm peg-in is appropriate,
+   and surface the trade-off:
    - Lower fee (0.1% vs ~0.2% on instant swaps)
    - Slower: usually 20–40 min for 2 BTC confirmations
    - For very large amounts: may require 102 confs (~17 hours) if it exceeds

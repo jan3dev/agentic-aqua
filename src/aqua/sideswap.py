@@ -14,7 +14,7 @@ Wire formats (mirroring the AQUA Flutter wallet's `sideswap_websocket_provider`)
 
 Methods used here:
 
-- `login_client`           — authenticated with JAN3 API key for revenue attribution
+- `login_client`           — authentication
 - `server_status`          — fees, min amounts, hot-wallet balances
 - `peg_fee`                — quote fee for a given amount and direction
 - `peg`                    — initiate peg-in (BTC→L-BTC) or peg-out (L-BTC→BTC)
@@ -53,12 +53,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
+import threading
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Optional
+
+import websockets
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +73,7 @@ SIDESWAP_WS_URL = {
 
 USER_AGENT = "agentic-aqua"
 PROTOCOL_VERSION = "1.0.0"
-SIDESWAP_API_KEY = os.environ.get(
-    "SIDESWAP_API_KEY",
-    "fee09b63c148b335ccd0c4641c47359c8a7a803c517487bc61ca18edc19a72d5",
-)
+SIDESWAP_API_KEY = "fee09b63c148b335ccd0c4641c47359c8a7a803c517487bc61ca18edc19a72d5"
 
 # Network defaults: SideSwap surfaces live values via `server_status`; these
 # are conservative fallbacks for when the WS is unreachable. Treat `server_status`
@@ -92,6 +91,29 @@ PEG_RECOMMENDATION_THRESHOLD_SATS = 1_000_000
 
 WS_TIMEOUT_SECONDS = 30.0
 QUOTE_WAIT_SECONDS = 10.0
+
+# Reserved for the Liquid network fee on a peg-out broadcast. Liquid fees are
+# fixed-rate and tiny (~50–100 sats in practice); 200 sats is a comfortable
+# upper bound that prevents balance-check pass / broadcast-fail races without
+# blocking realistic peg-outs.
+LIQUID_FEE_RESERVE_SATS = 200
+
+
+def _validate_btc_address(address: str, network: str) -> None:
+    """Raise ValueError if `address` doesn't parse on the matching Bitcoin network.
+
+    Uses BDK's address parser since it's already a project dep and recognises
+    the same mainnet/testnet network names we use elsewhere.
+    """
+    import bdkpython as bdk
+
+    bdk_network = bdk.Network.BITCOIN if network == "mainnet" else bdk.Network.TESTNET
+    try:
+        bdk.Address(address, bdk_network)
+    except Exception as e:
+        raise ValueError(
+            f"Invalid Bitcoin {network} address {address!r}: {e}"
+        ) from e
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +140,11 @@ class SideSwapPeg:
     payout_txid: Optional[str] = None  # Server's payout tx (set on completion)
     detected_confs: Optional[int] = None
     total_confs: Optional[int] = None
-    tx_state: Optional[str] = None  # InsufficientAmount | Detected | Processing | Done
+    # SideSwap server enum only — Detected | Processing | Done | InsufficientAmount.
+    # Local errors (insufficient L-BTC, broadcast failure, etc.) live in
+    # `local_error` so this field always reflects what SideSwap reports.
+    tx_state: Optional[str] = None
+    local_error: Optional[str] = None
     last_checked_at: Optional[str] = None
     return_address: Optional[str] = None
 
@@ -135,6 +161,7 @@ class SideSwapPeg:
             "detected_confs",
             "total_confs",
             "tx_state",
+            "local_error",
             "last_checked_at",
             "return_address",
         ):
@@ -367,10 +394,6 @@ class SideSwapWSClient:
         await self.close()
 
     async def connect(self) -> None:
-        # Imported lazily so tests that don't exercise the network never need
-        # the optional `websockets` dependency.
-        import websockets
-
         self._ws = await asyncio.wait_for(
             websockets.connect(self.url, max_size=4 * 1024 * 1024),
             timeout=WS_TIMEOUT_SECONDS,
@@ -664,7 +687,26 @@ def parse_quote_status(quote_notif: dict) -> dict:
     if not isinstance(status, dict) or not status:
         raise SideSwapWSError(f"Malformed quote status: {status!r}")
     if "Success" in status:
-        return status["Success"]
+        success = status["Success"]
+        if not isinstance(success, dict):
+            raise SideSwapWSError(f"Malformed Success quote: {success!r}")
+        # Validate the fields the caller will read so a malformed payload
+        # raises SideSwapWSError here, not a KeyError/TypeError far away in
+        # execute_swap when it indexes into the dict.
+        for key in ("quote_id", "base_amount", "quote_amount"):
+            value = success.get(key)
+            if value is None:
+                raise SideSwapWSError(
+                    f"Malformed Success quote: missing {key!r} ({success!r})"
+                )
+            try:
+                int(value)
+            except (TypeError, ValueError) as e:
+                raise SideSwapWSError(
+                    f"Malformed Success quote: {key} is not an integer "
+                    f"({value!r})"
+                ) from e
+        return success
     if "LowBalance" in status:
         lb = status["LowBalance"]
         raise SideSwapWSError(
@@ -772,8 +814,6 @@ def _run(coro):
     # If we're already in a loop, use a separate loop in a new thread to avoid
     # deadlocking on the running loop. This is the case under pytest-asyncio
     # auto mode and may apply to some MCP transports.
-    import threading
-
     result_box: dict[str, Any] = {}
     exc_box: dict[str, BaseException] = {}
 
@@ -897,15 +937,14 @@ def fetch_swap_quote(
             )
             quote_data = initial or {}
             # First subscribe response often contains the quote already; if not,
-            # wait for the streamed notification.
+            # wait for the streamed notification. Let any timeout/connection
+            # error propagate — silently returning a price=0.0 quote here
+            # would look like a free swap to the caller.
             if not quote_data.get("price"):
-                try:
-                    notif = await client.next_notification(
-                        "update_price_stream", timeout=quote_wait_seconds
-                    )
-                    quote_data = (notif or {}).get("params") or {}
-                except SideSwapWSError:
-                    pass
+                notif = await client.next_notification(
+                    "update_price_stream", timeout=quote_wait_seconds
+                )
+                quote_data = (notif or {}).get("params") or {}
             try:
                 await client.unsubscribe_price_stream(asset_id)
             except Exception:
@@ -938,6 +977,36 @@ def map_peg_status(tx_state: Optional[str], list_empty: bool) -> str:
         "Done": "completed",
         "InsufficientAmount": "failed",
     }.get(tx_state or "", "pending")
+
+
+# Higher number = more progressed. SideSwap returns one txn per detected
+# deposit on the peg address; if the user reuses the address, a completed
+# Done can sit alongside a fresh Detected and we want to surface the Done.
+# `InsufficientAmount` ranks above `Detected` because it's a terminal local
+# verdict (the user underpaid) rather than an in-flight state.
+_TX_STATE_RANK = {
+    "Done": 4,
+    "Processing": 3,
+    "InsufficientAmount": 2,
+    "Detected": 1,
+    None: 0,
+    "": 0,
+}
+
+
+def _pick_most_progressed_txn(txns: list[dict]) -> dict:
+    """Return the txns list entry whose tx_state is furthest along.
+
+    Ties go to the later entry (i.e. the txn the server reported last).
+    """
+    best_idx = 0
+    best_rank = -1
+    for i, t in enumerate(txns):
+        rank = _TX_STATE_RANK.get(t.get("tx_state"), 0)
+        if rank >= best_rank:
+            best_rank = rank
+            best_idx = i
+    return txns[best_idx]
 
 
 class SideSwapPegManager:
@@ -1008,13 +1077,9 @@ class SideSwapPegManager:
             raise ValueError(
                 "Watch-only wallet cannot receive a peg-in (no Liquid receive address)"
             )
-        # Decrypt mnemonic if needed; not strictly required to receive but matches
-        # the precondition pattern used by other flows.
-        if wallet_data.encrypted_mnemonic and self.storage.is_mnemonic_encrypted(
-            wallet_data.encrypted_mnemonic
-        ):
-            if password:
-                self.wallet_manager.load_wallet(wallet_name, password)
+        # Receiving a peg-in only needs the wallet's next address — never the
+        # mnemonic, encrypted or not. The `password` kwarg is accepted for
+        # signature symmetry with peg_out and other flows that do need to sign.
 
         addr = self.wallet_manager.get_address(wallet_name)
         recv_addr = addr.address
@@ -1056,11 +1121,16 @@ class SideSwapPegManager:
         """Initiate a peg-out and broadcast the L-BTC send to the deposit address.
 
         The flow:
-          1. Fetch SideSwap server_status for min_peg_out_amount and validate.
-          2. WS `peg(peg_in=False, recv_addr=<user BTC addr>)` → returns a Liquid
+          1. Validate inputs and decrypt the mnemonic up-front (so a wrong
+             password fails fast, before any SideSwap order is created).
+          2. Fetch SideSwap server_status for min_peg_out_amount and validate.
+          3. Validate `btc_address` parses as a Bitcoin address on the matching
+             network, so the SideSwap server isn't asked to peg out to a string
+             we can't actually pay to.
+          4. WS `peg(peg_in=False, recv_addr=<user BTC addr>)` → returns a Liquid
              deposit address (`peg_addr`).
-          3. Send `amount` sats of L-BTC from the wallet to `peg_addr`.
-          4. Persist the peg with `lockup_txid` populated; status="processing".
+          5. Send `amount` sats of L-BTC from the wallet to `peg_addr`.
+          6. Persist the peg with `lockup_txid` populated; status="processing".
         """
         if amount <= 0:
             raise ValueError("amount must be positive")
@@ -1069,11 +1139,24 @@ class SideSwapPegManager:
             raise ValueError(f"Wallet '{wallet_name}' not found")
         if wallet_data.watch_only:
             raise ValueError("Watch-only wallet cannot peg out (cannot sign)")
+
+        # Decrypt the mnemonic BEFORE creating a SideSwap order. Without this,
+        # a wrong password would only surface at broadcast time — leaving an
+        # orphaned SideSwap peg order behind for every retry. Watch-only and
+        # unencrypted wallets skip this check (no mnemonic to decrypt).
         if wallet_data.encrypted_mnemonic and self.storage.is_mnemonic_encrypted(
             wallet_data.encrypted_mnemonic
         ):
             if not password:
                 raise ValueError("Password required to decrypt mnemonic")
+            # `load_wallet` raises on bad password; let that propagate before
+            # we contact SideSwap.
+            self.wallet_manager.load_wallet(wallet_name, password)
+
+        # Validate the recipient BTC address parses on the matching network.
+        # Catches typos and wrong-network addresses (e.g. mainnet bc1 sent to
+        # testnet) before SideSwap is involved.
+        _validate_btc_address(btc_address, wallet_data.network)
 
         # Validate min/max against server
         try:
@@ -1086,13 +1169,19 @@ class SideSwapPegManager:
         except SideSwapWSError as e:
             logger.warning("Skipping min-amount check: %s", e)
 
-        # Balance check (best-effort)
+        # Balance check: a peg-out broadcast pays a Liquid network fee on top
+        # of `amount`. Liquid fees are tiny and stable (~50–100 sats); use a
+        # small reservation so a wallet whose balance equals `amount` exactly
+        # doesn't fail at broadcast time with the actual-fee error.
         try:
             balances = self.wallet_manager.get_balance(wallet_name)
             lbtc_balance = next((b.amount for b in balances if b.ticker == "L-BTC"), 0)
-            if lbtc_balance < amount:
+            required = amount + LIQUID_FEE_RESERVE_SATS
+            if lbtc_balance < required:
                 raise ValueError(
-                    f"Insufficient L-BTC: have {lbtc_balance} sats, need at least {amount} sats"
+                    f"Insufficient L-BTC: have {lbtc_balance} sats, need at least "
+                    f"{required} sats ({amount} + {LIQUID_FEE_RESERVE_SATS} reserved "
+                    "for the Liquid network fee)"
                 )
         except ValueError:
             raise
@@ -1131,7 +1220,9 @@ class SideSwapPegManager:
             )
         except Exception as e:
             peg.status = "failed"
-            peg.tx_state = "InsufficientAmount" if "insufficient" in str(e).lower() else None
+            # Local broadcast failures live in `local_error`; `tx_state`
+            # is reserved for SideSwap server enums.
+            peg.local_error = str(e)
             self.storage.save_sideswap_peg(peg)
             raise
 
@@ -1158,17 +1249,38 @@ class SideSwapPegManager:
             resp = _run(_go())
             txns = (resp or {}).get("list") or []
             list_empty = len(txns) == 0
-            tx_state = txns[-1].get("tx_state") if txns else None
+
+            # SideSwap returns one entry per detected deposit on the peg
+            # address, so a completed `Done` deposit followed by a fresh
+            # `Detected` deposit (e.g. user reused the address) shows up as
+            # two entries. Picking just `txns[-1]` would let an earlier
+            # `Done` regress to `Detected` and lose its `payout_txid`.
+            #
+            # Rule: pick the most-progressed entry by `tx_state`, falling
+            # back to the most-recent. Preserve any already-known
+            # `payout_txid` — it's set once on completion and must never
+            # be cleared.
+            most_progressed = _pick_most_progressed_txn(txns) if txns else None
+            tx_state = most_progressed.get("tx_state") if most_progressed else None
             new_status = map_peg_status(tx_state, list_empty)
             peg.status = new_status
             peg.tx_state = tx_state
-            if txns:
-                last = txns[-1]
-                peg.detected_confs = last.get("detected_confs")
-                peg.total_confs = last.get("total_confs")
-                payout = last.get("payout_txid")
+            if most_progressed:
+                # confs come from the most-progressed entry too; if the
+                # latest `Detected` deposit hasn't accumulated confs yet,
+                # the completed `Done` value is more meaningful for callers.
+                peg.detected_confs = most_progressed.get("detected_confs")
+                peg.total_confs = most_progressed.get("total_confs")
+                payout = most_progressed.get("payout_txid")
                 if payout:
                     peg.payout_txid = payout
+                elif any(t.get("payout_txid") for t in txns):
+                    # No payout on the chosen entry but another entry has
+                    # one — keep what we already have rather than blanking.
+                    for t in txns:
+                        if t.get("payout_txid"):
+                            peg.payout_txid = peg.payout_txid or t["payout_txid"]
+                            break
             peg.last_checked_at = datetime.now(UTC).isoformat()
             self.storage.save_sideswap_peg(peg)
         except Exception as e:
@@ -1237,6 +1349,15 @@ class SideSwapSwapManager:
         self.storage = storage
         self.wallet_manager = wallet_manager
 
+    # Tolerance applied when `flexible_small_amount=True` accepts a dealer
+    # send_amount that differs from the user's request. SideSwap's mkt::*
+    # dealer rounds amounts internally; on small swaps (e.g. 5_000 sats →
+    # USDt) the dealer's quote can come back at e.g. 5_050 sats. Accept the
+    # adjusted amount up to this delta so the user isn't bounced for
+    # rounding alone. Larger drift indicates a real price move and should
+    # still reject.
+    SMALL_AMOUNT_TOLERANCE_SATS = 3_000
+
     def execute_swap(
         self,
         asset_id: str,
@@ -1245,6 +1366,7 @@ class SideSwapSwapManager:
         password: Optional[str] = None,
         send_bitcoins: bool = True,
         min_recv_amount: Optional[int] = None,
+        flexible_small_amount: bool = False,
         *,
         fee_tolerance_sats: int = DEFAULT_FEE_TOLERANCE_SATS,
         quote_wait_seconds: float = QUOTE_WAIT_SECONDS,
@@ -1319,8 +1441,13 @@ class SideSwapSwapManager:
         recv_addr = str(wollet.address(None).address())
         change_addr = str(wollet.address(None).address())
 
-        async def _quote_to_pset() -> tuple[dict, dict, dict]:
-            """Open WS, run the mkt::* dance, return (market, quote, get_quote_resp)."""
+        # SideSwap binds quote_id to the WebSocket session that issued
+        # start_quotes / get_quote — submitting taker_sign on a fresh
+        # connection is rejected with `protocol error: wrong client_id`.
+        # The verify + sign steps in the middle are sync but cheap, so we
+        # hold one async with for the entire quote → sign → submit flow.
+        async def _full_swap() -> "SideSwapSwap":
+            nonlocal send_amount  # may be widened below by flexible_small_amount
             async with SideSwapWSClient(network) as client:
                 await client.login_client()
                 # Find a market that covers our pair
@@ -1340,135 +1467,137 @@ class SideSwapSwapManager:
                     instant_swap=True,
                 )
                 # Wait for the first usable quote — a `quote` notification with
-                # a Success status. parse_quote_status raises on LowBalance/Error.
+                # a Success status. parse_quote_status raises on LowBalance/Error
+                # AND validates that quote_id / base_amount / quote_amount are
+                # present and integral, so the int() casts below cannot KeyError.
                 quote_notif = await client.next_market_notification(
                     "quote", timeout=quote_wait_seconds
                 )
-                quote = parse_quote_status(quote_notif)
-                # Accept the quote and request the half-built PSET
-                get_quote_resp = await client.mkt_get_quote(int(quote["quote_id"]))
-                # Best-effort cleanup
+                quote_data = parse_quote_status(quote_notif)
+                # Accept the quote and request the half-built PSET on the same
+                # session so the server recognises us as the original taker.
+                get_quote_resp = await client.mkt_get_quote(int(quote_data["quote_id"]))
                 try:
                     await client.mkt_stop_quotes()
                 except Exception:
                     pass
-                return market, quote, get_quote_resp
 
-        market, quote_data, get_quote_resp = _run(_quote_to_pset())
+                # ---- Phase 2: validate + persist (sync, runs on the loop) ---
+                quote_id = int(quote_data["quote_id"])
+                order_id = f"mkt_{quote_id}"
+                # Re-derive recv/send amounts from the quote, not the user's
+                # request: the dealer's quote_amount/base_amount are canonical.
+                if send_asset == market["asset_pair"].get("base"):
+                    send_amount_q = int(quote_data["base_amount"])
+                    recv_amount_q = int(quote_data["quote_amount"])
+                else:
+                    send_amount_q = int(quote_data["quote_amount"])
+                    recv_amount_q = int(quote_data["base_amount"])
+                if send_amount_q != send_amount:
+                    delta = abs(send_amount_q - send_amount)
+                    if flexible_small_amount and delta <= self.SMALL_AMOUNT_TOLERANCE_SATS:
+                        # Dealer rounded the send amount slightly; caller has
+                        # opted in to accepting the adjustment. The PSET
+                        # verifier still checks the wallet's actual balance
+                        # change against send_amount_q below.
+                        send_amount = send_amount_q
+                    else:
+                        raise SideSwapWSError(
+                            f"Quote send_amount mismatch: requested {send_amount}, "
+                            f"dealer offered {send_amount_q} (delta={delta} sats). "
+                            "Pass flexible_small_amount=True to accept dealer "
+                            f"adjustments up to ±{self.SMALL_AMOUNT_TOLERANCE_SATS} sats."
+                        )
+                # Reject if the dealer's recv_amount is below the floor the
+                # caller confirmed (typically the price-stream preview the
+                # user just OK'd). mkt::* uses a different price source than
+                # subscribe_price_stream, so the rate can move between
+                # preview and execution; this guard ensures the user never
+                # settles for less than what they actually saw.
+                if min_recv_amount is not None and recv_amount_q < min_recv_amount:
+                    raise SideSwapWSError(
+                        f"Quote recv_amount below floor: dealer offered "
+                        f"{recv_amount_q} sats, caller required at least "
+                        f"{min_recv_amount}. The market moved between the "
+                        "preview and execution; refetch a quote and re-confirm."
+                    )
+                recv_amount = recv_amount_q
 
-        # Decide a stable order_id we control for persistence. SideSwap mkt::*
-        # gives us a `quote_id` (numeric) per quote; the `order_id` field is
-        # only used for marker resting orders. We persist the quote_id as a
-        # string in our `order_id` slot so the rest of the manager (status
-        # lookup, storage path) keeps the same shape.
-        quote_id = int(quote_data["quote_id"])
-        order_id = f"mkt_{quote_id}"
-        recv_amount = int(quote_data["quote_amount"]) if asset_id == market["asset_pair"]["base"] else int(quote_data["base_amount"])
-        # Re-derive recv/send amounts from the quote, not the user's request:
-        # the dealer's quote_amount/base_amount are the canonical numbers.
-        if send_asset == market["asset_pair"].get("base"):
-            send_amount_q = int(quote_data["base_amount"])
-            recv_amount_q = int(quote_data["quote_amount"])
-        else:
-            send_amount_q = int(quote_data["quote_amount"])
-            recv_amount_q = int(quote_data["base_amount"])
-        if send_amount_q != send_amount:
-            raise SideSwapWSError(
-                f"Quote send_amount mismatch: requested {send_amount}, dealer offered {send_amount_q}"
-            )
-        # Reject if the dealer's recv_amount is below the floor the caller
-        # confirmed (typically the price-stream preview the user just OK'd).
-        # mkt::* uses a different price source than subscribe_price_stream so
-        # the rate can move between preview and execution; this guard ensures
-        # the user never settles for less than what they actually saw.
-        if min_recv_amount is not None and recv_amount_q < min_recv_amount:
-            raise SideSwapWSError(
-                f"Quote recv_amount below floor: dealer offered {recv_amount_q} sats, "
-                f"caller required at least {min_recv_amount}. The market moved "
-                "between the preview and execution; refetch a quote and re-confirm."
-            )
-        recv_amount = recv_amount_q
+                pset_b64 = get_quote_resp.get("pset")
+                if not pset_b64:
+                    raise SideSwapWSError(
+                        f"Unexpected get_quote response: {get_quote_resp!r}"
+                    )
 
-        pset_b64 = get_quote_resp.get("pset")
-        if not pset_b64:
-            raise SideSwapWSError(f"Unexpected get_quote response: {get_quote_resp!r}")
+                # SideSwap quote doesn't return a single 'price' field on
+                # mkt::*; derive it from recv/send for reference only.
+                price = recv_amount / send_amount if send_amount else 0.0
 
-        # Persist the in-progress swap before signing.
-        # `submit_id` is reused to hold the quote_id so existing storage stays
-        # backward-compatible with the legacy flow.
-        price = float(quote_data.get("server_fee", 0)) and 0.0  # placeholder; filled below
-        # SideSwap quote doesn't return a single 'price' field on mkt::*; derive
-        # it from amounts. price = quote_amount / base_amount — but client may
-        # interpret either side, so we just store recv/send ratio for reference.
-        price = recv_amount / send_amount if send_amount else 0.0
+                swap = SideSwapSwap(
+                    order_id=order_id,
+                    submit_id=str(quote_id),
+                    send_asset=send_asset,
+                    send_amount=send_amount,
+                    recv_asset=recv_asset,
+                    recv_amount=recv_amount,
+                    price=price,
+                    wallet_name=wallet_name,
+                    network=network,
+                    status="pending",
+                    created_at=datetime.now(UTC).isoformat(),
+                )
+                self.storage.save_sideswap_swap(swap)
 
-        swap = SideSwapSwap(
-            order_id=order_id,
-            submit_id=str(quote_id),
-            send_asset=send_asset,
-            send_amount=send_amount,
-            recv_asset=recv_asset,
-            recv_amount=recv_amount,
-            price=price,
-            wallet_name=wallet_name,
-            network=network,
-            status="pending",
-            created_at=datetime.now(UTC).isoformat(),
-        )
-        self.storage.save_sideswap_swap(swap)
+                try:
+                    # ---- Phase 3: verify + sign (sync) ----------------------
+                    # fee_asset is pinned to the policy asset so the fee
+                    # tolerance only relaxes the L-BTC side — never the asset.
+                    self._verify_pset(
+                        pset_b64,
+                        wollet,
+                        send_asset=send_asset,
+                        send_amount=send_amount,
+                        recv_asset=recv_asset,
+                        recv_amount=recv_amount,
+                        fee_tolerance_sats=fee_tolerance_sats,
+                        fee_asset=policy_asset,
+                    )
+                    swap.status = "verified"
+                    self.storage.save_sideswap_swap(swap)
 
-        try:
-            # Verify before signing — security-critical. fee_asset is pinned
-            # to the policy asset; on the reverse direction this prevents a
-            # 1000-sat siphon of the asset via the fee tolerance loophole.
-            self._verify_pset(
-                pset_b64,
-                wollet,
-                send_asset=send_asset,
-                send_amount=send_amount,
-                recv_asset=recv_asset,
-                recv_amount=recv_amount,
-                fee_tolerance_sats=fee_tolerance_sats,
-                fee_asset=policy_asset,
-            )
-            swap.status = "verified"
-            self.storage.save_sideswap_swap(swap)
+                    signer = self.wallet_manager._signers[wallet_name]
+                    import lwk
 
-            # Sign locally
-            signer = self.wallet_manager._signers[wallet_name]
-            import lwk
+                    pset = lwk.Pset(pset_b64)
+                    signed = signer.sign(pset)
+                    signed_b64 = str(signed)
+                    swap.status = "signed"
+                    self.storage.save_sideswap_swap(swap)
 
-            pset = lwk.Pset(pset_b64)
-            signed = signer.sign(pset)
-            signed_b64 = str(signed)
-            swap.status = "signed"
-            self.storage.save_sideswap_swap(swap)
+                    # ---- Phase 4: submit on the SAME WS --------------------
+                    sign_payload = await client.mkt_taker_sign(quote_id, signed_b64)
+                    txid = sign_payload.get("txid")
+                    if not txid:
+                        raise SideSwapWSError(
+                            f"Unexpected taker_sign response: {sign_payload!r}"
+                        )
+                    swap.txid = txid
+                    swap.status = "broadcast"
+                    self.storage.save_sideswap_swap(swap)
+                    return swap
 
-            # Submit signed PSET via mkt::taker_sign; server merges & broadcasts
-            async def _submit() -> dict:
-                async with SideSwapWSClient(network) as client:
-                    await client.login_client()
-                    return await client.mkt_taker_sign(quote_id, signed_b64)
+                except PsetVerificationError as e:
+                    swap.status = "failed"
+                    swap.last_error = f"PSET verification failed: {e}"
+                    self.storage.save_sideswap_swap(swap)
+                    raise
+                except Exception as e:
+                    swap.status = "failed"
+                    swap.last_error = str(e)
+                    self.storage.save_sideswap_swap(swap)
+                    raise
 
-            sign_payload = _run(_submit())
-            txid = sign_payload.get("txid")
-            if not txid:
-                raise SideSwapWSError(f"Unexpected taker_sign response: {sign_payload!r}")
-            swap.txid = txid
-            swap.status = "broadcast"
-            self.storage.save_sideswap_swap(swap)
-            return swap
-
-        except PsetVerificationError as e:
-            swap.status = "failed"
-            swap.last_error = f"PSET verification failed: {e}"
-            self.storage.save_sideswap_swap(swap)
-            raise
-        except Exception as e:
-            swap.status = "failed"
-            swap.last_error = str(e)
-            self.storage.save_sideswap_swap(swap)
-            raise
+        return _run(_full_swap())
 
     def _verify_pset(
         self,

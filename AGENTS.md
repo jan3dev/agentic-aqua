@@ -428,7 +428,6 @@ The manager always passes `fee_asset = policy_asset` (L-BTC) regardless of direc
 If any rule fails, `PsetVerificationError` is raised and signing is aborted — the order is persisted as `failed` for forensics. The order is also persisted at every flow step (`pending` → `verified` → `signed` → `broadcast`) for crash recovery.
 
 UTXO selection (`select_swap_utxos`): confidential (asset_bf and value_bf both non-zero), holding the requested send_asset, sorted descending by value, accumulated to cover `send_amount`. wpkh-only (matching the wallet's BIP84 m/84'/1776'/0' descriptor). No separate L-BTC fee inputs are required on either direction (mirroring AQUA Flutter's `swap_provider.dart`).
-
 **CLI surface** (`aqua sideswap …`, mirrors the MCP tool surface):
 
 ```
