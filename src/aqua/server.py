@@ -1822,8 +1822,10 @@ Please:
 2. STRONGLY recommend providing an external_refund_address — the source
    chain address the external sender controls. Without it, a stuck order
    requires manual web UI intervention. Ask for it.
-3. Optional: ask if the user knows the rough amount; if yes, pass it as
-   amount_from for a better rate preview
+3. Ask the user for the deposit amount in source-chain USDt (decimal string,
+   e.g. "50"). This is REQUIRED — the Ankara backend serialiser rejects
+   the request without it — and the changelly_receive tool will refuse an
+   empty value. Pass it as amount_from.
 4. Call changelly_receive — this creates a variable-rate order
 5. Show me clearly:
    - The deposit address on the source chain (this is what the external

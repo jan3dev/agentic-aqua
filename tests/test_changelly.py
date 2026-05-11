@@ -215,7 +215,7 @@ class TestValidateSettleAddress:
         ("ethereum", "0xAbCdEf1234567890abcdef1234567890abCdEf12"),  # 0x + 40 hex = 42
         ("bsc",      "0xAbCdEf1234567890abcdef1234567890abCdEf12"),
         ("polygon",  "0xAbCdEf1234567890abcdef1234567890abCdEf12"),
-        ("solana",   "So11111111111111111111111111111111"),      # 34 base58
+        ("solana",   "So11111111111111111111111111111111111111112"),  # 44-char wrapped SOL mint
         ("ton",      "EQ" + "D" * 46),                          # EQ + 46 base64url = 48
         ("ton",      "UQ" + "D" * 46),                          # UQ + 46 base64url = 48
     ])
@@ -646,19 +646,19 @@ class TestManagerReceive:
         swap = mgr.receive_swap(
             external_network="tron",
             wallet_name="default",
-            external_refund_address="TXrefund",
+            external_refund_address=_TRON_ADDR,
             amount_from="50",
         )
         assert swap.order_id == "ord_recv"
         assert swap.swap_type == "variable"
         assert swap.direction == "receive"
         assert swap.deposit_address == "TXdepositAddr"
-        assert swap.refund_address == "TXrefund"
+        assert swap.refund_address == _TRON_ADDR
         body = json.loads(mock_urlopen.call_args[0][0].data.decode())
         assert body["from"] == "usdtrx"
         assert body["to"] == "lusdt"
         assert body["address"] == "lq1qreceive"
-        assert body["refundAddress"] == "TXrefund"
+        assert body["refundAddress"] == _TRON_ADDR
         loaded = storage.load_changelly_swap("ord_recv")
         assert loaded is not None
 
@@ -666,6 +666,68 @@ class TestManagerReceive:
         mgr, _, _ = manager_setup
         with pytest.raises(ValueError, match="Unknown network"):
             mgr.receive_swap(external_network="avalanche", wallet_name="default", amount_from="50")
+
+    def test_receive_rejects_wrong_format_external_refund_address(self, manager_setup):
+        # A Liquid-style refund address for a Tron deposit would result in a
+        # stuck order if Changelly accepts it. Reject before the API call.
+        mgr, _, _ = manager_setup
+        with pytest.raises(ValueError, match="valid tron"):
+            mgr.receive_swap(
+                external_network="tron",
+                wallet_name="default",
+                external_refund_address="lq1qbogusrefund",
+                amount_from="50",
+            )
+
+
+class TestManagerSendDepositSatsGuard:
+    @patch("aqua.changelly.urllib.request.urlopen")
+    def test_send_rejects_zero_deposit_sats(self, mock_urlopen, manager_setup):
+        # Defence in depth: even if Changelly returns "0" as amountExpectedFrom
+        # the manager must refuse to sign a zero-value send. We force the path
+        # by skipping the quote call (rate_id supplied) and returning an order
+        # with amountExpectedFrom == "0".
+        mgr, _, storage = manager_setup
+        mock_urlopen.return_value = _mock_response({
+            "id": "order_zero",
+            "payinAddress": "lq1qdeposit",
+            "amountExpectedFrom": "0",
+            "currencyFrom": "lusdt",
+            "currencyTo": "usdtrx",
+            "status": "new",
+        })
+        with pytest.raises(RuntimeError, match="non-positive deposit amount"):
+            mgr.send_swap(
+                external_network="tron",
+                amount_from="100",
+                settle_address=_TRON_ADDR,
+                wallet_name="default",
+                rate_id="prefetched",
+            )
+        # Swap must still be persisted with last_error so the user can
+        # diagnose what happened.
+        loaded = storage.load_changelly_swap("order_zero")
+        assert loaded is not None
+        assert loaded.status == "failed"
+        assert loaded.last_error and "non-positive" in loaded.last_error
+
+
+class TestValidateSettleAddressDriftGuard:
+    def test_missing_pattern_for_supported_network_raises(self, monkeypatch):
+        # If a future contributor adds a network to NETWORK_TO_USDT_ID without
+        # a matching pattern in _ADDRESS_PATTERNS, validation must refuse to
+        # silently no-op.
+        from aqua import changelly as changelly_mod
+
+        monkeypatch.setitem(changelly_mod.NETWORK_TO_USDT_ID, "newchain", "usdtnew")
+        with pytest.raises(RuntimeError, match="_ADDRESS_PATTERNS is missing"):
+            _validate_settle_address("newchain", "some_address_123")
+
+    def test_truly_unknown_network_still_passes_through(self):
+        # Networks not on the supported list (e.g. user typo) are not the
+        # contributor-drift case; preserve the lenient no-op so we don't
+        # block on unknown user input upstream of the asset-id lookup.
+        _validate_settle_address("zzz_not_a_real_chain", "some_address_123")
 
 
 class TestManagerStatus:

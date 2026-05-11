@@ -145,7 +145,7 @@ _ADDRESS_PATTERNS: dict[str, re.Pattern[str]] = {
     "ethereum": re.compile(r"^0x[0-9a-fA-F]{40}$"),
     "bsc":      re.compile(r"^0x[0-9a-fA-F]{40}$"),
     "polygon":  re.compile(r"^0x[0-9a-fA-F]{40}$"),
-    "solana":   re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$"),
+    "solana":   re.compile(r"^[1-9A-HJ-NP-Za-km-z]{43,44}$"),
     "ton":      re.compile(r"^[EU][Qq][0-9A-Za-z_\-]{46}$"),
 }
 
@@ -158,8 +158,21 @@ def _validate_settle_address(network: str, address: str) -> None:
     """
     if not address or not address.strip():
         raise ValueError("settle_address cannot be empty")
-    pattern = _ADDRESS_PATTERNS.get(network.lower())
-    if pattern and not pattern.match(address):
+    norm = network.lower()
+    pattern = _ADDRESS_PATTERNS.get(norm)
+    if pattern is None:
+        # Drift guard: if someone adds a network to NETWORK_TO_USDT_ID
+        # without a matching pattern here, address validation silently
+        # becomes a no-op. Refuse rather than ship a footgun.
+        # "liquid" is intentionally absent — Liquid addresses are produced
+        # by the local wallet, not user-pasted.
+        if norm in NETWORK_TO_USDT_ID and norm != "liquid":
+            raise RuntimeError(
+                f"_ADDRESS_PATTERNS is missing an entry for supported network "
+                f"{norm!r}. Add the pattern alongside NETWORK_TO_USDT_ID."
+            )
+        return
+    if not pattern.match(address):
         raise ValueError(
             f"settle_address {address!r} doesn't look like a valid {network} address. "
             f"Double-check the address and network before sending."
@@ -609,6 +622,16 @@ class ChangellyManager:
         # human-readable decimals; our wallet expects integer sats. USDt-Liquid
         # uses 8 decimal places (same as L-BTC).
         deposit_sats = _decimal_to_sats(order.get("amountExpectedFrom") or amount_from)
+        # Defence in depth: refuse to sign a zero/negative-value send even if
+        # the Changelly response (or upstream wrapper) passed validation. The
+        # tool-layer wrapper checks amount_from, but the manager is also
+        # callable directly (tests, future callers) so re-check here.
+        if deposit_sats <= 0:
+            msg = f"Changelly returned non-positive deposit amount: {deposit_sats}"
+            swap.last_error = msg
+            swap.status = "failed"
+            self.storage.save_changelly_swap(swap)
+            raise RuntimeError(msg)
         try:
             txid = self.wallet_manager.send(
                 wallet_name,
@@ -649,6 +672,11 @@ class ChangellyManager:
         from_asset = network_to_asset_id(external_network)
         to_asset = LIQUID_USDT_ID
         _check_pair_allowed(from_asset, to_asset)
+        # Validate the user-supplied refund address against the source-chain
+        # format before we ship it to Changelly. Pasting a Liquid address as a
+        # Tron refund is exactly the footgun the docstring warns about.
+        if external_refund_address:
+            _validate_settle_address(external_network, external_refund_address)
 
         wallet_data = self.storage.load_wallet(wallet_name)
         if not wallet_data:
