@@ -981,6 +981,740 @@ class TestChangellyStatus:
         assert data["is_final"] is True
 
 
+# ---------------------------------------------------------------------------
+# SideSwap CLI
+# ---------------------------------------------------------------------------
+
+
+class _FakePegManager:
+    """Stand-in for SideSwapPegManager — records calls, returns canned dicts."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+        self.server_status_response: dict = {
+            "min_peg_in_amount": 1286,
+            "min_peg_out_amount": 100_000,
+            "server_fee_percent_peg_in": 0.1,
+            "server_fee_percent_peg_out": 0.1,
+            "peg_in_wallet_balance": 50_000_000,
+            "peg_out_wallet_balance": 200_000_000,
+        }
+        self.peg_quote_response: dict = {
+            "send_amount": 100_000,
+            "recv_amount": 99_900,
+            "fee_amount": 100,
+            "peg_in": True,
+        }
+        self.peg_in_response = None  # set per-test
+        self.peg_out_response = None
+        self.status_response: dict = {
+            "order_id": "ord_test",
+            "peg_in": True,
+            "status": "pending",
+            "amount": None,
+            "expected_recv": None,
+            "wallet_name": "default",
+            "network": "mainnet",
+            "peg_addr": "bc1qdeposit",
+            "recv_addr": "lq1qreceive",
+            "created_at": "2026-05-08T12:00:00+00:00",
+        }
+
+    def get_server_status(self, network):
+        self.calls.append(("get_server_status", {"network": network}))
+        return self.server_status_response
+
+    def quote_peg(self, amount, peg_in, network):
+        self.calls.append(("quote_peg", {"amount": amount, "peg_in": peg_in, "network": network}))
+        return self.peg_quote_response
+
+    def peg_in(self, wallet_name="default", password=None):
+        self.calls.append(("peg_in", {"wallet_name": wallet_name, "password": password}))
+        if self.peg_in_response is None:
+            from aqua.sideswap import SideSwapPeg
+
+            return SideSwapPeg(
+                order_id="ord_in",
+                peg_in=True,
+                peg_addr="bc1qdeposit",
+                recv_addr="lq1qreceive",
+                amount=None,
+                expected_recv=None,
+                wallet_name=wallet_name,
+                network="mainnet",
+                status="pending",
+                created_at="2026-05-08T12:00:00+00:00",
+            )
+        return self.peg_in_response
+
+    def peg_out(self, wallet_name, amount, btc_address, password=None):
+        self.calls.append(
+            ("peg_out", {
+                "wallet_name": wallet_name,
+                "amount": amount,
+                "btc_address": btc_address,
+                "password": password,
+            })
+        )
+        if self.peg_out_response is None:
+            from aqua.sideswap import SideSwapPeg
+
+            return SideSwapPeg(
+                order_id="ord_out",
+                peg_in=False,
+                peg_addr="VJLdeposit",
+                recv_addr=btc_address,
+                amount=amount,
+                expected_recv=amount - 100,
+                wallet_name=wallet_name,
+                network="mainnet",
+                status="processing",
+                created_at="2026-05-08T12:00:00+00:00",
+                lockup_txid="dead" * 16,
+            )
+        return self.peg_out_response
+
+    def status(self, order_id):
+        self.calls.append(("status", {"order_id": order_id}))
+        return {**self.status_response, "order_id": order_id}
+
+
+class _FakeSwapManager:
+    """Stand-in for SideSwapSwapManager."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+        self.execute_response = None
+        self.status_response: dict = {
+            "order_id": "mkt_42",
+            "submit_id": "42",
+            "send_asset": "lbtc",
+            "send_amount": 100_000,
+            "recv_asset": "usdt",
+            "recv_amount": 9_500_000,
+            "price": 95.0,
+            "wallet_name": "default",
+            "network": "mainnet",
+            "status": "broadcast",
+            "created_at": "2026-05-08T12:00:00+00:00",
+            "txid": "ee" * 32,
+        }
+
+    def execute_swap(self, asset_id, send_amount, wallet_name="default",
+                     password=None, send_bitcoins=True, **_):
+        self.calls.append(
+            ("execute_swap", {
+                "asset_id": asset_id,
+                "send_amount": send_amount,
+                "wallet_name": wallet_name,
+                "password": password,
+                "send_bitcoins": send_bitcoins,
+            })
+        )
+        if self.execute_response is None:
+            from aqua.sideswap import SideSwapSwap
+
+            return SideSwapSwap(
+                order_id="mkt_42",
+                submit_id="42",
+                send_asset="lbtc" if send_bitcoins else asset_id,
+                send_amount=send_amount,
+                recv_asset=asset_id if send_bitcoins else "lbtc",
+                recv_amount=9_500_000,
+                price=95.0,
+                wallet_name=wallet_name,
+                network="mainnet",
+                status="broadcast",
+                created_at="2026-05-08T12:00:00+00:00",
+                txid="ee" * 32,
+            )
+        return self.execute_response
+
+    def status(self, order_id):
+        self.calls.append(("status", {"order_id": order_id}))
+        return {**self.status_response, "order_id": order_id}
+
+
+@pytest.fixture
+def sideswap_managers():
+    """Inject fake SideSwap managers into the global tool layer."""
+    import aqua.tools as tools_module
+
+    peg = _FakePegManager()
+    swap = _FakeSwapManager()
+    saved_peg = tools_module._sideswap_peg_manager
+    saved_swap = tools_module._sideswap_swap_manager
+    tools_module._sideswap_peg_manager = peg
+    tools_module._sideswap_swap_manager = swap
+    try:
+        yield peg, swap
+    finally:
+        tools_module._sideswap_peg_manager = saved_peg
+        tools_module._sideswap_swap_manager = saved_swap
+
+
+class TestSideSwapServerStatus:
+    def test_status_uses_default_network(self, runner, sideswap_managers):
+        peg, _ = sideswap_managers
+        result = runner.invoke(cli, ["--format", "json", "sideswap", "status"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["min_peg_in_amount"] == 1286
+        assert peg.calls[-1] == ("get_server_status", {"network": "mainnet"})
+
+    def test_status_passes_testnet_flag(self, runner, sideswap_managers):
+        peg, _ = sideswap_managers
+        runner.invoke(cli, ["sideswap", "status", "--network", "testnet"])
+        assert peg.calls[-1] == ("get_server_status", {"network": "testnet"})
+
+
+class TestSideSwapRecommend:
+    def test_recommend_btc_to_lbtc(self, runner, sideswap_managers):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideswap", "recommend",
+             "--amount", "10000000", "--direction", "btc_to_lbtc"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["recommendation"] in ("peg", "swap", "either")
+        assert data["amount"] == 10_000_000
+
+    def test_recommend_lbtc_to_btc_recommends_peg(self, runner, sideswap_managers):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideswap", "recommend",
+             "--amount", "200000", "--direction", "lbtc_to_btc"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["recommendation"] == "peg"
+
+    def test_recommend_rejects_bad_direction(self, runner):
+        result = runner.invoke(
+            cli, ["sideswap", "recommend", "--amount", "1000", "--direction", "sideways"],
+        )
+        assert result.exit_code != 0
+
+
+class TestSideSwapPegQuote:
+    def test_peg_quote_default_is_peg_in(self, runner, sideswap_managers):
+        peg, _ = sideswap_managers
+        result = runner.invoke(
+            cli, ["--format", "json", "sideswap", "peg-quote", "--amount", "100000"]
+        )
+        assert result.exit_code == 0
+        last_call = peg.calls[-1]
+        assert last_call[0] == "quote_peg"
+        assert last_call[1]["peg_in"] is True
+
+    def test_peg_quote_peg_out_flag(self, runner, sideswap_managers):
+        peg, _ = sideswap_managers
+        runner.invoke(
+            cli, ["sideswap", "peg-quote", "--amount", "200000", "--peg-out"]
+        )
+        last_call = peg.calls[-1]
+        assert last_call[0] == "quote_peg"
+        assert last_call[1]["peg_in"] is False
+        assert last_call[1]["amount"] == 200_000
+
+
+class TestSideSwapPegIn:
+    def test_peg_in_returns_deposit_address(self, runner, sideswap_managers):
+        result = runner.invoke(
+            cli, ["--format", "json", "sideswap", "peg-in"],
+            env=_cli_env(),
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["peg_addr"] == "bc1qdeposit"
+        assert data["recv_addr"] == "lq1qreceive"
+        assert "order_id" in data
+        assert "message" in data
+
+    def test_peg_in_passes_wallet_name(self, runner, sideswap_managers):
+        peg, _ = sideswap_managers
+        runner.invoke(
+            cli, ["sideswap", "peg-in", "--wallet-name", "cold"],
+            env=_cli_env(),
+        )
+        peg_in_call = next(c for c in peg.calls if c[0] == "peg_in")
+        assert peg_in_call[1]["wallet_name"] == "cold"
+
+
+class TestSideSwapPegOut:
+    def test_peg_out_returns_lockup_txid(self, runner, sideswap_managers):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideswap", "peg-out",
+             "--amount", "200000", "--btc-address", "bc1qdest",
+             "--wallet-name", "default"],
+            env=_cli_env(),
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["lockup_txid"] == "dead" * 16
+        assert data["recv_addr"] == "bc1qdest"
+        assert data["amount"] == 200_000
+
+    def test_peg_out_amount_must_be_positive(self, runner):
+        result = runner.invoke(
+            cli,
+            ["sideswap", "peg-out", "--amount", "0",
+             "--btc-address", "bc1q", "--wallet-name", "default"],
+        )
+        assert result.exit_code == 2
+
+    def test_peg_out_requires_btc_address(self, runner):
+        result = runner.invoke(
+            cli,
+            ["sideswap", "peg-out", "--amount", "200000", "--wallet-name", "default"],
+        )
+        assert result.exit_code == 2
+
+
+class TestSideSwapPegStatus:
+    def test_peg_status_passes_order_id(self, runner, sideswap_managers):
+        peg, _ = sideswap_managers
+        result = runner.invoke(
+            cli, ["--format", "json", "sideswap", "peg-status", "--order-id", "ord_xyz"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["order_id"] == "ord_xyz"
+        assert peg.calls[-1] == ("status", {"order_id": "ord_xyz"})
+
+
+class TestSideSwapAssets:
+    def test_assets_invokes_quote_subscription(self, runner, sideswap_managers):
+        # The list-assets tool hits the live WS — patch fetch_assets directly
+        with patch("aqua.sideswap.fetch_assets") as fetch:
+            fetch.return_value = []
+            result = runner.invoke(
+                cli, ["--format", "json", "sideswap", "assets"]
+            )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["network"] == "mainnet"
+        assert data["count"] == 0
+
+
+class TestSideSwapQuote:
+    def test_quote_requires_send_or_recv(self, runner):
+        result = runner.invoke(
+            cli,
+            ["sideswap", "quote", "--asset-id", "a" * 64],
+        )
+        assert result.exit_code == 2
+
+    def test_quote_rejects_both_send_and_recv(self, runner):
+        result = runner.invoke(
+            cli,
+            ["sideswap", "quote", "--asset-id", "a" * 64,
+             "--send-amount", "1000", "--recv-amount", "1000"],
+        )
+        assert result.exit_code == 2
+
+    def test_quote_requires_exactly_one_of_id_or_ticker(self, runner):
+        result = runner.invoke(
+            cli,
+            ["sideswap", "quote", "--send-amount", "1000"],
+        )
+        assert result.exit_code == 2
+
+    def test_quote_resolves_ticker_to_asset_id(self, runner, sideswap_managers):
+        with patch("aqua.sideswap.fetch_swap_quote") as fetch:
+            from aqua.sideswap import SideSwapPriceQuote
+
+            fetch.return_value = SideSwapPriceQuote(
+                asset_id="ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2",
+                send_bitcoins=True,
+                send_amount=100_000,
+                recv_amount=9_500_000,
+                price=95.0,
+                fixed_fee=100,
+            )
+            result = runner.invoke(
+                cli,
+                ["--format", "json", "sideswap", "quote",
+                 "--asset-ticker", "USDt", "--send-amount", "100000"],
+            )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["price"] == 95.0
+        # Ticker resolved to USDt's asset_id
+        called_asset = fetch.call_args.kwargs["asset_id"]
+        assert called_asset.startswith("ce091c99")
+
+    def test_quote_unknown_ticker_errors(self, runner):
+        result = runner.invoke(
+            cli,
+            ["sideswap", "quote", "--asset-ticker", "XYZNOTAREALTOKEN", "--send-amount", "1000"],
+        )
+        assert result.exit_code == 2
+
+
+class TestSideSwapSwap:
+    def test_swap_with_yes_flag_no_prompt(self, runner, sideswap_managers):
+        _import_wallet(runner)  # so the network resolver finds a wallet
+        _, swap = sideswap_managers
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideswap", "swap",
+             "--asset-ticker", "USDt", "--amount", "100000", "--yes"],
+            env=_cli_env(),
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "broadcast"
+        assert data["txid"] == "ee" * 32
+        # Manager was called with send_bitcoins=True (default direction)
+        execute_calls = [c for c in swap.calls if c[0] == "execute_swap"]
+        assert len(execute_calls) == 1
+        assert execute_calls[0][1]["send_bitcoins"] is True
+        assert execute_calls[0][1]["send_amount"] == 100_000
+
+    def test_swap_reverse_flag(self, runner, sideswap_managers):
+        _import_wallet(runner)
+        _, swap = sideswap_managers
+        runner.invoke(
+            cli,
+            ["sideswap", "swap", "--asset-ticker", "USDt",
+             "--amount", "9500000", "--reverse", "--yes"],
+            env=_cli_env(),
+        )
+        execute_calls = [c for c in swap.calls if c[0] == "execute_swap"]
+        assert execute_calls[-1][1]["send_bitcoins"] is False
+
+    def test_swap_amount_must_be_positive(self, runner):
+        result = runner.invoke(
+            cli,
+            ["sideswap", "swap", "--asset-ticker", "USDt", "--amount", "0", "--yes"],
+        )
+        assert result.exit_code == 2
+
+    def test_swap_status_passes_order_id(self, runner, sideswap_managers):
+        _, swap = sideswap_managers
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideswap", "swap-status", "--order-id", "mkt_77"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["order_id"] == "mkt_77"
+        assert swap.calls[-1] == ("status", {"order_id": "mkt_77"})
+
+
+# ---------------------------------------------------------------------------
+# SideShift CLI
+# ---------------------------------------------------------------------------
+
+
+class _FakeSideShiftManager:
+    """Stand-in for SideShiftManager — records calls, returns canned dicts."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+        self.coins_response = [
+            {"coin": "BTC", "name": "Bitcoin", "networks": ["bitcoin", "liquid"]}
+        ]
+        self.pair_response = {
+            "rate": "20000",
+            "min": "0.0001",
+            "max": "1.0",
+            "depositCoin": "USDT",
+            "settleCoin": "BTC",
+            "depositNetwork": "tron",
+            "settleNetwork": "bitcoin",
+        }
+        self.quote_response = {
+            "id": "q_test",
+            "depositAmount": "100",
+            "settleAmount": "0.005",
+            "rate": "20000",
+            "expiresAt": "2026-05-08T12:15:00Z",
+        }
+        self.send_response = None
+        self.receive_response = None
+        self.status_response = None
+
+    def list_coins(self):
+        self.calls.append(("list_coins", {}))
+        return self.coins_response
+
+    def pair_info(self, from_coin, from_network, to_coin, to_network, amount=None):
+        self.calls.append(("pair_info", {
+            "from_coin": from_coin, "from_network": from_network,
+            "to_coin": to_coin, "to_network": to_network, "amount": amount,
+        }))
+        return self.pair_response
+
+    def quote(self, **kwargs):
+        self.calls.append(("quote", kwargs))
+        return self.quote_response
+
+    def send_shift(self, **kwargs):
+        from aqua.sideshift import SideShiftShift
+
+        self.calls.append(("send_shift", kwargs))
+        if self.send_response is not None:
+            return self.send_response
+        return SideShiftShift(
+            shift_id="shift_send",
+            shift_type="fixed",
+            direction="send",
+            deposit_coin=kwargs["deposit_coin"].upper(),
+            deposit_network=kwargs["deposit_network"].lower(),
+            settle_coin=kwargs["settle_coin"].upper(),
+            settle_network=kwargs["settle_network"].lower(),
+            settle_address=kwargs["settle_address"],
+            deposit_address="lq1qdeposit",
+            refund_address="lq1qrefund",
+            wallet_name=kwargs["wallet_name"],
+            status="waiting",
+            created_at="2026-05-08T12:00:00+00:00",
+            deposit_amount=kwargs.get("deposit_amount"),
+            settle_amount=kwargs.get("settle_amount"),
+            deposit_hash="lqtxid" + ("0" * 58),
+        )
+
+    def receive_shift(self, **kwargs):
+        from aqua.sideshift import SideShiftShift
+
+        self.calls.append(("receive_shift", kwargs))
+        if self.receive_response is not None:
+            return self.receive_response
+        return SideShiftShift(
+            shift_id="shift_recv",
+            shift_type="variable",
+            direction="receive",
+            deposit_coin=kwargs["deposit_coin"].upper(),
+            deposit_network=kwargs["deposit_network"].lower(),
+            settle_coin=kwargs["settle_coin"].upper(),
+            settle_network=kwargs["settle_network"].lower(),
+            settle_address="lq1qreceive",
+            deposit_address="TXdepositAddr",
+            refund_address=kwargs.get("external_refund_address"),
+            wallet_name=kwargs["wallet_name"],
+            status="waiting",
+            created_at="2026-05-08T12:00:00+00:00",
+            deposit_min="10",
+            deposit_max="10000",
+        )
+
+    def status(self, shift_id):
+        self.calls.append(("status", {"shift_id": shift_id}))
+        if self.status_response is not None:
+            return {**self.status_response, "shift_id": shift_id}
+        return {
+            "shift_id": shift_id,
+            "status": "settled",
+            "is_final": True,
+            "is_success": True,
+            "is_failed": False,
+        }
+
+
+@pytest.fixture
+def sideshift_manager():
+    """Inject a fake SideShiftManager into the global tool layer."""
+    import aqua.tools as tools_module
+
+    fake = _FakeSideShiftManager()
+    saved = tools_module._sideshift_manager
+    tools_module._sideshift_manager = fake
+    try:
+        yield fake
+    finally:
+        tools_module._sideshift_manager = saved
+
+
+class TestSideShiftCoins:
+    def test_coins_returns_list(self, runner, sideshift_manager):
+        result = runner.invoke(cli, ["--format", "json", "sideshift", "coins"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["count"] == 1
+        assert data["coins"][0]["coin"] == "BTC"
+        assert sideshift_manager.calls[-1][0] == "list_coins"
+
+
+class TestSideShiftPairInfo:
+    def test_pair_info_passes_args(self, runner, sideshift_manager):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideshift", "pair-info",
+             "--from-coin", "USDT", "--from-network", "tron",
+             "--to-coin", "BTC", "--to-network", "bitcoin",
+             "--amount", "100"],
+        )
+        assert result.exit_code == 0
+        last = sideshift_manager.calls[-1]
+        assert last[0] == "pair_info"
+        assert last[1] == {
+            "from_coin": "USDT", "from_network": "tron",
+            "to_coin": "BTC", "to_network": "bitcoin", "amount": "100",
+        }
+
+
+class TestSideShiftQuote:
+    def test_quote_requires_exactly_one_amount(self, runner):
+        result = runner.invoke(
+            cli,
+            ["sideshift", "quote",
+             "--deposit-coin", "USDT", "--deposit-network", "liquid",
+             "--settle-coin", "BTC", "--settle-network", "bitcoin"],
+        )
+        assert result.exit_code == 2
+
+    def test_quote_rejects_both_amounts(self, runner):
+        result = runner.invoke(
+            cli,
+            ["sideshift", "quote",
+             "--deposit-coin", "USDT", "--deposit-network", "liquid",
+             "--settle-coin", "BTC", "--settle-network", "bitcoin",
+             "--deposit-amount", "100", "--settle-amount", "0.001"],
+        )
+        assert result.exit_code == 2
+
+    def test_quote_passes_deposit_amount(self, runner, sideshift_manager):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideshift", "quote",
+             "--deposit-coin", "USDT", "--deposit-network", "liquid",
+             "--settle-coin", "BTC", "--settle-network", "bitcoin",
+             "--deposit-amount", "100"],
+        )
+        assert result.exit_code == 0
+        last = sideshift_manager.calls[-1]
+        assert last[0] == "quote"
+        assert last[1]["deposit_amount"] == "100"
+        assert last[1]["settle_amount"] is None
+
+
+class TestSideShiftRecommend:
+    def test_btc_to_lbtc_recommends_sideswap(self, runner):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideshift", "recommend",
+             "--from-coin", "btc", "--from-network", "bitcoin",
+             "--to-coin", "btc", "--to-network", "liquid"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["recommendation"] == "sideswap"
+
+    def test_usdt_liquid_to_usdt_tron_recommends_sideshift(self, runner):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideshift", "recommend",
+             "--from-coin", "usdt", "--from-network", "liquid",
+             "--to-coin", "usdt", "--to-network", "tron"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["recommendation"] == "sideshift"
+
+
+class TestSideShiftSend:
+    def test_send_with_yes_flag_skips_quote_prompt(self, runner, sideshift_manager):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideshift", "send",
+             "--deposit-coin", "btc", "--deposit-network", "liquid",
+             "--settle-coin", "usdt", "--settle-network", "tron",
+             "--settle-address", "TXYZ",
+             "--deposit-amount", "0.0005",
+             "--yes"],
+            env=_cli_env(),
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["shift_id"] == "shift_send"
+        # Manager was called with the right kwargs
+        send_call = next(c for c in sideshift_manager.calls if c[0] == "send_shift")
+        assert send_call[1]["deposit_amount"] == "0.0005"
+        assert send_call[1]["settle_address"] == "TXYZ"
+
+    def test_send_amount_validation(self, runner):
+        # Neither amount → rejected
+        result = runner.invoke(
+            cli,
+            ["sideshift", "send",
+             "--deposit-coin", "btc", "--deposit-network", "liquid",
+             "--settle-coin", "usdt", "--settle-network", "tron",
+             "--settle-address", "TXYZ", "--yes"],
+        )
+        assert result.exit_code == 2
+
+    def test_send_rejects_non_native_deposit_network(self, runner):
+        # Click validates the choice before the manager is called
+        result = runner.invoke(
+            cli,
+            ["sideshift", "send",
+             "--deposit-coin", "usdt", "--deposit-network", "tron",
+             "--settle-coin", "btc", "--settle-network", "liquid",
+             "--settle-address", "lq1qfoo",
+             "--deposit-amount", "100", "--yes"],
+        )
+        assert result.exit_code == 2
+
+    def test_send_passes_liquid_asset_id(self, runner, sideshift_manager):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideshift", "send",
+             "--deposit-coin", "usdt", "--deposit-network", "liquid",
+             "--settle-coin", "usdt", "--settle-network", "tron",
+             "--settle-address", "TXYZ",
+             "--deposit-amount", "100",
+             "--liquid-asset-id", "ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2",
+             "--yes"],
+            env=_cli_env(),
+        )
+        assert result.exit_code == 0
+        send_call = next(c for c in sideshift_manager.calls if c[0] == "send_shift")
+        assert send_call[1]["liquid_asset_id"].startswith("ce091c99")
+
+
+class TestSideShiftReceive:
+    def test_receive_into_liquid(self, runner, sideshift_manager):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideshift", "receive",
+             "--deposit-coin", "usdt", "--deposit-network", "tron",
+             "--settle-coin", "usdt", "--settle-network", "liquid",
+             "--external-refund-address", "TXrefund"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["shift_id"] == "shift_recv"
+        assert data["deposit_address"] == "TXdepositAddr"
+        assert data["refund_address"] == "TXrefund"
+
+    def test_receive_rejects_non_native_settle_network(self, runner):
+        result = runner.invoke(
+            cli,
+            ["sideshift", "receive",
+             "--deposit-coin", "usdt", "--deposit-network", "tron",
+             "--settle-coin", "usdt", "--settle-network", "ethereum"],
+        )
+        assert result.exit_code == 2
+
+
+class TestSideShiftStatus:
+    def test_status_passes_shift_id(self, runner, sideshift_manager):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideshift", "status", "--shift-id", "shift_xyz"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["shift_id"] == "shift_xyz"
+        assert data["is_final"] is True
+        assert sideshift_manager.calls[-1] == ("status", {"shift_id": "shift_xyz"})
+
+
+
 # Error handling
 
 
