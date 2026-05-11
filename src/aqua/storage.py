@@ -84,6 +84,8 @@ class Storage:
         self.ankara_swaps_dir = self.base_dir / "ankara_swaps"
         self.lightning_swaps_dir = self.base_dir / "lightning_swaps"
         self.sideshift_shifts_dir = self.base_dir / "sideshift_shifts"
+        self.sideswap_pegs_dir = self.base_dir / "sideswap_pegs"
+        self.sideswap_swaps_dir = self.base_dir / "sideswap_swaps"
         self.config_path = self.base_dir / "config.json"
         self._ensure_dirs()
 
@@ -103,6 +105,10 @@ class Storage:
         os.chmod(self.lightning_swaps_dir, 0o700)
         self.sideshift_shifts_dir.mkdir(exist_ok=True, mode=0o700)
         os.chmod(self.sideshift_shifts_dir, 0o700)
+        self.sideswap_pegs_dir.mkdir(exist_ok=True, mode=0o700)
+        os.chmod(self.sideswap_pegs_dir, 0o700)
+        self.sideswap_swaps_dir.mkdir(exist_ok=True, mode=0o700)
+        os.chmod(self.sideswap_swaps_dir, 0o700)
 
     def _derive_key(self, password: str, salt: bytes) -> bytes:
         """Derive encryption key from password."""
@@ -368,6 +374,97 @@ class Storage:
             for p in self.sideshift_shifts_dir.glob("*.json")
             if SWAP_ID_PATTERN.fullmatch(p.stem)
         ]
+
+    # SideSwap peg operations
+
+    def _sideswap_peg_path(self, order_id: str) -> Path:
+        """Get path to SideSwap peg file, validating the ID to prevent path traversal."""
+        if not SWAP_ID_PATTERN.fullmatch(order_id):
+            raise ValueError(
+                f"Invalid SideSwap order ID '{order_id}'. "
+                "Use only letters, numbers, hyphens and underscores (max 128 chars)."
+            )
+        return self.sideswap_pegs_dir / f"{order_id}.json"
+
+    def save_sideswap_peg(self, peg) -> None:
+        """Save SideSwap peg data for recovery."""
+        path = self._sideswap_peg_path(peg.order_id)
+        self._atomic_write_json(path, peg.to_dict())
+
+    def load_sideswap_peg(self, order_id: str):
+        """Load SideSwap peg data. Returns SideSwapPeg or None."""
+        from .sideswap import SideSwapPeg
+
+        path = self._sideswap_peg_path(order_id)
+        if not path.exists():
+            return None
+        with open(path) as f:
+            return SideSwapPeg.from_dict(json.load(f))
+
+    def list_sideswap_pegs(self) -> list[str]:
+        """List all SideSwap peg order IDs."""
+        return [
+            p.stem
+            for p in self.sideswap_pegs_dir.glob("*.json")
+            if SWAP_ID_PATTERN.fullmatch(p.stem)
+        ]
+
+    # SideSwap asset-swap operations
+
+    def _sideswap_swap_path(self, order_id: str) -> Path:
+        """Get path to SideSwap swap file, validating the ID to prevent path traversal."""
+        if not SWAP_ID_PATTERN.fullmatch(order_id):
+            raise ValueError(
+                f"Invalid SideSwap order ID '{order_id}'. "
+                "Use only letters, numbers, hyphens and underscores (max 128 chars)."
+            )
+        return self.sideswap_swaps_dir / f"{order_id}.json"
+
+    def save_sideswap_swap(self, swap) -> None:
+        """Save SideSwap asset swap data for recovery."""
+        path = self._sideswap_swap_path(swap.order_id)
+        self._atomic_write_json(path, swap.to_dict())
+
+    def load_sideswap_swap(self, order_id: str):
+        """Load SideSwap swap data. Returns SideSwapSwap or None."""
+        from .sideswap import SideSwapSwap
+
+        path = self._sideswap_swap_path(order_id)
+        if not path.exists():
+            return None
+        with open(path) as f:
+            return SideSwapSwap.from_dict(json.load(f))
+
+    def list_sideswap_swaps(self) -> list[str]:
+        """List all SideSwap swap order IDs."""
+        return [
+            p.stem
+            for p in self.sideswap_swaps_dir.glob("*.json")
+            if SWAP_ID_PATTERN.fullmatch(p.stem)
+        ]
+
+    def delete_sideswap_pegs_for_wallet(self, wallet_name: str) -> int:
+        """Delete SideSwap peg records whose `wallet_name` matches.
+
+        Idempotent — returns 0 silently if the directory or matching files
+        don't exist. Returns the number of files removed.
+        """
+        if not self.sideswap_pegs_dir.exists():
+            return 0
+        removed = 0
+        for path in self.sideswap_pegs_dir.glob("*.json"):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if data.get("wallet_name") == wallet_name:
+                try:
+                    path.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        return removed
 
     # Cache operations
 
