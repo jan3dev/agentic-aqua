@@ -24,7 +24,7 @@ from aqua.sideshift import (
     SideShiftManager,
     SideShiftShift,
     _check_pair_allowed,
-    _decimal_to_sats,
+    _decimal_to_sats_8dp,
     recommend_shift_or_swap,
     shift_is_failed,
     shift_is_final,
@@ -73,15 +73,15 @@ class TestDecimalToSats:
         ],
     )
     def test_known_amounts(self, decimal_str, expected):
-        assert _decimal_to_sats(decimal_str) == expected
+        assert _decimal_to_sats_8dp(decimal_str) == expected
 
     def test_rounding_half_up_at_9th_decimal(self):
         # 0.000000005 = 0.5 sats; round half up → 1 sat
-        assert _decimal_to_sats("0.000000005") == 1
+        assert _decimal_to_sats_8dp("0.000000005") == 1
 
     def test_accepts_int_and_float(self):
-        assert _decimal_to_sats(1) == 100_000_000
-        assert _decimal_to_sats(0.0005) == 50_000
+        assert _decimal_to_sats_8dp(1) == 100_000_000
+        assert _decimal_to_sats_8dp(0.0005) == 50_000
 
 
 class TestStatusHelpers:
@@ -144,6 +144,23 @@ class TestRecommendation:
         assert rec["recommendation"] == "sideshift"
         assert rec["from_network"] == "bitcoin"
         assert rec["to_network"] == "tron"
+
+    def test_same_coin_same_network_returns_none(self):
+        # Same (coin, network) on both sides is not a swap. Don't silently
+        # steer the caller at sideswap — surface the no-op so the bug is
+        # visible upstream.
+        rec = recommend_shift_or_swap("usdt", "liquid", "usdt", "liquid")
+        assert rec["recommendation"] == "none"
+        assert "nothing to swap" in rec["reason"].lower()
+
+    def test_same_pair_is_case_insensitive(self):
+        rec = recommend_shift_or_swap("USDT", "LIQUID", "usdt", "liquid")
+        assert rec["recommendation"] == "none"
+
+    def test_same_network_different_coin_is_still_a_swap(self):
+        # USDt on Liquid → L-BTC on Liquid is a real intra-Liquid swap.
+        rec = recommend_shift_or_swap("usdt", "liquid", "btc", "liquid")
+        assert rec["recommendation"] == "sideswap"
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +852,132 @@ class TestManagerSend:
         )
         assert shift.quote_id == "fresh_q"
         assert mock_urlopen.call_count == 2  # /quotes then /shifts/fixed
+
+    def test_send_rejects_liquid_non_btc_without_liquid_asset_id(self, manager_setup):
+        # Footgun guard: depositing USDt on Liquid without `liquid_asset_id`
+        # would silently send L-BTC to the SideShift deposit address. Must
+        # raise BEFORE any SideShift HTTP call so no custodial order is created.
+        mgr, wm, _, storage = manager_setup
+        with pytest.raises(ValueError, match="liquid_asset_id is required"):
+            mgr.send_shift(
+                deposit_coin="usdt",
+                deposit_network="liquid",
+                settle_coin="usdt",
+                settle_network="tron",
+                settle_address="TXYZ",
+                deposit_amount="100",
+                wallet_name="default",
+                # liquid_asset_id intentionally omitted
+            )
+        # No wallet send happened and no shift was persisted
+        assert wm.sent == []
+        assert storage.list_sideshift_shifts() == []
+
+    def test_send_rejects_liquid_non_btc_with_lbtc_asset_id(self, manager_setup):
+        # Closes a sub-footgun of the previous test: passing the L-BTC asset id
+        # explicitly for a non-L-BTC deposit. `_wallet_send` treats that as
+        # "no asset id" and falls back to L-BTC, so the guard must reject it
+        # as firmly as the missing case.
+        mgr, wm, _, storage = manager_setup
+        with pytest.raises(ValueError, match="liquid_asset_id is required"):
+            mgr.send_shift(
+                deposit_coin="usdt",
+                deposit_network="liquid",
+                settle_coin="usdt",
+                settle_network="tron",
+                settle_address="TXYZ",
+                deposit_amount="100",
+                wallet_name="default",
+                liquid_asset_id=L_BTC,  # L-BTC asset id — wrong for USDt deposit
+            )
+        assert wm.sent == []
+        assert storage.list_sideshift_shifts() == []
+
+    def test_send_btc_liquid_does_not_require_liquid_asset_id(self, manager_setup, monkeypatch):
+        # The BTC-on-Liquid (L-BTC) case still doesn't need `liquid_asset_id`,
+        # since the wallet's default send path is L-BTC. Bypass the allowlist
+        # for this test since (btc, liquid) is intentionally excluded.
+        monkeypatch.setenv("SIDESHIFT_ALLOW_ALL_NETWORKS", "1")
+        mgr, _, _, _ = manager_setup
+        with patch("aqua.sideshift.urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = [
+                _mock_response({"id": "q1", "depositAmount": "0.0005",
+                                "settleAmount": "100", "rate": "200000"}),
+                _mock_response({
+                    "id": "shift_lbtc_ok",
+                    "depositAddress": "lq1qdeposit",
+                    "depositAmount": "0.0005",
+                    "depositCoin": "BTC",
+                    "depositNetwork": "liquid",
+                    "status": "waiting",
+                }),
+            ]
+            # Should NOT raise — L-BTC sends fine without liquid_asset_id
+            mgr.send_shift(
+                deposit_coin="btc",
+                deposit_network="liquid",
+                settle_coin="usdt",
+                settle_network="tron",
+                settle_address="TXYZ",
+                deposit_amount="0.0005",
+                wallet_name="default",
+            )
+
+    def test_send_pre_validates_password_before_creating_shift(self, manager_setup):
+        # If the mnemonic is encrypted, a bad password must fail BEFORE any
+        # SideShift HTTP call — otherwise an orphan custodial order accumulates
+        # for every retry.
+        mgr, wm, _, storage = manager_setup
+        # Reach into storage to install an encrypted mnemonic on the test wallet.
+        # `encrypt_mnemonic` is the public path the rest of the codebase uses
+        # to produce the same stored format.
+        wallet = storage.load_wallet("default")
+        wallet.encrypted_mnemonic = storage.encrypt_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon "
+            "abandon abandon abandon abandon about",
+            password="correct horse",
+        )
+        storage.save_wallet(wallet)
+
+        with patch("aqua.sideshift.urllib.request.urlopen") as mock_urlopen:
+            with pytest.raises(Exception):
+                mgr.send_shift(
+                    deposit_coin="usdt",
+                    deposit_network="liquid",
+                    settle_coin="usdt",
+                    settle_network="tron",
+                    settle_address="TXYZ",
+                    deposit_amount="100",
+                    wallet_name="default",
+                    liquid_asset_id=USDT_LIQUID,
+                    password="WRONG",
+                )
+            # No HTTP call to SideShift was made
+            assert mock_urlopen.call_count == 0
+        # No shift persisted, no wallet send
+        assert wm.sent == []
+        assert storage.list_sideshift_shifts() == []
+
+    def test_send_rejects_missing_password_when_encrypted(self, manager_setup):
+        mgr, _, _, storage = manager_setup
+        wallet = storage.load_wallet("default")
+        wallet.encrypted_mnemonic = storage.encrypt_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon "
+            "abandon abandon abandon abandon about",
+            password="correct horse",
+        )
+        storage.save_wallet(wallet)
+        with pytest.raises(ValueError, match="Password required"):
+            mgr.send_shift(
+                deposit_coin="usdt",
+                deposit_network="liquid",
+                settle_coin="usdt",
+                settle_network="tron",
+                settle_address="TXYZ",
+                deposit_amount="100",
+                wallet_name="default",
+                liquid_asset_id=USDT_LIQUID,
+            )
 
     @patch("aqua.sideshift.urllib.request.urlopen")
     def test_send_with_override_env_var_allows_lbtc(self, mock_urlopen, manager_setup, monkeypatch):

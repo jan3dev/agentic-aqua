@@ -98,6 +98,8 @@ Both legs of a `sideshift_send` / `sideshift_receive` call must be in this set. 
 > ⚠️ **SideShift trust model**: Custodial. SideShift takes the deposit on the source chain and sends to your destination from their hot wallet. Always supply a refund address on sends (the manager does this automatically using the wallet's own deposit-chain address). On receives, strongly encourage the user to provide an external refund address — without one, a stuck shift requires manual intervention via SideShift's web UI.
 
 > ⚠️ **Memo networks**: Some networks (TON, Stellar, BNB Beacon, etc.) require a memo on the deposit. SideShift returns `depositMemo` in the order response for those. Surface it to the user clearly when present.
+
+> ⚠️ **Non-L-BTC Liquid deposits**: when `deposit_network="liquid"` and `deposit_coin != "btc"` (e.g. USDt-Liquid → USDt-Tron), `liquid_asset_id` must be passed and must be the asset's hex id, **not** the L-BTC policy asset id. Without it the wallet would default to L-BTC and silently broadcast the wrong asset to SideShift's deposit address. `sideshift_send` rejects both cases before contacting SideShift.
 ### SideSwap (BTC ↔ L-BTC Pegs and Liquid Asset Swaps)
 
 | Tool | Description | Parameters |

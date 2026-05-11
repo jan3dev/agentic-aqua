@@ -453,6 +453,22 @@ def recommend_shift_or_swap(
          "from_coin", "from_network", "to_coin", "to_network"}
     """
     fnet, tnet = from_network.lower(), to_network.lower()
+    fcoin, tcoin = from_coin.lower(), to_coin.lower()
+    # Same (coin, network) on both sides isn't a swap — neither service quotes
+    # it and a caller asking for one almost certainly has a bug. Surface the
+    # error rather than silently steering them at sideswap.
+    if (fcoin, fnet) == (tcoin, tnet):
+        return {
+            "recommendation": "none",
+            "reason": (
+                f"Same asset on the same network ({fcoin}-{fnet}) — there's "
+                "nothing to swap. Re-check the from/to arguments."
+            ),
+            "from_coin": from_coin,
+            "from_network": fnet,
+            "to_coin": to_coin,
+            "to_network": tnet,
+        }
     if fnet in {"bitcoin", "liquid"} and tnet in {"bitcoin", "liquid"}:
         # Both legs are on networks SideSwap can handle natively.
         return {
@@ -640,16 +656,37 @@ class SideShiftManager:
         _check_pair_allowed(deposit_coin, deposit_network, side="deposit")
         _check_pair_allowed(settle_coin, settle_network, side="settle")
 
+        # Guard against the silent-L-BTC footgun: when depositing a non-L-BTC
+        # asset on Liquid (e.g. USDt-Liquid), the wallet's `send` method
+        # defaults to L-BTC unless `liquid_asset_id` is set. Without this
+        # check, a missing `liquid_asset_id` would broadcast L-BTC to the
+        # SideShift deposit address — SideShift wouldn't credit the shift
+        # and the funds would be stuck pending manual refund.
+        if deposit_network_l == "liquid" and deposit_coin.lower() != "btc":
+            if not liquid_asset_id or liquid_asset_id == LBTC_ASSET_ID:
+                raise ValueError(
+                    f"liquid_asset_id is required when depositing a non-L-BTC "
+                    f"Liquid asset (deposit_coin={deposit_coin!r}) and must not "
+                    "be the L-BTC policy asset id. Without it, the wallet "
+                    "would send L-BTC to the deposit address."
+                )
+
         wallet_data = self.storage.load_wallet(wallet_name)
         if not wallet_data:
             raise ValueError(f"Wallet '{wallet_name}' not found")
         if wallet_data.watch_only:
             raise ValueError("Watch-only wallet cannot sign a SideShift deposit")
+        # Pre-validate the mnemonic decryption BEFORE creating the SideShift
+        # order. Without this, a wrong password only surfaces at broadcast
+        # time — leaving an orphan custodial order behind for every retry.
         if wallet_data.encrypted_mnemonic and self.storage.is_mnemonic_encrypted(
             wallet_data.encrypted_mnemonic
         ):
             if not password:
                 raise ValueError("Password required to decrypt mnemonic")
+            # retrieve_mnemonic raises on a bad password; let it propagate
+            # before we contact SideShift.
+            self.storage.retrieve_mnemonic(wallet_data.encrypted_mnemonic, password)
 
         # Refund address: same wallet, same network as the deposit. If the
         # shift fails for any reason, the funds come back to where they came
@@ -694,7 +731,7 @@ class SideShiftManager:
 
         # Broadcast the deposit. SideShift's depositAmount is in human-readable
         # decimal (e.g. "0.0005"); our wallet sends are in sats. Convert.
-        deposit_sats = _decimal_to_sats(shift_resp["depositAmount"])
+        deposit_sats = _decimal_to_sats_8dp(shift_resp["depositAmount"])
         try:
             txid = self._wallet_send(
                 deposit_network_l,
@@ -891,12 +928,17 @@ class SideShiftManager:
 # ---------------------------------------------------------------------------
 
 
-def _decimal_to_sats(decimal_str: str | float | int) -> int:
+def _decimal_to_sats_8dp(decimal_str: str | float | int) -> int:
     """Convert a SideShift human-readable amount (e.g. "0.0005") to integer sats.
 
-    SideShift uses decimal strings to preserve precision; our wallet APIs
-    take integer sats (1 sat = 1e-8 of the asset). 8 decimal places is the
-    standard for both BTC and Liquid assets we care about.
+    Hardcoded to 8 decimal places — the precision used by BTC and the Liquid
+    assets we sign on (L-BTC + USDt-Liquid). The broadcast path runs only on
+    `bitcoin` or `liquid` networks, so callers should never pass values from
+    higher-precision chains (e.g. ETH at 18dp) here.
+
+    Rounding is HALF_UP: SideShift quotes are pre-rounded to the chain's
+    native precision in practice, so the sub-sat cases this affects are rare;
+    if one occurs, we'd rather over-pay 1 sat than land below `depositMin`.
     """
     from decimal import Decimal, ROUND_HALF_UP
 

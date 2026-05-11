@@ -1037,7 +1037,9 @@ def sideshift_recommend(
         to_network: settle network
 
     Returns:
-        recommendation ("sideswap" | "sideshift"), reason, plus the input fields.
+        recommendation ("sideswap" | "sideshift" | "none"), reason, plus the
+        input fields. "none" is returned when both legs are the same
+        (coin, network) — there's nothing to swap.
     """
     from .sideshift import recommend_shift_or_swap
 
