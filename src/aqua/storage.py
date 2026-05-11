@@ -83,6 +83,7 @@ class Storage:
         self.swaps_dir = self.base_dir / "swaps"
         self.ankara_swaps_dir = self.base_dir / "ankara_swaps"
         self.lightning_swaps_dir = self.base_dir / "lightning_swaps"
+        self.sideshift_shifts_dir = self.base_dir / "sideshift_shifts"
         self.sideswap_pegs_dir = self.base_dir / "sideswap_pegs"
         self.sideswap_swaps_dir = self.base_dir / "sideswap_swaps"
         self.config_path = self.base_dir / "config.json"
@@ -102,6 +103,8 @@ class Storage:
         os.chmod(self.ankara_swaps_dir, 0o700)
         self.lightning_swaps_dir.mkdir(exist_ok=True, mode=0o700)
         os.chmod(self.lightning_swaps_dir, 0o700)
+        self.sideshift_shifts_dir.mkdir(exist_ok=True, mode=0o700)
+        os.chmod(self.sideshift_shifts_dir, 0o700)
         self.sideswap_pegs_dir.mkdir(exist_ok=True, mode=0o700)
         os.chmod(self.sideswap_pegs_dir, 0o700)
         self.sideswap_swaps_dir.mkdir(exist_ok=True, mode=0o700)
@@ -335,6 +338,40 @@ class Storage:
         return [
             p.stem
             for p in self.lightning_swaps_dir.glob("*.json")
+            if SWAP_ID_PATTERN.fullmatch(p.stem)
+        ]
+
+    # SideShift shift operations
+
+    def _sideshift_shift_path(self, shift_id: str) -> Path:
+        """Get path to SideShift shift file, validating the ID to prevent path traversal."""
+        if not SWAP_ID_PATTERN.fullmatch(shift_id):
+            raise ValueError(
+                f"Invalid SideShift shift ID '{shift_id}'. "
+                "Use only letters, numbers, hyphens and underscores (max 128 chars)."
+            )
+        return self.sideshift_shifts_dir / f"{shift_id}.json"
+
+    def save_sideshift_shift(self, shift) -> None:
+        """Save SideShift shift data for recovery."""
+        path = self._sideshift_shift_path(shift.shift_id)
+        self._atomic_write_json(path, shift.to_dict())
+
+    def load_sideshift_shift(self, shift_id: str):
+        """Load SideShift shift data. Returns SideShiftShift or None."""
+        from .sideshift import SideShiftShift
+
+        path = self._sideshift_shift_path(shift_id)
+        if not path.exists():
+            return None
+        with open(path) as f:
+            return SideShiftShift.from_dict(json.load(f))
+
+    def list_sideshift_shifts(self) -> list[str]:
+        """List all SideShift shift IDs."""
+        return [
+            p.stem
+            for p in self.sideshift_shifts_dir.glob("*.json")
             if SWAP_ID_PATTERN.fullmatch(p.stem)
         ]
 

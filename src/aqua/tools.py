@@ -28,6 +28,7 @@ EXPLORER_URLS = {
 _manager: WalletManager | None = None
 _btc_manager: BitcoinWalletManager | None = None
 _lightning_manager: "LightningManager | None" = None
+_sideshift_manager: "SideShiftManager | None" = None
 _sideswap_peg_manager: "SideSwapPegManager | None" = None
 _sideswap_swap_manager: "SideSwapSwapManager | None" = None
 
@@ -60,6 +61,19 @@ def get_lightning_manager() -> "LightningManager":
         )
     return _lightning_manager
 
+
+def get_sideshift_manager() -> "SideShiftManager":
+    """Get or create SideShift manager (shares storage + wallet managers)."""
+    global _sideshift_manager
+    if _sideshift_manager is None:
+        from .sideshift import SideShiftManager
+
+        _sideshift_manager = SideShiftManager(
+            storage=get_manager().storage,
+            wallet_manager=get_manager(),
+            btc_wallet_manager=get_btc_manager(),
+        )
+    return _sideshift_manager
 
 def get_sideswap_peg_manager() -> "SideSwapPegManager":
     """Get or create SideSwap peg manager (shares storage + wallet managers)."""
@@ -790,6 +804,246 @@ def lightning_transaction_status(swap_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# SideShift (custodial cross-chain swaps via sideshift.ai)
+# ---------------------------------------------------------------------------
+
+
+def sideshift_list_coins() -> dict[str, Any]:
+    """List the coins and networks SideShift supports.
+
+    Use this to discover valid (coin, network) identifiers for the other
+    SideShift tools. Returns the SideShift response unchanged — each entry
+    has `coin`, `name`, `networks`, `hasMemo` (whether deposits to that
+    chain need a memo), `fixedOnly`/`variableOnly`, etc.
+
+    Returns:
+        coins: list of {coin, name, networks, hasMemo, ...}
+        count: number of entries
+    """
+    coins = get_sideshift_manager().list_coins()
+    return {"coins": coins, "count": len(coins)}
+
+
+def sideshift_pair_info(
+    from_coin: str,
+    from_network: str,
+    to_coin: str,
+    to_network: str,
+    amount: str | None = None,
+) -> dict[str, Any]:
+    """Get rate / min / max for a SideShift pair.
+
+    Args:
+        from_coin: Deposit coin ticker (case-insensitive, e.g. "USDT")
+        from_network: Deposit network (case-insensitive, e.g. "tron", "liquid", "bitcoin", "ethereum")
+        to_coin: Settle coin ticker
+        to_network: Settle network
+        amount: Optional reference amount in deposit-coin units (decimal string).
+            Default reference is approximately $500 USD if omitted.
+
+    Returns:
+        rate (string), min (string), max (string), depositCoin, settleCoin,
+        depositNetwork, settleNetwork
+    """
+    return get_sideshift_manager().pair_info(
+        from_coin, from_network, to_coin, to_network, amount=amount
+    )
+
+
+def sideshift_quote(
+    deposit_coin: str,
+    deposit_network: str,
+    settle_coin: str,
+    settle_network: str,
+    deposit_amount: str | None = None,
+    settle_amount: str | None = None,
+) -> dict[str, Any]:
+    """Request a fixed-rate quote (~15 minute TTL).
+
+    Provide exactly one of `deposit_amount` (user is sending X) or
+    `settle_amount` (user wants to receive exactly X). Amounts are decimal
+    strings to preserve precision.
+
+    Returns:
+        SideShift's quote response: {id, expiresAt, depositAmount,
+        settleAmount, rate, ...}.
+
+    Use this BEFORE `sideshift_send` to confirm the quote with the user.
+    """
+    return get_sideshift_manager().quote(
+        deposit_coin=deposit_coin,
+        deposit_network=deposit_network,
+        settle_coin=settle_coin,
+        settle_network=settle_network,
+        deposit_amount=deposit_amount,
+        settle_amount=settle_amount,
+    )
+
+
+def sideshift_send(
+    deposit_coin: str,
+    deposit_network: str,
+    settle_coin: str,
+    settle_network: str,
+    settle_address: str,
+    deposit_amount: str | None = None,
+    settle_amount: str | None = None,
+    wallet_name: str = "default",
+    password: str | None = None,
+    liquid_asset_id: str | None = None,
+    settle_memo: str | None = None,
+    refund_memo: str | None = None,
+    quote_id: str | None = None,
+) -> dict[str, Any]:
+    """Send funds from our wallet via a SideShift fixed-rate shift.
+
+    Flow:
+      1. Get a fixed-rate quote (matches the agreed amounts).
+      2. Create the shift; SideShift returns a deposit address on the deposit chain.
+      3. Broadcast the deposit from the local wallet (via lw_send / btc_send / lw_send_asset).
+
+    The deposit chain MUST be one of {bitcoin, liquid} — those are the only
+    chains we can sign on. Both legs (deposit + settle) must also be in the
+    curated pair allowlist mirroring AQUA Flutter: USDt on
+    {ethereum, tron, bsc, solana, polygon, ton, liquid} or BTC on bitcoin.
+    L-BTC (btc-liquid) is excluded — use SideSwap for L-BTC ↔ external.
+    Set `SIDESHIFT_ALLOW_ALL_NETWORKS=1` to bypass.
+
+    A refund address is always set automatically: the wallet's own deposit-
+    chain address, so a stuck shift refunds back to the source.
+
+    Args:
+        deposit_coin: e.g. "btc" (for L-BTC use coin="btc", network="liquid")
+        deposit_network: "bitcoin" | "liquid"
+        settle_coin: any SideShift coin ticker
+        settle_network: any SideShift network
+        settle_address: where SideShift sends the converted asset
+        deposit_amount / settle_amount: provide exactly one, decimal strings
+        wallet_name: local wallet to sign with
+        password: mnemonic decryption password (if encrypted)
+        liquid_asset_id: required when deposit is a non-L-BTC Liquid asset
+            (e.g. USDt-Liquid: pass the asset id hex)
+        settle_memo / refund_memo: required for memo networks (TON, BNB, etc.)
+        quote_id: optional fixed-rate quote id from a prior `sideshift_quote`
+            call. Pass `preview["id"]` after the user confirms the preview to
+            ensure the shift executes at the rate the user just saw. Without
+            it, sideshift_send fetches a fresh quote — fine for non-interactive
+            flows, but the rate may have moved since any earlier preview.
+
+    Returns:
+        shift_id, deposit_hash (txid we broadcast), deposit_address,
+        deposit_amount, settle_amount, rate, status, expires_at
+    """
+    shift = get_sideshift_manager().send_shift(
+        deposit_coin=deposit_coin,
+        deposit_network=deposit_network,
+        settle_coin=settle_coin,
+        settle_network=settle_network,
+        settle_address=settle_address,
+        deposit_amount=deposit_amount,
+        settle_amount=settle_amount,
+        wallet_name=wallet_name,
+        password=password,
+        liquid_asset_id=liquid_asset_id,
+        settle_memo=settle_memo,
+        refund_memo=refund_memo,
+        quote_id=quote_id,
+    )
+    return shift.to_dict()
+
+
+def sideshift_receive(
+    deposit_coin: str,
+    deposit_network: str,
+    settle_coin: str,
+    settle_network: str,
+    wallet_name: str = "default",
+    external_refund_address: str | None = None,
+    external_refund_memo: str | None = None,
+    settle_memo: str | None = None,
+) -> dict[str, Any]:
+    """Receive into our wallet via a SideShift variable-rate shift.
+
+    SideShift returns a deposit address on the deposit chain. The user (or
+    external sender) sends to that address from any wallet/chain. The rate
+    is set when the deposit confirms; SideShift settles to the wallet's
+    Liquid or Bitcoin address.
+
+    The settle chain MUST be one of {bitcoin, liquid} — those are the only
+    chains we hold addresses for. Both legs (deposit + settle) must also be
+    in the curated pair allowlist mirroring AQUA Flutter: USDt on
+    {ethereum, tron, bsc, solana, polygon, ton, liquid} or BTC on bitcoin.
+    Set `SIDESHIFT_ALLOW_ALL_NETWORKS=1` to bypass.
+
+    Args:
+        deposit_coin: any SideShift coin (e.g. "USDT")
+        deposit_network: any SideShift network (e.g. "tron", "ethereum")
+        settle_coin: "btc" or "usdt" (for Liquid: settle_network="liquid"; for Bitcoin mainchain: settle_network="bitcoin")
+        settle_network: "bitcoin" | "liquid"
+        wallet_name: local wallet to receive into
+        external_refund_address: STRONGLY RECOMMENDED — where SideShift
+            refunds if the deposit fails. Without one a stuck shift requires
+            manual web UI intervention.
+
+    Returns:
+        shift_id, deposit_address, deposit_min, deposit_max, deposit_memo
+        (if applicable), settle_address, status, expires_at
+    """
+    shift = get_sideshift_manager().receive_shift(
+        deposit_coin=deposit_coin,
+        deposit_network=deposit_network,
+        settle_coin=settle_coin,
+        settle_network=settle_network,
+        wallet_name=wallet_name,
+        external_refund_address=external_refund_address,
+        external_refund_memo=external_refund_memo,
+        settle_memo=settle_memo,
+    )
+    return shift.to_dict()
+
+
+def sideshift_status(shift_id: str) -> dict[str, Any]:
+    """Check the status of a SideShift shift order.
+
+    Pings SideShift, refreshes the persisted record, and returns the latest
+    state. Status values (lowercase): waiting, pending, processing, settling,
+    settled, refund, refunding, refunded, expired, review, multiple.
+
+    Returns the full shift record plus `is_final`, `is_success`, `is_failed`
+    so callers don't need to memorise the state machine.
+
+    Args:
+        shift_id: ID returned from sideshift_send or sideshift_receive
+    """
+    return get_sideshift_manager().status(shift_id)
+
+
+def sideshift_recommend(
+    from_coin: str,
+    from_network: str,
+    to_coin: str,
+    to_network: str,
+) -> dict[str, Any]:
+    """Recommend SideSwap vs SideShift for a cross-asset conversion.
+
+    SideSwap is preferred when both legs are on Bitcoin or Liquid (atomic /
+    near-trustless, lower fees). SideShift is the fallback when at least one
+    leg is on a non-Liquid chain (Ethereum, Tron, etc.).
+
+    Args:
+        from_coin: deposit coin ticker (case-insensitive)
+        from_network: deposit network (e.g. "tron", "liquid")
+        to_coin: settle coin ticker
+        to_network: settle network
+
+    Returns:
+        recommendation ("sideswap" | "sideshift" | "none"), reason, plus the
+        input fields. "none" is returned when both legs are the same
+        (coin, network) — there's nothing to swap.
+    """
+    from .sideshift import recommend_shift_or_swap
+
+    return recommend_shift_or_swap(from_coin, from_network, to_coin, to_network)
 # SideSwap (Liquid asset swaps + BTC ↔ L-BTC pegs)
 # ---------------------------------------------------------------------------
 
@@ -1161,6 +1415,13 @@ TOOLS = {
     "lightning_receive": lightning_receive,
     "lightning_send": lightning_send,
     "lightning_transaction_status": lightning_transaction_status,
+    "sideshift_list_coins": sideshift_list_coins,
+    "sideshift_pair_info": sideshift_pair_info,
+    "sideshift_quote": sideshift_quote,
+    "sideshift_send": sideshift_send,
+    "sideshift_receive": sideshift_receive,
+    "sideshift_status": sideshift_status,
+    "sideshift_recommend": sideshift_recommend,
     "sideswap_server_status": sideswap_server_status,
     "sideswap_peg_quote": sideswap_peg_quote,
     "sideswap_peg_in": sideswap_peg_in,

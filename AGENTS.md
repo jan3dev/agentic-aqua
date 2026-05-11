@@ -16,9 +16,9 @@ AI Assistant ←→ MCP Server (Python) ←→ LWK (Liquid) ──→ Electrum/E
 
 No local server required. Liquid uses Electrum/Esplora; Bitcoin uses Esplora only. All via Blockstream's public infrastructure.
 
-## Tools (32 total)
+## Tools (39 total)
 
-Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified tools are `unified_*`; Lightning tools are `lightning_*`; SideSwap tools are `sideswap_*`.
+Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified tools are `unified_*`; Lightning tools are `lightning_*`; SideSwap tools are `sideswap_*`; SideShift cross-chain tools are `sideshift_*`.
 
 ### Wallet Management
 
@@ -74,6 +74,32 @@ Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified 
 | `lightning_send` | Pay a Lightning invoice using L-BTC via Boltz submarine swap. Fees: ~0.1% + miner fees. Limits: 100 – 25,000,000 sats | `invoice`: BOLT11 string (lnbc... or lntb...), `wallet_name`: optional, `password`: optional |
 | `lightning_transaction_status` | Check status of a Lightning swap (send or receive). For receive: auto-claims L-BTC when settled. For send: retrieves preimage when claimed. | `swap_id`: string |
 
+### SideShift (Custodial Cross-Chain Swaps)
+
+SideShift.ai is a custodial cross-chain swap service that complements SideSwap (which is Liquid-only or pegs through the Liquid Federation). Use SideShift for pairs where at least one leg is on a non-Liquid chain (Ethereum, Tron, Solana, USDt-on-other-chains, etc.). The trust model is "trust SideShift the company" — they take the deposit and send the converted asset from their hot wallet — so it's not as trustless as SideSwap. Use `sideshift_recommend` to decide.
+
+**Curated pair allowlist** (mirrors AQUA Flutter's `SideshiftAsset` factories in `lib/features/sideshift/models/sideshift_assets.dart`):
+
+- **USDt** on `ethereum`, `tron`, `bsc`, `solana`, `polygon`, `ton`, `liquid`
+- **BTC** on `bitcoin`
+
+Both legs of a `sideshift_send` / `sideshift_receive` call must be in this set. L-BTC (`btc-liquid`) is intentionally excluded — for L-BTC ↔ external use SideSwap, or chain through USDt-Liquid (e.g. L-BTC → USDt-Liquid via SideSwap, then USDt-Liquid → USDt-Tron via SideShift). Set `SIDESHIFT_ALLOW_ALL_NETWORKS=1` in the environment to bypass for testing or power use. `sideshift_pair_info`, `sideshift_quote`, `sideshift_list_coins`, and `sideshift_status` are not affected — they're discovery / read-only and may reference pairs outside the allowlist.
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `sideshift_list_coins` | List supported coins and networks | (none) |
+| `sideshift_pair_info` | Rate / min / max for a pair | `from_coin`, `from_network`, `to_coin`, `to_network`, `amount`: optional |
+| `sideshift_quote` | Fixed-rate quote (~15 min TTL); use BEFORE `sideshift_send` | `deposit_coin`, `deposit_network`, `settle_coin`, `settle_network`, exactly one of `deposit_amount`/`settle_amount` (decimal strings) |
+| `sideshift_send` | Send funds OUT via fixed-rate shift; deposit chain MUST be `bitcoin` or `liquid`; refund address is set to the wallet's own deposit-chain address automatically | `deposit_coin`, `deposit_network` (bitcoin/liquid), `settle_coin`, `settle_network`, `settle_address`, one of `deposit_amount`/`settle_amount`, `wallet_name`: optional, `password`: optional, `liquid_asset_id`: optional (required for non-L-BTC Liquid assets like USDt-Liquid), `settle_memo`/`refund_memo`: optional |
+| `sideshift_receive` | Receive funds IN via variable-rate shift; settle chain MUST be `bitcoin` or `liquid`; STRONGLY recommend passing `external_refund_address` | `deposit_coin`, `deposit_network`, `settle_coin`, `settle_network` (bitcoin/liquid), `wallet_name`: optional, `external_refund_address`: optional but recommended, `external_refund_memo`/`settle_memo`: optional |
+| `sideshift_status` | Check status of a shift order (returns `is_final`, `is_success`, `is_failed`) | `shift_id`: string |
+| `sideshift_recommend` | Helper: SideSwap when both legs are Bitcoin/Liquid (atomic), SideShift otherwise (custodial) | `from_coin`, `from_network`, `to_coin`, `to_network` |
+
+> ⚠️ **SideShift trust model**: Custodial. SideShift takes the deposit on the source chain and sends to your destination from their hot wallet. Always supply a refund address on sends (the manager does this automatically using the wallet's own deposit-chain address). On receives, strongly encourage the user to provide an external refund address — without one, a stuck shift requires manual intervention via SideShift's web UI.
+
+> ⚠️ **Memo networks**: Some networks (TON, Stellar, BNB Beacon, etc.) require a memo on the deposit. SideShift returns `depositMemo` in the order response for those. Surface it to the user clearly when present.
+
+> ⚠️ **Non-L-BTC Liquid deposits**: when `deposit_network="liquid"` and `deposit_coin != "btc"` (e.g. USDt-Liquid → USDt-Tron), `liquid_asset_id` must be passed and must be the asset's hex id, **not** the L-BTC policy asset id. Without it the wallet would default to L-BTC and silently broadcast the wrong asset to SideShift's deposit address. `sideshift_send` rejects both cases before contacting SideShift.
 ### SideSwap (BTC ↔ L-BTC Pegs and Liquid Asset Swaps)
 
 | Tool | Description | Parameters |
@@ -101,7 +127,7 @@ MCP resources provide static documentation to AI assistants.
 | `aqua://docs/networks` | Network Reference | Bitcoin and Liquid network details, address formats, explorers, common assets |
 | `aqua://docs/security` | Security Best Practices | Password usage, at-rest encryption, backup, watch-only wallets, recovery |
 
-## Prompts (17 total)
+## Prompts (19 total)
 
 MCP prompts provide pre-built conversation starters for common workflows.
 
@@ -121,6 +147,8 @@ MCP prompts provide pre-built conversation starters for common workflows.
 | `export_descriptor` | Export descriptor for watch-only wallet | `wallet_name`: optional |
 | `delete_wallet` | Safely delete a wallet with balance check and seed backup reminder | `wallet_name`: required |
 | `pay_lightning` | Pay a Lightning invoice using Liquid Bitcoin | `wallet_name`: optional |
+| `cross_chain_send` | Send Liquid/BTC funds out to another chain via SideShift (e.g. USDt-Liquid → USDt-Tron, L-BTC → ETH). Walks through quote, confirmation, and broadcast. | `wallet_name`: optional |
+| `cross_chain_receive` | Receive funds into Liquid/BTC from another chain via SideShift (e.g. USDt-Tron → USDt-Liquid). Returns a deposit address for the external sender. | `wallet_name`: optional |
 | `peg_in` | Move BTC to Liquid (BTC → L-BTC) via SideSwap peg-in, with quote, recommendation, and time warning | `wallet_name`: optional |
 | `peg_out` | Move L-BTC to Bitcoin (L-BTC → BTC) via SideSwap peg-out, with quote and time estimate | `wallet_name`: optional |
 | `swap_assets` | Quote a Liquid asset swap (e.g. L-BTC ↔ USDt) via SideSwap (read-only; execution requires AQUA mobile or sideswap.io) | (none) |
@@ -140,6 +168,8 @@ Wallet data stored in `~/.aqua/`:
 │   └── {swap_id}.json   # Contains swap details + preimage when settled
 ├── lightning_swaps/     # Unified Lightning swap data (send & receive)
 │   └── {swap_id}.json   # Contains swap details + status + optional preimage
+├── sideshift_shifts/    # SideShift cross-chain shift orders
+│   └── {shift_id}.json  # Contains direction, type, addresses, status, txids
 ├── sideswap_pegs/       # SideSwap peg orders (peg-in and peg-out)
 │   └── {order_id}.json  # Contains order, addresses, status, tx_state, payout_txid
 ├── sideswap_swaps/      # SideSwap atomic asset swap orders (L-BTC → asset)
@@ -365,6 +395,35 @@ Ankara backend (`test.aquabtc.com`) provides Lightning → L-BTC swaps (receive 
 
 **Amount Limits**: 100 – 25,000,000 sats (no authentication required)
 
+## SideShift Integration
+
+Technical detail for `src/aqua/sideshift.py`. Tool semantics, trust model, refund-address guidance, and memo-network warnings live in the **SideShift (Custodial Cross-Chain Swaps)** section under Tools.
+
+**API**: `https://sideshift.ai/api/v2`, REST/JSON, anonymous (no auth), affiliate ID identifies us in request bodies.
+
+**Affiliate ID**: `PVmPh4Mp3` — same one AQUA Flutter wallet ships with (publicly committed in their `lib/config/constants/api_keys.dart`). Commission accrues to JAN3's SideShift account. Pass an empty string to `SideShiftClient(affiliate_id="")` to disable affiliate identification (no commission).
+
+**Curated pair allowlist enforcement**: `ALLOWED_PAIRS` in `src/aqua/sideshift.py` is the source of truth. `send_shift` / `receive_shift` validate both legs and raise `ValueError` for off-allowlist pairs. Set `SIDESHIFT_ALLOW_ALL_NETWORKS=1` to bypass. Drift from AQUA Flutter's `SideshiftAsset` factories is detected by `tests/test_sideshift.py::TestAllowedPairs::test_allowlist_matches_aqua_flutter` so any change forces a conscious update on both sides.
+
+**Endpoints used**:
+- `GET /v2/coins` — supported coins + networks
+- `GET /v2/permissions` — geo / availability check
+- `GET /v2/pair/{from}/{to}` — rate, min, max for a pair (path uses `coin-network` IDs lowercase, e.g. `usdt-tron`)
+- `POST /v2/quotes` — fixed quote (~15 min TTL)
+- `POST /v2/shifts/fixed` — create fixed shift from a quote
+- `POST /v2/shifts/variable` — create variable shift (no quote required; rate set when deposit confirms)
+- `GET /v2/shifts/{id}` — shift status
+
+**Wire-format quirks**:
+- Coin tickers are uppercase on the wire (`USDT`, `BTC`); networks are lowercase (`tron`, `liquid`, `bitcoin`).
+- L-BTC is identified as `coin: "BTC", network: "liquid"` (NOT `lbtc-liquid`).
+- USDt-Liquid is identified as `coin: "USDT", network: "liquid"`.
+- All amounts are decimal strings (e.g. `"0.0005"`, `"100"`) to preserve precision. The manager converts to integer sats internally before calling our wallet send methods.
+- Memo-network deposits surface as `depositMemo` in the order response. For sends targeting a memo-network settle chain, `settle_memo` must be supplied upfront.
+
+**Status state machine** (lowercase): `waiting` → `pending` → `processing` → `settling` → `settled` (success). Failure paths: `refund` → `refunding` → `refunded`, or `expired`. Helpers: `shift_is_final`, `shift_is_success`, `shift_is_failed`.
+
+**Deposit chain limitation**: We can only sign on Bitcoin and Liquid, so `sideshift_send` requires `deposit_network ∈ {bitcoin, liquid}`. For receives, only `settle_network ∈ {bitcoin, liquid}` (we hold addresses there). For everything else, the user provides an external address.
 ## SideSwap Integration
 
 SideSwap (`sideswap.io`) provides BTC ↔ L-BTC pegs and Liquid asset swaps via WebSocket JSON-RPC.
@@ -556,12 +615,13 @@ agentic-aqua/
 │   └── aqua/
 │       ├── __init__.py
 │       ├── server.py   # MCP server entry point (tools, resources, prompts)
-│       ├── tools.py    # Tool implementations (lw_*, btc_*, unified_*, lightning_*, sideswap_*)
+│       ├── tools.py    # Tool implementations (lw_*, btc_*, unified_*, lightning_*, sideswap_*, sideshift_*)
 │       ├── wallet.py   # Liquid wallet (LWK)
 │       ├── bitcoin.py  # Bitcoin wallet (BDK)
 │       ├── lightning.py # Lightning abstraction layer (unified send/receive manager)
 │       ├── boltz.py    # Boltz Exchange integration (submarine swaps, send)
 │       ├── ankara.py   # Ankara backend integration (Lightning receive)
+│       ├── sideshift.py # SideShift.ai integration (custodial cross-chain swaps)
 │       ├── sideswap.py # SideSwap WS+HTTP client, peg manager, swap quoting
 │       ├── assets.py   # Asset registry
 │       ├── storage.py  # Persistence layer (encryption, config, wallet data)
@@ -571,6 +631,7 @@ agentic-aqua/
 │           ├── liquid.py     # `aqua liquid …`
 │           ├── btc.py        # `aqua btc …`
 │           ├── lightning.py  # `aqua lightning …`
+|           ├── sideshift.py  # `aqua sideshift …` (cross-chain swap commands)
 │           ├── sideswap.py   # `aqua sideswap …` (pegs + atomic swaps)
 │           ├── wallet.py     # `aqua wallet …`
 │           ├── serve.py      # `aqua serve` (MCP server)
@@ -583,6 +644,7 @@ agentic-aqua/
     ├── test_bitcoin.py
     ├── test_boltz.py
     ├── test_ankara.py
+    ├── test_sideshift.py
     ├── test_sideswap.py
     └── test_server.py
 ```

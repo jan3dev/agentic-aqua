@@ -731,6 +731,164 @@ TOOL_SCHEMAS = {
             "required": ["order_id"],
         },
     },
+    "sideshift_list_coins": {
+        "description": (
+            "List the coins and networks SideShift supports for cross-chain swaps. "
+            "Use to discover valid (coin, network) IDs for the other sideshift_* tools."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "sideshift_pair_info": {
+        "description": (
+            "Get rate, min, and max for a SideShift pair (e.g. USDt-Liquid → USDt-Tron). "
+            "Returns decimal-string rate / min / max in deposit-coin units."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "from_coin": {"type": "string", "description": "Deposit coin ticker (e.g. 'USDT')"},
+                "from_network": {"type": "string", "description": "Deposit network (e.g. 'liquid', 'tron', 'ethereum')"},
+                "to_coin": {"type": "string", "description": "Settle coin ticker"},
+                "to_network": {"type": "string", "description": "Settle network"},
+                "amount": {
+                    "type": "string",
+                    "description": "Optional reference amount in deposit-coin units (decimal string)",
+                },
+            },
+            "required": ["from_coin", "from_network", "to_coin", "to_network"],
+        },
+    },
+    "sideshift_quote": {
+        "description": (
+            "Request a fixed-rate SideShift quote (~15 min TTL). Provide exactly one "
+            "of deposit_amount or settle_amount as a decimal string. Use BEFORE "
+            "sideshift_send to confirm the quote with the user."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "deposit_coin": {"type": "string"},
+                "deposit_network": {"type": "string"},
+                "settle_coin": {"type": "string"},
+                "settle_network": {"type": "string"},
+                "deposit_amount": {"type": "string", "description": "User sends this much (decimal string)"},
+                "settle_amount": {"type": "string", "description": "User receives this much (decimal string)"},
+            },
+            "required": ["deposit_coin", "deposit_network", "settle_coin", "settle_network"],
+        },
+    },
+    "sideshift_send": {
+        "description": (
+            "Send funds out via SideShift. Gets a fixed-rate quote, creates the shift, "
+            "and broadcasts the deposit from the local wallet. Deposit chain MUST be "
+            "'bitcoin' or 'liquid'. Both legs must be in the curated allowlist (USDt on "
+            "ethereum/tron/bsc/solana/polygon/ton/liquid, or BTC on bitcoin) — mirrors "
+            "AQUA Flutter's supported pairs. Set SIDESHIFT_ALLOW_ALL_NETWORKS=1 to bypass. "
+            "A refund address is set automatically (the wallet's own deposit-chain "
+            "address). For non-L-BTC Liquid assets (e.g. USDt-Liquid), pass liquid_asset_id. "
+            "ALWAYS call sideshift_quote first and confirm the price with the user."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "deposit_coin": {"type": "string", "description": "L-BTC: 'btc' (network='liquid'); BTC: 'btc'; USDt-Liquid: 'usdt'"},
+                "deposit_network": {
+                    "type": "string",
+                    "enum": ["bitcoin", "liquid"],
+                    "description": "Chain we sign on",
+                },
+                "settle_coin": {"type": "string"},
+                "settle_network": {"type": "string"},
+                "settle_address": {"type": "string", "description": "Where SideShift sends the converted asset"},
+                "deposit_amount": {"type": "string"},
+                "settle_amount": {"type": "string"},
+                "wallet_name": {"type": "string", "default": "default"},
+                "password": {"type": "string", "description": "Password to decrypt mnemonic (if encrypted)"},
+                "liquid_asset_id": {
+                    "type": "string",
+                    "description": "Hex asset id; required when sending a non-L-BTC Liquid asset",
+                },
+                "settle_memo": {"type": "string", "description": "Required for memo networks (TON, BNB, etc.)"},
+                "refund_memo": {"type": "string"},
+                "quote_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional fixed-rate quote id from a prior sideshift_quote "
+                        "call. Pass this after the user confirms the preview so the "
+                        "shift executes at the same rate they saw — without it, the "
+                        "tool fetches a fresh quote and the rate may have moved."
+                    ),
+                },
+            },
+            "required": [
+                "deposit_coin", "deposit_network", "settle_coin",
+                "settle_network", "settle_address",
+            ],
+        },
+    },
+    "sideshift_receive": {
+        "description": (
+            "Receive into the local wallet via a SideShift variable-rate shift. "
+            "Returns a deposit address on the deposit chain — the user (or external "
+            "sender) sends to it from any wallet. Settle chain MUST be 'bitcoin' or "
+            "'liquid'. Both legs must be in the curated allowlist (USDt on "
+            "ethereum/tron/bsc/solana/polygon/ton/liquid, or BTC on bitcoin) — mirrors "
+            "AQUA Flutter's supported pairs. Set SIDESHIFT_ALLOW_ALL_NETWORKS=1 to bypass. "
+            "STRONGLY RECOMMEND passing external_refund_address (the deposit-side "
+            "sender's address) so a stuck shift can refund automatically."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "deposit_coin": {"type": "string"},
+                "deposit_network": {"type": "string"},
+                "settle_coin": {"type": "string", "description": "'btc' or 'usdt' typically"},
+                "settle_network": {
+                    "type": "string",
+                    "enum": ["bitcoin", "liquid"],
+                },
+                "wallet_name": {"type": "string", "default": "default"},
+                "external_refund_address": {
+                    "type": "string",
+                    "description": "Deposit-chain refund address (strongly recommended)",
+                },
+                "external_refund_memo": {"type": "string"},
+                "settle_memo": {"type": "string"},
+            },
+            "required": ["deposit_coin", "deposit_network", "settle_coin", "settle_network"],
+        },
+    },
+    "sideshift_status": {
+        "description": (
+            "Check the status of a SideShift shift order. Returns the shift record "
+            "plus is_final / is_success / is_failed booleans."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "shift_id": {"type": "string", "description": "ID from sideshift_send or sideshift_receive"},
+            },
+            "required": ["shift_id"],
+        },
+    },
+    "sideshift_recommend": {
+        "description": (
+            "Recommend SideSwap vs SideShift for a cross-asset conversion. "
+            "SideSwap when both legs are on Bitcoin/Liquid (atomic, lower fees); "
+            "SideShift when at least one leg is on a non-Liquid chain (custodial, "
+            "covers 30+ chains)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "from_coin": {"type": "string"},
+                "from_network": {"type": "string"},
+                "to_coin": {"type": "string"},
+                "to_network": {"type": "string"},
+            },
+            "required": ["from_coin", "from_network", "to_coin", "to_network"],
+        },
+    },
 }
 
 
@@ -824,6 +982,23 @@ WHEN TO RECOMMEND A PEG:
   path; swap-market liquidity for L-BTC → BTC is shallow).
 - ALWAYS explain the time trade-off and ask the user to confirm they want to
   wait the expected duration before broadcasting.
+
+SIDESHIFT (custodial cross-chain swaps):
+- Use sideshift_send when the user wants to send funds OUT of Liquid/Bitcoin to
+  another chain (e.g. USDt-Liquid → USDt-Tron, L-BTC → ETH, BTC → SOL).
+- Use sideshift_receive when the user wants to receive funds INTO Liquid/Bitcoin
+  from another chain (e.g. USDt-Tron → USDt-Liquid, ETH → L-BTC).
+- ALWAYS call sideshift_quote first for sends so the user can confirm the
+  rate before signing. Quotes expire in ~15 minutes.
+- ALWAYS encourage providing external_refund_address on receives — without it,
+  a stuck shift requires manual intervention via the SideShift web UI.
+- Use sideshift_status to poll a shift; the response includes is_final /
+  is_success / is_failed booleans so you don't have to memorise the state machine.
+- TRUST MODEL: SideShift is custodial. They take the deposit and send from
+  their hot wallet. This is different from SideSwap (atomic on Liquid) and
+  Lightning (Boltz submarine, atomic). Communicate this trade-off to the user.
+- Memo networks (TON, BNB Beacon, Stellar, etc.) require a memo on either
+  the deposit or settle side — pass settle_memo / refund_memo when prompted.
 
 WATCH-ONLY WALLETS:
 - For a Bitcoin-only watch wallet: btc_import_descriptor (BIP84 wpkh xpub).
@@ -975,6 +1150,27 @@ WALLET DELETION:
                 name="swap_assets",
                 description="Quote a Liquid asset swap (e.g. L-BTC ↔ USDt) via SideSwap (read-only)",
                 arguments=[],
+            ),
+            # SideShift (cross-chain)
+            Prompt(
+                name="cross_chain_send",
+                description=(
+                    "Send funds from Liquid or Bitcoin to another chain via SideShift "
+                    "(e.g. USDt-Liquid → USDt-Tron, L-BTC → ETH)"
+                ),
+                arguments=[
+                    PromptArgument(name="wallet_name", description="Wallet name", required=False),
+                ],
+            ),
+            Prompt(
+                name="cross_chain_receive",
+                description=(
+                    "Receive funds from another chain into Liquid or Bitcoin via SideShift "
+                    "(e.g. USDt-Tron → USDt-Liquid, ETH → L-BTC)"
+                ),
+                arguments=[
+                    PromptArgument(name="wallet_name", description="Wallet name", required=False),
+                ],
             ),
         ]
 
@@ -1418,6 +1614,91 @@ Please:
    - Preimage (proof of payment)
    - Explorer link for lockup transaction
 8. If swap fails, explain that L-BTC is locked until timeout and can be refunded""",
+                        ),
+                    )
+                ]
+            )
+
+        elif name == "cross_chain_send":
+            return GetPromptResult(
+                messages=[
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text=f"""I want to send funds out to another chain via SideShift, from wallet '{wallet_name}'.
+
+SideShift is a custodial cross-chain swap service — they take the deposit and
+send the converted asset from their hot wallet. The trust model is "trust
+SideShift the company" rather than "trust an on-chain protocol." Make sure I
+understand this trade-off.
+
+Please:
+1. Ask me what I want to send (e.g. USDt-Liquid, L-BTC, BTC) and to which
+   coin/network on the receive side (USDt-Tron, ETH-Ethereum, etc.)
+2. If both legs are on Bitcoin or Liquid, suggest using SideSwap instead
+   (atomic, lower fees) — call sideshift_recommend to confirm
+3. Ask me for:
+   - The destination address on the settle network (must belong to me or
+     someone I trust)
+   - The amount: either how much to send (deposit_amount) or how much to
+     receive (settle_amount), as a DECIMAL STRING (e.g. "0.0005", "100")
+4. Call sideshift_pair_info to show me the rate, min, max for the pair
+5. Validate my amount against min/max
+6. Call sideshift_quote to get a fixed-rate quote
+7. Show me a clear summary BEFORE proceeding:
+   - Send: X [deposit_coin] on [deposit_network]
+   - Receive: Y [settle_coin] at [settle_address] on [settle_network]
+   - Quote rate, expires in ~15 min
+8. Ask for explicit confirmation
+9. If wallet is password-encrypted, ask me for the password
+10. For non-L-BTC Liquid assets (USDt-Liquid, etc.), look up the asset_id
+    from lw_list_assets and pass liquid_asset_id when calling sideshift_send
+11. Call sideshift_send with the same parameters AND pass quote_id from the
+    quote you just showed me so the shift executes at the rate I confirmed
+    (omit quote_id and a fresh quote is fetched, which may move). This
+    creates the shift and broadcasts the deposit from my wallet
+12. Show me shift_id + deposit_hash + the SideShift order URL
+    (https://sideshift.ai/orders/<shift_id>)
+13. Tell me to use sideshift_status with the shift_id to track progress""",
+                        ),
+                    )
+                ]
+            )
+
+        elif name == "cross_chain_receive":
+            return GetPromptResult(
+                messages=[
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text=f"""I want to receive funds from another chain into my '{wallet_name}' wallet via SideShift.
+
+SideShift is a custodial cross-chain swap service — they take the deposit
+on the source chain and send to my Liquid or Bitcoin address from their
+hot wallet. The trust model is "trust SideShift the company." Make sure I
+understand this trade-off.
+
+Please:
+1. Ask me which coin/network the deposit is coming from (USDt-Tron, ETH-Ethereum,
+   USDt-on-Ethereum, etc.) and which Liquid/Bitcoin asset to settle into
+   (USDt-Liquid, L-BTC via coin='btc' network='liquid', BTC mainchain via
+   coin='btc' network='bitcoin')
+2. Strongly recommend providing an external_refund_address — the address on
+   the deposit chain that the external sender controls. Without this, a stuck
+   shift requires manual intervention via the SideShift web UI. Ask for it.
+3. Call sideshift_pair_info so I see the rate / min / max
+4. Call sideshift_receive — this creates a variable-rate shift; the rate is
+   set when the deposit confirms on-chain
+5. Show me clearly:
+   - The deposit address on the source chain (this is what the external
+     sender pays to)
+   - deposit_min and deposit_max
+   - deposit_memo IF PRESENT (the source chain requires a memo, e.g. TON,
+     Stellar, BNB Beacon — the sender MUST include it)
+   - Where the funds will arrive in my wallet
+6. Tell me to use sideshift_status with the shift_id to poll progress""",
                         ),
                     )
                 ]

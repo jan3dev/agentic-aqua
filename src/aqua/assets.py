@@ -15,19 +15,25 @@ class AssetInfo:
     precision: int  # Number of decimal places (e.g. 8 means divide by 10^8)
 
 
+# Well-known asset IDs. Liquid policy assets are global constants — these will
+# never change, so importing the canonical id is preferable to redefining it.
+LBTC_ASSET_ID = "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d"
+USDT_LIQUID_ASSET_ID = "ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2"
+
+
 # Mainnet known assets
 MAINNET_ASSETS: dict[str, AssetInfo] = {
     info.asset_id: info
     for info in [
         AssetInfo(
-            asset_id="6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d",
+            asset_id=LBTC_ASSET_ID,
             name="Liquid Bitcoin",
             ticker="L-BTC",
             logo="https://aqua-asset-logos.s3.us-west-2.amazonaws.com/L-BTC.svg",
             precision=8,
         ),
         AssetInfo(
-            asset_id="ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2",
+            asset_id=USDT_LIQUID_ASSET_ID,
             name="Tether USDt",
             ticker="USDt",
             logo="https://aqua-asset-logos.s3.us-west-2.amazonaws.com/USDt.svg",
