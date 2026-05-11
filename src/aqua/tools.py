@@ -5,6 +5,7 @@ import logging
 import re
 import urllib.error
 import urllib.request
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from .assets import MAINNET_ASSETS, TESTNET_ASSETS, resolve_asset_name
@@ -28,6 +29,7 @@ EXPLORER_URLS = {
 _manager: WalletManager | None = None
 _btc_manager: BitcoinWalletManager | None = None
 _lightning_manager: "LightningManager | None" = None
+_changelly_manager: "ChangellyManager | None" = None
 _sideshift_manager: "SideShiftManager | None" = None
 _sideswap_peg_manager: "SideSwapPegManager | None" = None
 _sideswap_swap_manager: "SideSwapSwapManager | None" = None
@@ -62,6 +64,19 @@ def get_lightning_manager() -> "LightningManager":
     return _lightning_manager
 
 
+def get_changelly_manager() -> "ChangellyManager":
+    """Get or create Changelly manager (shares storage + wallet manager)."""
+    global _changelly_manager
+    if _changelly_manager is None:
+        from .changelly import ChangellyManager
+
+        _changelly_manager = ChangellyManager(
+            storage=get_manager().storage,
+            wallet_manager=get_manager(),
+        )
+    return _changelly_manager
+
+
 def get_sideshift_manager() -> "SideShiftManager":
     """Get or create SideShift manager (shares storage + wallet managers)."""
     global _sideshift_manager
@@ -74,6 +89,7 @@ def get_sideshift_manager() -> "SideShiftManager":
             btc_wallet_manager=get_btc_manager(),
         )
     return _sideshift_manager
+
 
 def get_sideswap_peg_manager() -> "SideSwapPegManager":
     """Get or create SideSwap peg manager (shares storage + wallet managers)."""
@@ -359,6 +375,21 @@ def _parse_tx_input(tx_input: str) -> tuple[str, str]:
     raise ValueError(
         f"Invalid input: expected a 64-char hex txid or a Blockstream URL, got: {tx_input}"
     )
+
+
+def _validate_positive_decimal_string(value: str, field_name: str) -> None:
+    """Ensure value strips to a valid Decimal > 0 (for Changelly decimal amounts)."""
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{field_name} must be a non-empty decimal string")
+    try:
+        amount = Decimal(stripped)
+    except InvalidOperation:
+        raise ValueError(
+            f"{field_name} must be a valid decimal string, got {value!r}"
+        ) from None
+    if amount <= 0:
+        raise ValueError(f"{field_name} must be positive")
 
 
 def lw_tx_status(tx: str) -> dict[str, Any]:
@@ -801,6 +832,166 @@ def lightning_transaction_status(swap_id: str) -> dict[str, Any]:
     """
     manager = get_lightning_manager()
     return manager.get_swap_status(swap_id)
+
+
+# ---------------------------------------------------------------------------
+# Changelly (USDt cross-chain swaps via AQUA's Ankara proxy)
+# ---------------------------------------------------------------------------
+
+
+def changelly_list_currencies() -> dict[str, Any]:
+    """List the currencies Changelly supports (Changelly's own asset id format).
+
+    Useful for discovery; the agentic-aqua surface only enables the curated
+    USDt-Liquid ↔ USDt-on-{ethereum,tron,bsc,solana,polygon,ton} pairs for
+    actual swaps, but the read-only currency list is unrestricted.
+
+    Returns:
+        currencies: list of asset id strings
+        count: number of entries
+    """
+    currencies = get_changelly_manager().list_currencies()
+    return {"currencies": currencies, "count": len(currencies)}
+
+
+def changelly_quote(
+    external_network: str,
+    direction: str = "send",
+    amount_from: str | None = None,
+    amount_to: str | None = None,
+) -> dict[str, Any]:
+    """Get a fixed-rate Changelly quote for a USDt-Liquid ↔ USDt-on-X swap.
+
+    Provide exactly one of `amount_from` or `amount_to` (decimal strings).
+    Direction implies which leg is the deposit:
+      - "send": deposit USDt-Liquid, receive USDt on `external_network`
+      - "receive": deposit USDt on `external_network`, receive USDt-Liquid
+
+    Args:
+        external_network: USDt network (one of: ethereum, tron, bsc, solana,
+            polygon, ton).
+        direction: "send" or "receive". Default: "send".
+        amount_from: amount the deposit side sends (decimal string).
+        amount_to: amount the settle side receives (decimal string).
+
+    Returns:
+        Changelly's quote response: {id, result, amountFrom, amountTo,
+        networkFee, min, max, expiredAt, ...}
+    """
+    if (amount_from is None) == (amount_to is None):
+        raise ValueError(
+            "Provide exactly one of amount_from or amount_to — not both, not neither."
+        )
+    from .changelly import LIQUID_USDT_ID, network_to_asset_id
+
+    ext = network_to_asset_id(external_network)
+    if direction == "send":
+        from_asset, to_asset = LIQUID_USDT_ID, ext
+    elif direction == "receive":
+        from_asset, to_asset = ext, LIQUID_USDT_ID
+    else:
+        raise ValueError("direction must be 'send' or 'receive'")
+    return get_changelly_manager().fixed_quote(
+        from_asset, to_asset, amount_from=amount_from, amount_to=amount_to,
+    )
+
+
+def changelly_send(
+    external_network: str,
+    settle_address: str,
+    amount_from: str,
+    wallet_name: str = "default",
+    password: str | None = None,
+    rate_id: str | None = None,
+) -> dict[str, Any]:
+    """Send USDt-Liquid out via a Changelly fixed-rate swap.
+
+    Flow:
+      1. Get a fixed-rate quote for `amount_from` USDt-Liquid → USDt-on-network
+         (skipped if `rate_id` supplied from a prior changelly_quote call).
+      2. Create the fixed order; Changelly returns a Liquid deposit address.
+      3. Broadcast the USDt-Liquid deposit from the local wallet.
+
+    A refund address is set automatically — the wallet's own Liquid address,
+    so a stuck order refunds back to source.
+
+    Args:
+        external_network: target USDt network (ethereum, tron, bsc, solana,
+            polygon, ton).
+        settle_address: external chain address where the user receives.
+        amount_from: USDt-Liquid to send (decimal string, e.g. "100").
+        wallet_name: Liquid wallet to sign with.
+        password: mnemonic decryption password (if encrypted at rest).
+        rate_id: rate id from a prior changelly_quote call. Pass this to lock
+            the previewed rate and avoid drift between quote and execution.
+
+    Returns:
+        order_id, deposit_hash (txid we broadcast), deposit_address,
+        amount_from, amount_to, status, expires_at, track_url
+    """
+    _validate_positive_decimal_string(amount_from, "amount_from")
+    if not settle_address or not settle_address.strip():
+        raise ValueError("settle_address cannot be empty")
+    swap = get_changelly_manager().send_swap(
+        external_network=external_network,
+        amount_from=amount_from,
+        settle_address=settle_address,
+        wallet_name=wallet_name,
+        password=password,
+        rate_id=rate_id,
+    )
+    return swap.to_dict()
+
+
+def changelly_receive(
+    external_network: str,
+    wallet_name: str = "default",
+    external_refund_address: str | None = None,
+    amount_from: str = "",
+) -> dict[str, Any]:
+    """Receive USDt-Liquid via a Changelly variable-rate swap.
+
+    Returns a deposit address on `external_network`. The external sender
+    pays to it from any USDt-supporting wallet on that network; rate is set
+    when the deposit confirms; Changelly settles to the wallet's Liquid
+    address as USDt-Liquid.
+
+    Args:
+        external_network: source USDt network (ethereum, tron, bsc, solana,
+            polygon, ton).
+        wallet_name: Liquid wallet to receive into.
+        external_refund_address: STRONGLY RECOMMENDED — the deposit-chain
+            address to refund to if the order fails. Without one a stuck
+            order requires manual web UI intervention.
+        amount_from: amount the external sender will deposit (decimal string,
+            e.g. "50"). Required by the Ankara backend serializer.
+
+    Returns:
+        order_id, deposit_address, settle_address, amount_from, status, track_url
+    """
+    _validate_positive_decimal_string(amount_from, "amount_from")
+    swap = get_changelly_manager().receive_swap(
+        external_network=external_network,
+        wallet_name=wallet_name,
+        external_refund_address=external_refund_address,
+        amount_from=amount_from,
+    )
+    return swap.to_dict()
+
+
+def changelly_status(order_id: str) -> dict[str, Any]:
+    """Check the status of a Changelly swap order.
+
+    Returns the persisted record plus is_final / is_success / is_failed
+    booleans so callers don't have to memorise the state machine. The
+    Changelly state machine: new → waiting → confirming → exchanging →
+    sending → finished (success). Failure terminals: failed, refunded,
+    expired, overdue.
+
+    Args:
+        order_id: ID returned from changelly_send or changelly_receive.
+    """
+    return get_changelly_manager().status(order_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1415,6 +1606,11 @@ TOOLS = {
     "lightning_receive": lightning_receive,
     "lightning_send": lightning_send,
     "lightning_transaction_status": lightning_transaction_status,
+    "changelly_list_currencies": changelly_list_currencies,
+    "changelly_quote": changelly_quote,
+    "changelly_send": changelly_send,
+    "changelly_receive": changelly_receive,
+    "changelly_status": changelly_status,
     "sideshift_list_coins": sideshift_list_coins,
     "sideshift_pair_info": sideshift_pair_info,
     "sideshift_quote": sideshift_quote,

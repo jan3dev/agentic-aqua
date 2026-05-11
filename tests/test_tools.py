@@ -13,6 +13,7 @@ from aqua.tools import (
     _manager,
     btc_export_descriptor,
     btc_import_descriptor,
+    changelly_send,
     delete_wallet,
     get_btc_manager,
     get_manager,
@@ -720,6 +721,11 @@ class TestToolRegistry:
             "delete_wallet",
             "btc_import_descriptor",
             "btc_export_descriptor",
+            "changelly_list_currencies",
+            "changelly_quote",
+            "changelly_send",
+            "changelly_receive",
+            "changelly_status",
             "sideshift_list_coins",
             "sideshift_pair_info",
             "sideshift_quote",
@@ -940,6 +946,35 @@ class TestBtcExportDescriptor:
         """Exporting descriptor for a non-existent wallet raises ValueError matching 'not found'."""
         with pytest.raises(ValueError, match="not found"):
             btc_export_descriptor(wallet_name="ghost_btc")
+
+
+# ---------------------------------------------------------------------------
+# changelly_send — amount_from validation
+# ---------------------------------------------------------------------------
+
+
+class TestChangellySendAmountValidation:
+    """amount_from must be a positive decimal before hitting Changelly."""
+
+    def test_empty_amount_from_raises(self):
+        with pytest.raises(ValueError, match="amount_from must be a non-empty"):
+            changelly_send("solana", "So11111111111111111111111111111111111111112", "")
+
+    def test_whitespace_only_raises(self):
+        with pytest.raises(ValueError, match="amount_from must be a non-empty"):
+            changelly_send("solana", "So11111111111111111111111111111111111111112", "   ")
+
+    def test_zero_raises(self):
+        with pytest.raises(ValueError, match="amount_from must be positive"):
+            changelly_send("solana", "So11111111111111111111111111111111111111112", "0")
+
+    def test_negative_raises(self):
+        with pytest.raises(ValueError, match="amount_from must be positive"):
+            changelly_send("solana", "So11111111111111111111111111111111111111112", "-10")
+
+    def test_invalid_decimal_raises(self):
+        with pytest.raises(ValueError, match="amount_from must be a valid decimal"):
+            changelly_send("solana", "So11111111111111111111111111111111111111112", "not-a-number")
 
 
 # ---------------------------------------------------------------------------

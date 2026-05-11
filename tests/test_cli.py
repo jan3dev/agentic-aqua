@@ -759,6 +759,229 @@ class TestLightningCommands:
 
 
 # ---------------------------------------------------------------------------
+# Changelly CLI
+# ---------------------------------------------------------------------------
+
+
+class _FakeChangellyManager:
+    """Stand-in for ChangellyManager — records calls, returns canned responses."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+        self.currencies_response = ["btc", "lusdt", "usdt20", "usdtrx"]
+        self.quote_response = {
+            "id": "rate1",
+            "result": "0.99",
+            "amountFrom": "100",
+            "amountTo": "99",
+            "networkFee": "1",
+            "expiredAt": 1_900_000_000,
+        }
+        self.send_response = None
+        self.receive_response = None
+        self.status_response = None
+
+    def list_currencies(self):
+        self.calls.append(("list_currencies", {}))
+        return self.currencies_response
+
+    def fixed_quote(self, from_asset, to_asset, amount_from=None, amount_to=None):
+        self.calls.append(("fixed_quote", {
+            "from_asset": from_asset, "to_asset": to_asset,
+            "amount_from": amount_from, "amount_to": amount_to,
+        }))
+        return self.quote_response
+
+    def send_swap(self, **kwargs):
+        from aqua.changelly import ChangellySwap
+
+        self.calls.append(("send_swap", kwargs))
+        if self.send_response is not None:
+            return self.send_response
+        return ChangellySwap(
+            order_id="ord_send",
+            swap_type="fixed",
+            direction="send",
+            from_asset="lusdt",
+            to_asset=f"usdt-{kwargs['external_network']}",
+            settle_address=kwargs["settle_address"],
+            deposit_address="lq1qdeposit",
+            refund_address="lq1qrefund",
+            wallet_name=kwargs["wallet_name"],
+            status="new",
+            created_at="2026-05-08T12:00:00+00:00",
+            amount_from=kwargs["amount_from"],
+            amount_to="99",
+            deposit_hash="lqtxid" + ("0" * 58),
+            track_url="https://changelly.com/track/ord_send",
+        )
+
+    def receive_swap(self, **kwargs):
+        from aqua.changelly import ChangellySwap
+
+        self.calls.append(("receive_swap", kwargs))
+        if self.receive_response is not None:
+            return self.receive_response
+        return ChangellySwap(
+            order_id="ord_recv",
+            swap_type="variable",
+            direction="receive",
+            from_asset=f"usdt-{kwargs['external_network']}",
+            to_asset="lusdt",
+            settle_address="lq1qreceive",
+            deposit_address="TXdepositAddr",
+            refund_address=kwargs.get("external_refund_address"),
+            wallet_name=kwargs["wallet_name"],
+            status="new",
+            created_at="2026-05-08T12:00:00+00:00",
+            track_url="https://changelly.com/track/ord_recv",
+        )
+
+    def status(self, order_id):
+        self.calls.append(("status", {"order_id": order_id}))
+        if self.status_response is not None:
+            return {**self.status_response, "order_id": order_id}
+        return {
+            "order_id": order_id,
+            "status": "finished",
+            "is_final": True,
+            "is_success": True,
+            "is_failed": False,
+        }
+
+
+@pytest.fixture
+def changelly_manager():
+    """Inject a fake ChangellyManager into the global tool layer."""
+    import aqua.tools as tools_module
+
+    fake = _FakeChangellyManager()
+    saved = tools_module._changelly_manager
+    tools_module._changelly_manager = fake
+    try:
+        yield fake
+    finally:
+        tools_module._changelly_manager = saved
+
+
+class TestChangellyCurrencies:
+    def test_currencies_returns_list(self, runner, changelly_manager):
+        result = runner.invoke(cli, ["--format", "json", "changelly", "currencies"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["count"] == 4
+        assert "lusdt" in data["currencies"]
+
+
+class TestChangellyQuote:
+    def test_quote_requires_exactly_one_amount(self, runner):
+        result = runner.invoke(
+            cli,
+            ["changelly", "quote", "--external-network", "tron"],
+        )
+        assert result.exit_code == 2
+
+    def test_quote_rejects_both_amounts(self, runner):
+        result = runner.invoke(
+            cli,
+            ["changelly", "quote", "--external-network", "tron",
+             "--amount-from", "100", "--amount-to", "99"],
+        )
+        assert result.exit_code == 2
+
+    def test_quote_send_direction(self, runner, changelly_manager):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "changelly", "quote",
+             "--external-network", "tron", "--amount-from", "100"],
+        )
+        assert result.exit_code == 0
+        last = changelly_manager.calls[-1]
+        assert last[0] == "fixed_quote"
+        assert last[1]["from_asset"] == "lusdt"
+        assert last[1]["to_asset"] == "usdtrx"
+
+    def test_quote_receive_direction(self, runner, changelly_manager):
+        runner.invoke(
+            cli,
+            ["changelly", "quote", "--external-network", "ethereum",
+             "--direction", "receive", "--amount-from", "100"],
+        )
+        last = changelly_manager.calls[-1]
+        assert last[1]["from_asset"] == "usdt20"
+        assert last[1]["to_asset"] == "lusdt"
+
+    def test_quote_rejects_unsupported_network(self, runner):
+        result = runner.invoke(
+            cli,
+            ["changelly", "quote", "--external-network", "avalanche",
+             "--amount-from", "100"],
+        )
+        assert result.exit_code == 2  # Click choice validation
+
+
+class TestChangellySend:
+    def test_send_with_yes_skips_prompt(self, runner, changelly_manager):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "changelly", "send",
+             "--external-network", "tron",
+             "--settle-address", "TXrecv",
+             "--amount-from", "100",
+             "--yes"],
+            env=_cli_env(),
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["order_id"] == "ord_send"
+        assert data["deposit_hash"].startswith("lqtxid")
+        send_call = next(c for c in changelly_manager.calls if c[0] == "send_swap")
+        assert send_call[1]["external_network"] == "tron"
+        assert send_call[1]["amount_from"] == "100"
+        assert send_call[1]["settle_address"] == "TXrecv"
+
+    def test_send_rejects_unsupported_network(self, runner):
+        result = runner.invoke(
+            cli,
+            ["changelly", "send",
+             "--external-network", "avalanche",
+             "--settle-address", "0xfoo",
+             "--amount-from", "100",
+             "--yes"],
+        )
+        assert result.exit_code == 2
+
+
+class TestChangellyReceive:
+    def test_receive_returns_deposit_address(self, runner, changelly_manager):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "changelly", "receive",
+             "--external-network", "tron",
+             "--external-refund-address", "TXrefund",
+             "--amount-from", "50"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["deposit_address"] == "TXdepositAddr"
+        assert data["refund_address"] == "TXrefund"
+        recv_call = next(c for c in changelly_manager.calls if c[0] == "receive_swap")
+        assert recv_call[1]["external_network"] == "tron"
+
+
+class TestChangellyStatus:
+    def test_status_passes_order_id(self, runner, changelly_manager):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "changelly", "status", "--order-id", "ord_xyz"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["order_id"] == "ord_xyz"
+        assert data["is_final"] is True
+
+
+# ---------------------------------------------------------------------------
 # SideSwap CLI
 # ---------------------------------------------------------------------------
 

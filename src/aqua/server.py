@@ -453,6 +453,108 @@ TOOL_SCHEMAS = {
             "required": ["swap_id"],
         },
     },
+    "changelly_list_currencies": {
+        "description": (
+            "List the currencies Changelly supports (Changelly's own asset id format). "
+            "Useful for discovery; the agentic-aqua surface only enables the curated "
+            "USDt-Liquid ↔ USDt-on-{ethereum,tron,bsc,solana,polygon,ton} pairs for "
+            "actual swaps."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "changelly_quote": {
+        "description": (
+            "Get a fixed-rate Changelly quote for a USDt-Liquid ↔ USDt-on-X swap. "
+            "Provide exactly one of deposit_amount or settle_amount as a decimal string. "
+            "Use BEFORE changelly_send to confirm the price with the user."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "external_network": {
+                    "type": "string",
+                    "enum": ["ethereum", "tron", "bsc", "solana", "polygon", "ton"],
+                    "description": "USDt network on the non-Liquid side",
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["send", "receive"],
+                    "default": "send",
+                    "description": "'send' = deposit USDt-Liquid; 'receive' = deposit USDt on external chain",
+                },
+                "amount_from": {"type": "string", "description": "Deposit-side amount (decimal string)"},
+                "amount_to": {"type": "string", "description": "Settle-side amount (decimal string)"},
+            },
+            "required": ["external_network"],
+        },
+    },
+    "changelly_send": {
+        "description": (
+            "Send USDt-Liquid out via a Changelly fixed-rate swap. Gets a quote, "
+            "creates the order, and broadcasts the deposit from the local wallet. "
+            "Refund address is set automatically (the wallet's own Liquid address). "
+            "ALWAYS call changelly_quote first and confirm the price with the user."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "external_network": {
+                    "type": "string",
+                    "enum": ["ethereum", "tron", "bsc", "solana", "polygon", "ton"],
+                    "description": "Target USDt network",
+                },
+                "settle_address": {"type": "string", "description": "External chain address to receive USDt at"},
+                "amount_from": {"type": "string", "description": "USDt-Liquid to send (decimal string, e.g. '100')"},
+                "wallet_name": {"type": "string", "default": "default"},
+                "password": {"type": "string", "description": "Password to decrypt mnemonic (if encrypted at rest)"},
+                "rate_id": {"type": "string", "description": "Rate id from a prior changelly_quote call — pass this to lock the previewed rate and avoid drift"},
+            },
+            "required": ["external_network", "settle_address", "amount_from"],
+        },
+    },
+    "changelly_receive": {
+        "description": (
+            "Receive USDt-Liquid via a Changelly variable-rate swap. Returns a "
+            "deposit address on the source chain — the external sender pays to it. "
+            "Settles to the wallet's Liquid address as USDt-Liquid. STRONGLY RECOMMEND "
+            "passing external_refund_address."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "external_network": {
+                    "type": "string",
+                    "enum": ["ethereum", "tron", "bsc", "solana", "polygon", "ton"],
+                    "description": "Source USDt network the external sender pays from",
+                },
+                "wallet_name": {"type": "string", "default": "default"},
+                "external_refund_address": {
+                    "type": "string",
+                    "description": "Source-chain refund address (strongly recommended)",
+                },
+                "amount_from": {
+                    "type": "string",
+                    "description": "Amount the external sender will deposit (decimal string, e.g. '50')",
+                },
+            },
+            "required": ["external_network", "amount_from"],
+        },
+    },
+    "changelly_status": {
+        "description": (
+            "Check the status of a Changelly swap order. Returns is_final / "
+            "is_success / is_failed booleans. State machine: new → waiting → "
+            "confirming → exchanging → sending → finished. Failure: failed, "
+            "refunded, expired, overdue."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "order_id": {"type": "string", "description": "ID from changelly_send or changelly_receive"},
+            },
+            "required": ["order_id"],
+        },
+    },
     "sideswap_server_status": {
         "description": (
             "Fetch SideSwap server status: live fees, minimum amounts, and "
@@ -956,6 +1058,28 @@ LIGHTNING:
   Fees: ~0.1% + miner fees, Limits: 100 - 25,000,000 Sats
 - Use lightning_transaction_status to check status of any Lightning swap (send or receive)
 
+CHANGELLY (custodial USDt cross-chain swaps via AQUA's Ankara proxy):
+- Use changelly_send when the user wants to send USDt-Liquid OUT to USDt on
+  another chain (Ethereum, Tron, BSC, Solana, Polygon, TON).
+- Use changelly_receive when the user wants to receive USDt-Liquid IN from
+  USDt on another chain. Returns a deposit address on the source chain.
+- ALWAYS call changelly_quote first for sends so the user can confirm the
+  rate before signing. Quotes are fixed-rate with a short TTL.
+- ALWAYS encourage providing external_refund_address on receives — without
+  it, a stuck order requires manual intervention via Changelly's web UI.
+- Use changelly_status to poll an order; the response includes is_final /
+  is_success / is_failed booleans.
+- TRUST MODEL: Changelly is custodial — they take the deposit and send the
+  converted asset from their hot wallet. Different from SideSwap (atomic on
+  Liquid) and Lightning (Boltz submarine, atomic). Communicate the trade-off.
+- SCOPE: USDt-Liquid ↔ USDt on the 6 supported chains only. For BTC ↔ X,
+  L-BTC ↔ X, or anything non-USDt, use SideSwap or SideShift instead.
+- SideSwap vs Changelly vs SideShift for similar flows:
+  - L-BTC ↔ USDt-Liquid: SideSwap (atomic, lower fees)
+  - USDt-Liquid ↔ USDt-Tron / USDt-Ethereum / etc.: Changelly OR SideShift
+    (both custodial; Changelly proxies through AQUA backend; SideShift uses
+    a public affiliate ID). Pick whichever is configured / has better rates.
+
 SIDESWAP (BTC ↔ L-BTC pegs and Liquid asset swaps):
 - Pegs are the canonical way to move funds between Bitcoin mainchain and Liquid.
 - Peg-in (BTC → L-BTC): user sends BTC to a SideSwap deposit address; after 2
@@ -1127,6 +1251,29 @@ WALLET DELETION:
             Prompt(
                 name="pay_lightning",
                 description="Pay a Lightning invoice using Liquid Bitcoin (via Boltz submarine swap)",
+                arguments=[
+                    PromptArgument(name="wallet_name", description="Wallet name", required=False),
+                ],
+            ),
+            # Changelly (cross-chain USDt swaps)
+            Prompt(
+                name="usdt_cross_chain_send",
+                description=(
+                    "Send USDt-Liquid out to USDt on another chain via Changelly "
+                    "(e.g. USDt-Liquid → USDt-Tron). Walks through quote, "
+                    "confirmation, and broadcast."
+                ),
+                arguments=[
+                    PromptArgument(name="wallet_name", description="Wallet name", required=False),
+                ],
+            ),
+            Prompt(
+                name="usdt_cross_chain_receive",
+                description=(
+                    "Receive USDt-Liquid from USDt on another chain via Changelly "
+                    "(e.g. USDt-Tron → USDt-Liquid). Returns a deposit address for "
+                    "the external sender."
+                ),
                 arguments=[
                     PromptArgument(name="wallet_name", description="Wallet name", required=False),
                 ],
@@ -1614,6 +1761,78 @@ Please:
    - Preimage (proof of payment)
    - Explorer link for lockup transaction
 8. If swap fails, explain that L-BTC is locked until timeout and can be refunded""",
+                        ),
+                    )
+                ]
+            )
+
+        elif name == "usdt_cross_chain_send":
+            return GetPromptResult(
+                messages=[
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text=f"""I want to send USDt-Liquid out to USDt on another chain via Changelly, from wallet '{wallet_name}'.
+
+Changelly is a custodial cross-chain swap service routed through AQUA's
+Ankara backend. They take the USDt-Liquid deposit and send USDt on the
+target chain from their hot wallet. Trust model: trust the company, not
+on-chain — make sure I understand this trade-off.
+
+Please:
+1. Show my Liquid balance (lw_balance) so I can see how much USDt-Liquid I have
+2. Ask me which target USDt chain (ethereum, tron, bsc, solana, polygon, ton)
+3. Ask me for:
+   - The destination address on that chain
+   - The amount of USDt-Liquid to send (decimal, e.g. "100")
+4. Call changelly_quote with direction='send' to show the rate, network fee,
+   and exact amount the recipient will get
+5. Show me a clear summary BEFORE proceeding:
+   - Send: X USDt on Liquid
+   - Receive: Y USDt on [chain] at [destination address]
+   - Network fee + Changelly fee
+6. Ask for explicit confirmation
+7. If wallet is password-encrypted, ask for the password
+8. Call changelly_send — this gets a fresh quote, creates the order, and
+   broadcasts the deposit from my Liquid wallet
+9. Show me order_id + deposit_hash + the Changelly tracking URL
+10. Tell me to use changelly_status to track progress""",
+                        ),
+                    )
+                ]
+            )
+
+        elif name == "usdt_cross_chain_receive":
+            return GetPromptResult(
+                messages=[
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text=f"""I want to receive USDt-Liquid in my '{wallet_name}' wallet by having someone send USDt from another chain via Changelly.
+
+Changelly is a custodial cross-chain swap service. They take the deposit
+on the source chain from the external sender and send USDt-Liquid to my
+Liquid address from their hot wallet. Trust model: trust the company.
+
+Please:
+1. Ask me which source USDt chain the external sender will pay from
+   (ethereum, tron, bsc, solana, polygon, ton)
+2. STRONGLY recommend providing an external_refund_address — the source
+   chain address the external sender controls. Without it, a stuck order
+   requires manual web UI intervention. Ask for it.
+3. Ask the user for the deposit amount in source-chain USDt (decimal string,
+   e.g. "50"). This is REQUIRED — the Ankara backend serialiser rejects
+   the request without it — and the changelly_receive tool will refuse an
+   empty value. Pass it as amount_from.
+4. Call changelly_receive — this creates a variable-rate order
+5. Show me clearly:
+   - The deposit address on the source chain (this is what the external
+     sender pays to)
+   - The Changelly tracking URL
+   - Where the funds will arrive in my wallet (USDt-Liquid)
+6. Tell me to use changelly_status with the order_id to poll progress""",
                         ),
                     )
                 ]

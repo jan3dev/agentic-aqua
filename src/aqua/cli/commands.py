@@ -9,6 +9,7 @@ from .output import run_tool
 def register_commands(cli):
     """Register all subcommand groups and top-level commands on the root CLI group."""
     from .btc import btc
+    from .changelly import changelly
     from .lightning import lightning
     from .liquid import liquid
     from .serve import serve
@@ -20,6 +21,7 @@ def register_commands(cli):
     cli.add_command(liquid)
     cli.add_command(btc)
     cli.add_command(lightning)
+    cli.add_command(changelly)
     cli.add_command(sideshift)
     cli.add_command(sideswap)
     cli.add_command(serve)

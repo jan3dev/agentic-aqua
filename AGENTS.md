@@ -16,9 +16,9 @@ AI Assistant ←→ MCP Server (Python) ←→ LWK (Liquid) ──→ Electrum/E
 
 No local server required. Liquid uses Electrum/Esplora; Bitcoin uses Esplora only. All via Blockstream's public infrastructure.
 
-## Tools (39 total)
+## Tools (44 total)
 
-Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified tools are `unified_*`; Lightning tools are `lightning_*`; SideSwap tools are `sideswap_*`; SideShift cross-chain tools are `sideshift_*`.
+Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified tools are `unified_*`; Lightning tools are `lightning_*`; SideSwap tools are `sideswap_*`; SideShift cross-chain tools are `sideshift_*`; Changelly cross-chain USDt tools are `changelly_*`.
 
 ### Wallet Management
 
@@ -74,6 +74,21 @@ Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix; unified 
 | `lightning_send` | Pay a Lightning invoice using L-BTC via Boltz submarine swap. Fees: ~0.1% + miner fees. Limits: 100 – 25,000,000 sats | `invoice`: BOLT11 string (lnbc... or lntb...), `wallet_name`: optional, `password`: optional |
 | `lightning_transaction_status` | Check status of a Lightning swap (send or receive). For receive: auto-claims L-BTC when settled. For send: retrieves preimage when claimed. | `swap_id`: string |
 
+### Changelly (USDt Cross-Chain Swaps via AQUA's Ankara Proxy)
+
+Changelly is a cross-chain swap service routed through AQUA's Ankara backend proxy (`https://ankara.aquabtc.com/api/v1/changelly`). Use it for **USDt-Liquid ↔ USDt on the 6 supported external chains**: Ethereum, Tron, BSC, Solana, Polygon, TON. For BTC, L-BTC, or non-USDt swaps, use SideSwap or SideShift instead.
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `changelly_list_currencies` | List Changelly's supported currencies (read-only; allowlist not enforced) | (none) |
+| `changelly_quote` | Fixed-rate quote for a USDt-Liquid ↔ USDt-on-X swap. Use BEFORE `changelly_send`. | `external_network` (ethereum/tron/bsc/solana/polygon/ton), `direction` (send/receive), exactly one of `amount_from` / `amount_to` (decimal strings) |
+| `changelly_send` | Send USDt-Liquid OUT to USDt on an external chain. Gets quote, creates fixed order, broadcasts deposit from Liquid wallet. Refund address auto-set to wallet's own Liquid address. | `external_network`, `settle_address`, `amount_from`, `wallet_name`: optional, `password`: optional |
+| `changelly_receive` | Receive USDt-Liquid IN via variable-rate swap. Returns deposit address on the source chain for the external sender. STRONGLY recommend `external_refund_address`. | `external_network`, `wallet_name`: optional, `external_refund_address`: optional but recommended, `amount_from`: optional reference for quote preview |
+| `changelly_status` | Check status of a swap order (returns `is_final`, `is_success`, `is_failed`) | `order_id`: string |
+
+> ⚠️ **Changelly trust model**: Custodial. They take the USDt-Liquid deposit (or USDt on the external chain) and send the converted asset from their hot wallet. Refund address is auto-set on send (wallet's own Liquid address). On receives, strongly encourage the user to provide an external refund address — without one, a stuck order requires manual intervention via Changelly's web UI.
+
+> ⚠️ **Curated allowlist**: Mirrors AQUA Flutter's `ChangellyAssetIds` in `lib/features/changelly/models/changelly_models.dart`. Only USDt is supported. Set `CHANGELLY_ALLOW_ALL_PAIRS=1` to bypass for testing or power use.
 ### SideShift (Custodial Cross-Chain Swaps)
 
 SideShift.ai is a custodial cross-chain swap service that complements SideSwap (which is Liquid-only or pegs through the Liquid Federation). Use SideShift for pairs where at least one leg is on a non-Liquid chain (Ethereum, Tron, Solana, USDt-on-other-chains, etc.). The trust model is "trust SideShift the company" — they take the deposit and send the converted asset from their hot wallet — so it's not as trustless as SideSwap. Use `sideshift_recommend` to decide.
@@ -127,7 +142,7 @@ MCP resources provide static documentation to AI assistants.
 | `aqua://docs/networks` | Network Reference | Bitcoin and Liquid network details, address formats, explorers, common assets |
 | `aqua://docs/security` | Security Best Practices | Password usage, at-rest encryption, backup, watch-only wallets, recovery |
 
-## Prompts (19 total)
+## Prompts (21 total)
 
 MCP prompts provide pre-built conversation starters for common workflows.
 
@@ -147,6 +162,8 @@ MCP prompts provide pre-built conversation starters for common workflows.
 | `export_descriptor` | Export descriptor for watch-only wallet | `wallet_name`: optional |
 | `delete_wallet` | Safely delete a wallet with balance check and seed backup reminder | `wallet_name`: required |
 | `pay_lightning` | Pay a Lightning invoice using Liquid Bitcoin | `wallet_name`: optional |
+| `usdt_cross_chain_send` | Send USDt-Liquid out to USDt on another chain via Changelly (e.g. USDt-Liquid → USDt-Tron). Walks through quote, confirmation, and broadcast. | `wallet_name`: optional |
+| `usdt_cross_chain_receive` | Receive USDt-Liquid from USDt on another chain via Changelly. Returns deposit address for the external sender. | `wallet_name`: optional |
 | `cross_chain_send` | Send Liquid/BTC funds out to another chain via SideShift (e.g. USDt-Liquid → USDt-Tron, L-BTC → ETH). Walks through quote, confirmation, and broadcast. | `wallet_name`: optional |
 | `cross_chain_receive` | Receive funds into Liquid/BTC from another chain via SideShift (e.g. USDt-Tron → USDt-Liquid). Returns a deposit address for the external sender. | `wallet_name`: optional |
 | `peg_in` | Move BTC to Liquid (BTC → L-BTC) via SideSwap peg-in, with quote, recommendation, and time warning | `wallet_name`: optional |
@@ -168,6 +185,8 @@ Wallet data stored in `~/.aqua/`:
 │   └── {swap_id}.json   # Contains swap details + preimage when settled
 ├── lightning_swaps/     # Unified Lightning swap data (send & receive)
 │   └── {swap_id}.json   # Contains swap details + status + optional preimage
+├── changelly_swaps/     # Changelly cross-chain USDt swap orders
+│   └── {order_id}.json  # Contains direction, type, addresses, status, txid
 ├── sideshift_shifts/    # SideShift cross-chain shift orders
 │   └── {shift_id}.json  # Contains direction, type, addresses, status, txids
 ├── sideswap_pegs/       # SideSwap peg orders (peg-in and peg-out)
@@ -395,6 +414,39 @@ Ankara backend (`test.aquabtc.com`) provides Lightning → L-BTC swaps (receive 
 
 **Amount Limits**: 100 – 25,000,000 sats (no authentication required)
 
+## Changelly Integration
+
+Changelly is reached via AQUA's Ankara backend proxy at `https://ankara.aquabtc.com/api/v1/changelly`. AQUA's backend handles the Changelly partner API secret server-side, so this MCP server doesn't need its own credentials.
+
+**API**: REST/JSON. No authentication required from this side.
+
+**Configurable via environment variable**: `CHANGELLY_BASE_URL` overrides the default base for testing or local development. `CHANGELLY_ALLOW_ALL_PAIRS=1` bypasses the curated pair allowlist.
+
+**Endpoints used (proxied through AQUA's backend)**:
+- `GET /currencies` — list of supported currencies
+- `POST /pairs` — available pairs
+- `POST /get-fix-rate-for-amount` — fixed-rate quote
+- `POST /quote` — variable-rate quote (used for receive flow's reference preview)
+- `POST /create-fix-transaction` — create a fixed-rate order from a quote
+- `POST /create-transaction` — create a variable-rate order
+- `GET /status/{orderId}` — poll order status
+
+**Asset id conventions** (Changelly's own format, distinct from SideShift's):
+- `lusdt` — USDt on Liquid
+- `usdt20` — USDt on Ethereum (ERC-20)
+- `usdtrx` — USDt on Tron (TRC-20)
+- `usdtbsc` — USDt on BSC
+- `usdtsol` — USDt on Solana
+- `usdtpolygon` — USDt on Polygon
+- `usdton` — USDt on TON
+
+**Curated pair allowlist** (`ALLOWED_PAIRS` in `src/aqua/changelly.py`): one leg must be `lusdt`, the other must be one of the 6 external USDt variants. 6 chains × 2 directions = 12 ordered pairs. Mirrors AQUA Flutter's `ChangellyAssetIds` set; drift is detected by `tests/test_changelly.py::TestAllowedPairs::test_allowlist_matches_aqua_flutter`.
+
+**Status state machine** (lowercase): `new` → `waiting` → `confirming` → `exchanging` → `sending` → `finished` (success). Failure terminals: `failed`, `refunded`, `expired`, `overdue`. Manual review: `hold` (terminal but ambiguous). Helpers `swap_is_final` / `swap_is_success` / `swap_is_failed` abstract over the grouping.
+
+**Trust model**: Custodial. Changelly takes the deposit and sends the converted asset from their hot wallet via AQUA's backend. Refund address is set automatically on send (the wallet's own Liquid address) and strongly recommended on receive (must be supplied by the caller; otherwise a stuck order needs manual web UI intervention).
+
+**Why both Changelly and SideShift?** Both are USDt cross-chain swap services and cover roughly the same chains. They're redundant on supported pairs by design. Agents can pick whichever has better rates at quote time, or fall back to the other if one is degraded or unavailable.
 ## SideShift Integration
 
 Technical detail for `src/aqua/sideshift.py`. Tool semantics, trust model, refund-address guidance, and memo-network warnings live in the **SideShift (Custodial Cross-Chain Swaps)** section under Tools.
@@ -615,7 +667,7 @@ agentic-aqua/
 │   └── aqua/
 │       ├── __init__.py
 │       ├── server.py   # MCP server entry point (tools, resources, prompts)
-│       ├── tools.py    # Tool implementations (lw_*, btc_*, unified_*, lightning_*, sideswap_*, sideshift_*)
+│       ├── tools.py    # Tool implementations (lw_*, btc_*, unified_*, lightning_*, sideswap_*, sideshift_*, changelly_*)
 │       ├── wallet.py   # Liquid wallet (LWK)
 │       ├── bitcoin.py  # Bitcoin wallet (BDK)
 │       ├── lightning.py # Lightning abstraction layer (unified send/receive manager)
@@ -631,6 +683,7 @@ agentic-aqua/
 │           ├── liquid.py     # `aqua liquid …`
 │           ├── btc.py        # `aqua btc …`
 │           ├── lightning.py  # `aqua lightning …`
+│           ├── changelly.py # `aqua changelly …` (USDt cross-chain swap commands)
 |           ├── sideshift.py  # `aqua sideshift …` (cross-chain swap commands)
 │           ├── sideswap.py   # `aqua sideswap …` (pegs + atomic swaps)
 │           ├── wallet.py     # `aqua wallet …`
@@ -644,6 +697,8 @@ agentic-aqua/
     ├── test_bitcoin.py
     ├── test_boltz.py
     ├── test_ankara.py
+    ├── test_changelly.py
+    ├── test_cli.py
     ├── test_sideshift.py
     ├── test_sideswap.py
     └── test_server.py
