@@ -453,6 +453,284 @@ TOOL_SCHEMAS = {
             "required": ["swap_id"],
         },
     },
+    "sideswap_server_status": {
+        "description": (
+            "Fetch SideSwap server status: live fees, minimum amounts, and "
+            "hot-wallet balances. Call this BEFORE recommending a peg or swap "
+            "so values reflect current SideSwap state."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "network": {
+                    "type": "string",
+                    "enum": ["mainnet", "testnet"],
+                    "default": "mainnet",
+                },
+            },
+        },
+    },
+    "sideswap_peg_quote": {
+        "description": (
+            "Quote the receive amount for a SideSwap peg (BTC ↔ L-BTC) at "
+            "current fees (0.1% + ~286 sats Liquid claim fee on peg-in). "
+            "Returns send_amount, recv_amount, fee_amount."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "integer",
+                    "description": "Send amount in Satoshis",
+                },
+                "peg_in": {
+                    "type": "boolean",
+                    "description": "True for BTC → L-BTC, False for L-BTC → BTC",
+                    "default": True,
+                },
+                "network": {
+                    "type": "string",
+                    "enum": ["mainnet", "testnet"],
+                    "default": "mainnet",
+                },
+            },
+            "required": ["amount"],
+        },
+    },
+    "sideswap_peg_in": {
+        "description": (
+            "Initiate a SideSwap peg-in (BTC → L-BTC). Returns a Bitcoin deposit "
+            "address; the user (or btc_send) must send BTC to it. After 2 BTC "
+            "confirmations (~20 min hot path; up to ~17 hours cold path for "
+            "very large amounts), L-BTC arrives in the Liquid wallet. "
+            "Recommended over a swap-market trade for amounts ≥ ~0.01 BTC: "
+            "lower fee (0.1% vs 0.2%) at the cost of waiting. "
+            "ALWAYS call sideswap_recommend first for large amounts so the user "
+            "understands the trade-off."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Liquid wallet to receive L-BTC",
+                    "default": "default",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Password to decrypt mnemonic (if encrypted at rest)",
+                },
+            },
+        },
+    },
+    "sideswap_peg_out": {
+        "description": (
+            "Initiate a SideSwap peg-out (L-BTC → BTC) and broadcast the L-BTC "
+            "send. After 2 Liquid confirmations (~2 min) and the federation BTC "
+            "sweep (typically 15–60 min total), BTC arrives at the user's "
+            "Bitcoin address. Fees: 0.1% + Bitcoin network fee. Standard way to "
+            "move L-BTC back to Bitcoin mainchain."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Liquid wallet to send L-BTC from",
+                },
+                "amount": {
+                    "type": "integer",
+                    "description": "Amount in Satoshis to peg out",
+                },
+                "btc_address": {
+                    "type": "string",
+                    "description": "Destination Bitcoin address (bc1...)",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Password to decrypt mnemonic (if encrypted at rest)",
+                },
+            },
+            "required": ["wallet_name", "amount", "btc_address"],
+        },
+    },
+    "sideswap_peg_status": {
+        "description": (
+            "Check the status of a SideSwap peg order (peg-in or peg-out). "
+            "Returns confirmations progress (X/Y), tx_state, lockup_txid, "
+            "payout_txid when complete."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "order_id": {
+                    "type": "string",
+                    "description": "Order ID from sideswap_peg_in or sideswap_peg_out",
+                },
+            },
+            "required": ["order_id"],
+        },
+    },
+    "sideswap_recommend": {
+        "description": (
+            "Recommend a peg vs an instant swap-market trade for a BTC ↔ L-BTC "
+            "conversion. Surfaces the trade-off (lower fee but slower) and "
+            "warns when the amount exceeds SideSwap's hot-wallet liquidity. "
+            "ALWAYS call this for large conversions before initiating a peg."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "integer",
+                    "description": "Amount in Satoshis to convert",
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["btc_to_lbtc", "lbtc_to_btc"],
+                    "description": "Direction of conversion",
+                },
+                "network": {
+                    "type": "string",
+                    "enum": ["mainnet", "testnet"],
+                    "default": "mainnet",
+                },
+            },
+            "required": ["amount", "direction"],
+        },
+    },
+    "sideswap_list_assets": {
+        "description": (
+            "List Liquid assets that SideSwap supports for atomic swaps "
+            "(e.g. L-BTC, USDt, EURx, MEX, DePix)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "network": {
+                    "type": "string",
+                    "enum": ["mainnet", "testnet"],
+                    "default": "mainnet",
+                },
+            },
+        },
+    },
+    "sideswap_quote": {
+        "description": (
+            "Get a read-only price quote for a SideSwap Liquid asset swap "
+            "(e.g. L-BTC ↔ USDt). Provide exactly one of send_amount or "
+            "recv_amount. Use this BEFORE sideswap_execute_swap so the user "
+            "can confirm the price."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "asset_id": {
+                    "type": "string",
+                    "description": "Liquid asset ID (hex) to swap with L-BTC",
+                },
+                "send_amount": {
+                    "type": "integer",
+                    "description": "Amount the user is sending (Satoshis)",
+                },
+                "recv_amount": {
+                    "type": "integer",
+                    "description": "Amount the user wants to receive (Satoshis)",
+                },
+                "send_bitcoins": {
+                    "type": "boolean",
+                    "description": "True if sending L-BTC for the asset; False if sending the asset for L-BTC",
+                    "default": True,
+                },
+                "network": {
+                    "type": "string",
+                    "enum": ["mainnet", "testnet"],
+                    "default": "mainnet",
+                },
+            },
+            "required": ["asset_id"],
+        },
+    },
+    "sideswap_execute_swap": {
+        "description": (
+            "Execute a Liquid atomic swap on SideSwap. Both directions are "
+            "supported via send_bitcoins: True = L-BTC → asset (default), "
+            "False = asset → L-BTC. The PSET returned by SideSwap is verified "
+            "locally against the agreed quote BEFORE signing — the swap is "
+            "aborted if the wallet's net balance change does not exactly match "
+            "(refusing to sign protects against a hostile server). The fee "
+            "tolerance is pinned to L-BTC, so on the asset → L-BTC direction "
+            "the asset side is checked at strict equality. Order is persisted "
+            "at every step for crash recovery. ALWAYS call sideswap_quote "
+            "first and confirm the price with the user before invoking this tool."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "asset_id": {
+                    "type": "string",
+                    "description": "Non-L-BTC Liquid asset (e.g. USDt). The L-BTC side is always the policy asset.",
+                },
+                "send_amount": {
+                    "type": "integer",
+                    "description": "Send amount in sats (L-BTC if send_bitcoins, else asset)",
+                },
+                "send_bitcoins": {
+                    "type": "boolean",
+                    "description": "True = send L-BTC to receive asset; False = send asset to receive L-BTC",
+                    "default": True,
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Liquid wallet to sign with",
+                    "default": "default",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Password to decrypt mnemonic (if encrypted at rest)",
+                },
+                "min_recv_amount": {
+                    "type": "integer",
+                    "description": (
+                        "Optional floor on the dealer's recv_amount in sats. "
+                        "Pass the recv_amount the user just confirmed in "
+                        "sideswap_quote — if the rate moved between preview "
+                        "and execution and the dealer offers less, the swap "
+                        "is rejected before signing."
+                    ),
+                },
+                "flexible_small_amount": {
+                    "type": "boolean",
+                    "description": (
+                        "When True, accept dealer-rounded send_amount up to "
+                        "±3000 sats from what was requested. SideSwap's mkt::* "
+                        "dealer rounds internally; small swaps (e.g. 5k–25k "
+                        "sats) often come back at a slightly different amount. "
+                        "Off by default — strict equality is safer at scale."
+                    ),
+                    "default": False,
+                },
+            },
+            "required": ["asset_id", "send_amount"],
+        },
+    },
+    "sideswap_swap_status": {
+        "description": (
+            "Get persisted status of a SideSwap atomic asset swap. Once the "
+            "swap is broadcast, pass the txid to lw_tx_status to track "
+            "on-chain confirmations."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "order_id": {
+                    "type": "string",
+                    "description": "Order ID returned from sideswap_execute_swap",
+                },
+            },
+            "required": ["order_id"],
+        },
+    },
 }
 
 
@@ -519,6 +797,33 @@ LIGHTNING:
 - Use lightning_send to pay a BOLT11 invoice using L-BTC (submarine swap via Boltz)
   Fees: ~0.1% + miner fees, Limits: 100 - 25,000,000 Sats
 - Use lightning_transaction_status to check status of any Lightning swap (send or receive)
+
+SIDESWAP (BTC ↔ L-BTC pegs and Liquid asset swaps):
+- Pegs are the canonical way to move funds between Bitcoin mainchain and Liquid.
+- Peg-in (BTC → L-BTC): user sends BTC to a SideSwap deposit address; after 2
+  BTC confirmations (~20 min), L-BTC arrives in their Liquid wallet.
+- Peg-out (L-BTC → BTC): user sends L-BTC to a SideSwap deposit address; after
+  2 Liquid confs and the federation sweep (~15-60 min total), BTC arrives.
+- Fees: 0.1% on each peg + a small second-chain fee (~286 sats on peg-in).
+- BEFORE initiating a peg for ≥ 0.01 BTC (1,000,000 sats), call
+  sideswap_recommend to surface the time-vs-fee trade-off and warn the user.
+- For VERY LARGE peg-ins that exceed SideSwap's hot-wallet balance, expect the
+  cold-wallet path: 102 BTC confirmations (~17 hours). Always check
+  sideswap_server_status first and warn the user when this applies.
+- For Liquid asset swaps (e.g. L-BTC ↔ USDt), sideswap_quote returns a quote
+  and sideswap_execute_swap performs the swap. Both directions are supported
+  via the send_bitcoins flag. The PSET returned by SideSwap is verified
+  LOCALLY against the agreed quote before signing — refusing to sign if the
+  recv balance does not match exactly. The fee tolerance is pinned to L-BTC,
+  so the non-L-BTC asset side is always checked at strict equality.
+
+WHEN TO RECOMMEND A PEG:
+- "I want to move my BTC to Liquid" → if amount ≥ 0.01 BTC, recommend peg-in.
+  Below that, instant atomic swaps may be preferable for speed.
+- "I want to move my L-BTC to Bitcoin" → recommend peg-out (it is the standard
+  path; swap-market liquidity for L-BTC → BTC is shallow).
+- ALWAYS explain the time trade-off and ask the user to confirm they want to
+  wait the expected duration before broadcasting.
 
 WATCH-ONLY WALLETS:
 - For a Bitcoin-only watch wallet: btc_import_descriptor (BIP84 wpkh xpub).
@@ -650,6 +955,26 @@ WALLET DELETION:
                 arguments=[
                     PromptArgument(name="wallet_name", description="Wallet name", required=False),
                 ],
+            ),
+            # SideSwap
+            Prompt(
+                name="peg_in",
+                description="Move BTC to Liquid (BTC → L-BTC) via SideSwap peg-in",
+                arguments=[
+                    PromptArgument(name="wallet_name", description="Wallet name", required=False),
+                ],
+            ),
+            Prompt(
+                name="peg_out",
+                description="Move L-BTC to Bitcoin (L-BTC → BTC) via SideSwap peg-out",
+                arguments=[
+                    PromptArgument(name="wallet_name", description="Wallet name", required=False),
+                ],
+            ),
+            Prompt(
+                name="swap_assets",
+                description="Quote a Liquid asset swap (e.g. L-BTC ↔ USDt) via SideSwap (read-only)",
+                arguments=[],
             ),
         ]
 
@@ -952,6 +1277,118 @@ Please follow this safety workflow:
 5. Ask me for EXPLICIT confirmation: "Are you sure you want to delete wallet '{wallet_name}'? This cannot be undone."
 6. Only after I explicitly confirm, call delete_wallet with wallet_name='{wallet_name}'
 7. Confirm deletion was successful""",
+                        ),
+                    )
+                ]
+            )
+
+        elif name == "peg_in":
+            return GetPromptResult(
+                messages=[
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text=f"""I want to peg in (move BTC into L-BTC) using my '{wallet_name}' wallet.
+
+Please:
+1. Ask me how much BTC I want to peg in (in BTC or Sats)
+2. If I haven't given a clear amount yet, also show my current Bitcoin balance
+   (btc_balance) so I have context
+3. Call sideswap_server_status to fetch live fees, minimums, and hot-wallet balance
+4. If the amount is >= 0.01 BTC (1,000,000 sats), call sideswap_recommend with
+   direction="btc_to_lbtc" and the amount to confirm peg-in is appropriate,
+   and surface the trade-off:
+   - Lower fee (0.1% vs ~0.2% on instant swaps)
+   - Slower: usually 20–40 min for 2 BTC confirmations
+   - For very large amounts: may require 102 confs (~17 hours) if it exceeds
+     SideSwap's hot-wallet liquidity. WARN clearly if this applies.
+5. Call sideswap_peg_quote to show the exact receive amount after fees
+6. Show me a summary BEFORE proceeding:
+   - Send amount (BTC) → Receive amount (L-BTC)
+   - Fee breakdown
+   - Expected time (and any 102-conf warning)
+7. Ask for explicit confirmation
+8. Call sideswap_peg_in to get the BTC deposit address (peg_addr)
+9. Ask me whether I want to fund it from my local Bitcoin wallet (btc_send) or
+   send manually from another wallet
+10. If from local: ask for password (if encrypted), then btc_send to peg_addr
+11. Show me the order_id and tell me to use sideswap_peg_status to track progress""",
+                        ),
+                    )
+                ]
+            )
+
+        elif name == "peg_out":
+            return GetPromptResult(
+                messages=[
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text=f"""I want to peg out (move L-BTC into Bitcoin) from my '{wallet_name}' wallet.
+
+Please:
+1. Show my current L-BTC balance (lw_balance)
+2. Ask me:
+   - How much L-BTC to peg out (Sats)
+   - Destination Bitcoin address (bc1...)
+3. Call sideswap_server_status to fetch live minimums and fees
+4. Call sideswap_recommend with direction="lbtc_to_btc" — peg-out is the
+   standard path for L-BTC → BTC and you should communicate that
+5. Call sideswap_peg_quote (peg_in=false) to show the exact receive amount
+6. Show me a summary BEFORE proceeding:
+   - Send: X L-BTC → Receive: Y BTC at {{btc_address}}
+   - Fee breakdown (0.1% + Bitcoin network fee, deducted from payout)
+   - Expected time: usually 15–60 minutes
+7. Ask for explicit confirmation
+8. If wallet is password-encrypted, ask for the password
+9. Call sideswap_peg_out — this broadcasts the L-BTC send to the SideSwap
+   deposit address. Show the order_id and lockup_txid
+10. Tell me to track progress with sideswap_peg_status""",
+                        ),
+                    )
+                ]
+            )
+
+        elif name == "swap_assets":
+            return GetPromptResult(
+                messages=[
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text="""I want to swap Liquid assets (e.g. L-BTC ↔ USDt) via SideSwap.
+
+Please:
+1. Call sideswap_list_assets to show what's tradeable on SideSwap right now
+2. Ask me what I want to swap and which direction:
+   - L-BTC → asset (send_bitcoins=true): I send L-BTC, receive an asset
+   - asset → L-BTC (send_bitcoins=false): I send an asset, receive L-BTC
+3. Ask me for the send_amount in the corresponding sats (L-BTC sats if
+   sending L-BTC; asset sats otherwise). For L-BTC, accept input in BTC
+   and convert.
+4. Show me my current balance for the send asset (lw_balance) so I have context
+5. Call sideswap_quote with the right send_bitcoins flag to get a price quote
+6. Show me a summary clearly:
+   - Send: X sats of [send asset]
+   - Receive: Y sats of [recv asset]
+   - Price + fixed_fee
+   - Net effective rate
+7. Ask for explicit confirmation
+8. If wallet is password-encrypted, ask me for the password
+9. Call sideswap_execute_swap with the same asset_id, send_amount, and
+   send_bitcoins flag. ALSO pass min_recv_amount=<recv_amount from the
+   quote> so the swap aborts if the rate has drifted between the preview
+   I just confirmed and the mkt::* quote that actually executes.
+   The tool will: capture a fresh quote (price may have moved by a few
+   percent), request the PSET via SideSwap's market.get_quote, VERIFY it
+   locally against the quote, sign it, and submit via market.taker_sign.
+   If the verification fails the tool aborts WITHOUT signing — that's a
+   safety feature, not a bug; relay the error message to me.
+10. On success show me txid + the explorer link
+11. Tell me to use sideswap_swap_status with the order_id to recall details
+    later, and lw_tx_status with the txid to check on-chain confirmation""",
                         ),
                     )
                 ]

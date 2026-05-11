@@ -720,6 +720,16 @@ class TestToolRegistry:
             "delete_wallet",
             "btc_import_descriptor",
             "btc_export_descriptor",
+            "sideswap_server_status",
+            "sideswap_peg_quote",
+            "sideswap_peg_in",
+            "sideswap_peg_out",
+            "sideswap_peg_status",
+            "sideswap_recommend",
+            "sideswap_list_assets",
+            "sideswap_quote",
+            "sideswap_execute_swap",
+            "sideswap_swap_status",
         }
         assert set(TOOLS.keys()) == expected
 
@@ -744,13 +754,57 @@ class TestDeleteWallet:
         with pytest.raises(ValueError, match="not found"):
             delete_wallet(wallet_name="nonexistent")
 
+    def test_delete_removes_sideswap_pegs_for_wallet(self, isolated_manager):
+        """SideSwap peg records belonging to the wallet are removed too."""
+        from aqua.sideswap import SideSwapPeg
+        from datetime import UTC, datetime
+
+        lw_import_mnemonic(
+            mnemonic=TEST_MNEMONIC, wallet_name="pegowner", network="testnet"
+        )
+        # Save a peg owned by this wallet plus one owned by another wallet.
+        own_peg = SideSwapPeg(
+            order_id="aaa111",
+            peg_in=True,
+            peg_addr="bc1q...",
+            recv_addr="lq1...",
+            amount=None,
+            expected_recv=None,
+            wallet_name="pegowner",
+            network="testnet",
+            status="pending",
+            created_at=datetime.now(UTC).isoformat(),
+        )
+        other_peg = SideSwapPeg(
+            order_id="bbb222",
+            peg_in=True,
+            peg_addr="bc1q...",
+            recv_addr="lq1...",
+            amount=None,
+            expected_recv=None,
+            wallet_name="someone_else",
+            network="testnet",
+            status="pending",
+            created_at=datetime.now(UTC).isoformat(),
+        )
+        isolated_manager.storage.save_sideswap_peg(own_peg)
+        isolated_manager.storage.save_sideswap_peg(other_peg)
+
+        result = delete_wallet(wallet_name="pegowner")
+        assert result["sideswap_pegs_removed"] == 1
+        assert isolated_manager.storage.load_sideswap_peg("aaa111") is None
+        # Other wallet's peg untouched.
+        assert isolated_manager.storage.load_sideswap_peg("bbb222") is not None
+
     def test_delete_removes_wallet(self, isolated_manager):
         """Wallet file is gone from storage after deletion."""
         lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="todelete", network="testnet")
         assert "todelete" in lw_list_wallets()["wallets"]
 
         result = delete_wallet(wallet_name="todelete")
-        assert result == {"deleted": True, "wallet_name": "todelete"}
+        assert result["deleted"] is True
+        assert result["wallet_name"] == "todelete"
+        assert result["sideswap_pegs_removed"] == 0
         assert "todelete" not in lw_list_wallets()["wallets"]
 
     def test_delete_clears_lw_manager_caches(self, isolated_manager):
