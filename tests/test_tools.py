@@ -13,6 +13,7 @@ from aqua.tools import (
     _manager,
     btc_export_descriptor,
     btc_import_descriptor,
+    changelly_send,
     delete_wallet,
     get_btc_manager,
     get_manager,
@@ -44,10 +45,12 @@ def isolated_manager():
         tools_module._manager = manager
         tools_module._btc_manager = None  # so get_btc_manager() uses same storage
         tools_module._lightning_manager = None
+        tools_module._pix_manager = None
         yield manager
         tools_module._manager = None
         tools_module._btc_manager = None
         tools_module._lightning_manager = None
+        tools_module._pix_manager = None
 
 
 # ---------------------------------------------------------------------------
@@ -717,9 +720,33 @@ class TestToolRegistry:
             "lightning_receive",
             "lightning_send",
             "lightning_transaction_status",
+            "pix_receive",
+            "pix_status",
             "delete_wallet",
             "btc_import_descriptor",
             "btc_export_descriptor",
+            "changelly_list_currencies",
+            "changelly_quote",
+            "changelly_send",
+            "changelly_receive",
+            "changelly_status",
+            "sideshift_list_coins",
+            "sideshift_pair_info",
+            "sideshift_quote",
+            "sideshift_send",
+            "sideshift_receive",
+            "sideshift_status",
+            "sideshift_recommend",
+            "sideswap_server_status",
+            "sideswap_peg_quote",
+            "sideswap_peg_in",
+            "sideswap_peg_out",
+            "sideswap_peg_status",
+            "sideswap_recommend",
+            "sideswap_list_assets",
+            "sideswap_quote",
+            "sideswap_execute_swap",
+            "sideswap_swap_status",
         }
         assert set(TOOLS.keys()) == expected
 
@@ -744,13 +771,57 @@ class TestDeleteWallet:
         with pytest.raises(ValueError, match="not found"):
             delete_wallet(wallet_name="nonexistent")
 
+    def test_delete_removes_sideswap_pegs_for_wallet(self, isolated_manager):
+        """SideSwap peg records belonging to the wallet are removed too."""
+        from aqua.sideswap import SideSwapPeg
+        from datetime import UTC, datetime
+
+        lw_import_mnemonic(
+            mnemonic=TEST_MNEMONIC, wallet_name="pegowner", network="testnet"
+        )
+        # Save a peg owned by this wallet plus one owned by another wallet.
+        own_peg = SideSwapPeg(
+            order_id="aaa111",
+            peg_in=True,
+            peg_addr="bc1q...",
+            recv_addr="lq1...",
+            amount=None,
+            expected_recv=None,
+            wallet_name="pegowner",
+            network="testnet",
+            status="pending",
+            created_at=datetime.now(UTC).isoformat(),
+        )
+        other_peg = SideSwapPeg(
+            order_id="bbb222",
+            peg_in=True,
+            peg_addr="bc1q...",
+            recv_addr="lq1...",
+            amount=None,
+            expected_recv=None,
+            wallet_name="someone_else",
+            network="testnet",
+            status="pending",
+            created_at=datetime.now(UTC).isoformat(),
+        )
+        isolated_manager.storage.save_sideswap_peg(own_peg)
+        isolated_manager.storage.save_sideswap_peg(other_peg)
+
+        result = delete_wallet(wallet_name="pegowner")
+        assert result["sideswap_pegs_removed"] == 1
+        assert isolated_manager.storage.load_sideswap_peg("aaa111") is None
+        # Other wallet's peg untouched.
+        assert isolated_manager.storage.load_sideswap_peg("bbb222") is not None
+
     def test_delete_removes_wallet(self, isolated_manager):
         """Wallet file is gone from storage after deletion."""
         lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="todelete", network="testnet")
         assert "todelete" in lw_list_wallets()["wallets"]
 
         result = delete_wallet(wallet_name="todelete")
-        assert result == {"deleted": True, "wallet_name": "todelete"}
+        assert result["deleted"] is True
+        assert result["wallet_name"] == "todelete"
+        assert result["sideswap_pegs_removed"] == 0
         assert "todelete" not in lw_list_wallets()["wallets"]
 
     def test_delete_clears_lw_manager_caches(self, isolated_manager):
@@ -879,6 +950,35 @@ class TestBtcExportDescriptor:
         """Exporting descriptor for a non-existent wallet raises ValueError matching 'not found'."""
         with pytest.raises(ValueError, match="not found"):
             btc_export_descriptor(wallet_name="ghost_btc")
+
+
+# ---------------------------------------------------------------------------
+# changelly_send — amount_from validation
+# ---------------------------------------------------------------------------
+
+
+class TestChangellySendAmountValidation:
+    """amount_from must be a positive decimal before hitting Changelly."""
+
+    def test_empty_amount_from_raises(self):
+        with pytest.raises(ValueError, match="amount_from must be a non-empty"):
+            changelly_send("solana", "So11111111111111111111111111111111111111112", "")
+
+    def test_whitespace_only_raises(self):
+        with pytest.raises(ValueError, match="amount_from must be a non-empty"):
+            changelly_send("solana", "So11111111111111111111111111111111111111112", "   ")
+
+    def test_zero_raises(self):
+        with pytest.raises(ValueError, match="amount_from must be positive"):
+            changelly_send("solana", "So11111111111111111111111111111111111111112", "0")
+
+    def test_negative_raises(self):
+        with pytest.raises(ValueError, match="amount_from must be positive"):
+            changelly_send("solana", "So11111111111111111111111111111111111111112", "-10")
+
+    def test_invalid_decimal_raises(self):
+        with pytest.raises(ValueError, match="amount_from must be a valid decimal"):
+            changelly_send("solana", "So11111111111111111111111111111111111111112", "not-a-number")
 
 
 # ---------------------------------------------------------------------------
