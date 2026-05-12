@@ -63,8 +63,6 @@ class PixSwap:
     def from_dict(cls, data: dict) -> "PixSwap":
         known = {f.name for f in fields(cls)}
         filtered = {k: v for k, v in data.items() if k in known}
-        for field_name in ("qr_image_url", "expiration", "blockchain_txid", "payer_name"):
-            filtered.setdefault(field_name, None)
         return cls(**filtered)
 
 
@@ -114,7 +112,7 @@ class EulenClient:
             detail = ""
             try:
                 err_body = json.loads(e.read().decode())
-                detail = err_body.get("error") or err_body.get("message") or str(err_body)
+                detail = err_body.get("error") or err_body.get("message") or ""
             except Exception:
                 pass
             msg = f"Eulen API error ({e.code} {method} {path})"
@@ -199,13 +197,21 @@ class PixManager:
         wallet_data = self.storage.load_wallet(wallet_name)
         if not wallet_data:
             raise ValueError(f"Wallet '{wallet_name}' not found")
+        # DePix is a mainnet-only Liquid asset. Eulen has no testnet endpoint;
+        # a testnet wallet would generate a tlq1... address Eulen cannot pay to,
+        # leaving the user out-of-pocket if the Pix charge settled.
+        if wallet_data.network != "mainnet":
+            raise ValueError(
+                "Pix → DePix is only available on Liquid mainnet "
+                f"(wallet '{wallet_name}' is on {wallet_data.network!r})."
+            )
 
         addr = self.wallet_manager.get_address(wallet_name)
         depix_address = addr.address
 
         resp = client.create_deposit(amount_cents, depix_address)
 
-        deposit_id = resp.get("id") or resp.get("depositId")
+        deposit_id = resp.get("id")
         qr_copy_paste = resp.get("qrCopyPaste")
         if not deposit_id or not qr_copy_paste:
             raise RuntimeError(f"Eulen response missing required fields: {resp}")
@@ -249,7 +255,7 @@ class PixManager:
                             f"Eulen returned unknown status '{new_status}'; "
                             f"keeping cached '{swap.status}'."
                         )
-                txid = resp.get("blockchainTxID") or resp.get("blockchainTxId")
+                txid = resp.get("blockchainTxID")
                 if txid:
                     swap.blockchain_txid = txid
                 payer = resp.get("payerName")
@@ -259,7 +265,11 @@ class PixManager:
                 if expiration:
                     swap.expiration = expiration
                 self.storage.save_pix_swap(swap)
-            except Exception as e:
+            except (RuntimeError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+                # Network / Eulen-side problems are recoverable on the next
+                # poll. Programming errors (AttributeError, KeyError, etc.)
+                # propagate so the bug surfaces instead of hiding behind a
+                # generic "Could not fetch remote status" warning.
                 warning = f"Could not fetch remote status: {e}"
 
         result = {

@@ -87,6 +87,14 @@ def isolated_managers():
 @pytest.fixture
 def test_wallet(isolated_managers):
     storage, wm = isolated_managers
+    # Pix → DePix is mainnet-only. The fixture mirrors that constraint.
+    wm.import_mnemonic(TEST_MNEMONIC, "default", "mainnet")
+    return storage, wm
+
+
+@pytest.fixture
+def testnet_wallet(isolated_managers):
+    storage, wm = isolated_managers
     wm.import_mnemonic(TEST_MNEMONIC, "default", "testnet")
     return storage, wm
 
@@ -196,6 +204,22 @@ class TestEulenClient:
             assert "invalid amount" in str(exc.value)
             assert "400" in str(exc.value)
 
+    def test_create_deposit_http_error_empty_body_omits_literal_braces(self):
+        # An HTTP error with an empty (or unrecognised-shape) JSON body must
+        # not surface "{}" or "{'foo': 'bar'}" as a fake "error detail" —
+        # that reads like an AQUA bug rather than a provider error.
+        client = EulenClient()
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            err = urllib.error.HTTPError("url", 500, "Server Error", {}, MagicMock())
+            err.read = MagicMock(return_value=b"{}")
+            mock_urlopen.side_effect = err
+            with pytest.raises(RuntimeError) as exc:
+                client.create_deposit(5000, "lq1test")
+            message = str(exc.value)
+            assert "500" in message
+            assert "{}" not in message
+            assert "{'" not in message
+
     def test_get_deposit_status_builds_query(self):
         client = EulenClient()
         with patch("urllib.request.urlopen") as mock_urlopen:
@@ -285,6 +309,17 @@ class TestPixManagerCreateDeposit:
             with pytest.raises(RuntimeError, match="missing required fields"):
                 manager.create_deposit(5000, "default")
 
+    def test_rejects_testnet_wallet(self, testnet_wallet):
+        # DePix is a mainnet-only Liquid asset. A testnet wallet must fail
+        # before any HTTP call so the user doesn't pay a Pix charge that
+        # cannot be settled.
+        storage, wm = testnet_wallet
+        manager = PixManager(storage=storage, wallet_manager=wm)
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            with pytest.raises(ValueError, match="mainnet"):
+                manager.create_deposit(5000, "default")
+            mock_urlopen.assert_not_called()
+
 
 class TestPixManagerGetDepositStatus:
     def _seed_swap(self, storage, wm) -> PixSwap:
@@ -331,6 +366,19 @@ class TestPixManagerGetDepositStatus:
         assert result["status"] == "pending"
         assert "warning" in result
         assert "offline" in result["warning"]
+
+    def test_programming_error_propagates(self, test_wallet):
+        # Internal bugs (AttributeError, KeyError, etc.) must not be hidden
+        # behind a "Could not fetch remote status" warning — they would
+        # otherwise look like a transient Eulen issue.
+        storage, wm = test_wallet
+        seeded = self._seed_swap(storage, wm)
+
+        manager = PixManager(storage=storage, wallet_manager=wm)
+        with patch("aqua.pix.EulenClient") as mock_client_cls:
+            mock_client_cls.return_value.get_deposit_status.side_effect = AttributeError("boom")
+            with pytest.raises(AttributeError, match="boom"):
+                manager.get_deposit_status(seeded.swap_id)
 
 
 # ---------------------------------------------------------------------------
