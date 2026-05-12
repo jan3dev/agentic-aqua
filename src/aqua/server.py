@@ -1952,6 +1952,7 @@ Please:
     @server.read_resource()
     async def read_resource(uri: str) -> str:
         """Read a documentation resource."""
+        uri = str(uri)
         if uri == "aqua://docs/quickstart":
             return """# Agentic AQUA Quick Start
 
@@ -2186,7 +2187,7 @@ If you have:
     return server
 
 
-async def run_server():
+async def run_server(): # pragma: no cover
     """Run the MCP server."""
     server = create_server()
 
@@ -2199,10 +2200,10 @@ async def run_server():
         )
 
 
-def main():
+def main(): # pragma: no cover
     """Entry point."""
     asyncio.run(run_server())
 
 
-if __name__ == "__main__":
+if __name__ == "__main__": # pragma: no cover
     main()
