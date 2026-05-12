@@ -9,7 +9,6 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from .assets import MAINNET_ASSETS, TESTNET_ASSETS, resolve_asset_name
-from .lnurl import is_lightning_address
 from .bitcoin import BitcoinWalletManager
 from .wallet import WalletManager
 
@@ -830,11 +829,6 @@ def lightning_send(
             raise ValueError("amount_sats must be a positive integer")
         if amount_sats <= 0:
             raise ValueError("Amount must be positive")
-
-    if is_lightning_address(invoice) and amount_sats is None:
-        raise ValueError(
-            "amount_sats is required when paying a Lightning Address"
-        )
 
     manager = get_lightning_manager()
     swap = manager.pay_invoice(

@@ -124,7 +124,7 @@ class EulenClient:
 
     def create_deposit(self, amount_cents: int, depix_address: str) -> dict:
         """POST /deposit — create a Pix charge that pays out DePix to depix_address."""
-        return self._api_request(
+        body = self._api_request(
             "POST",
             "/deposit",
             {
@@ -132,10 +132,25 @@ class EulenClient:
                 "depixAddress": depix_address,
             },
         )
+        return _unwrap_eulen_envelope(body, "/deposit")
 
     def get_deposit_status(self, deposit_id: str) -> dict:
         """GET /deposit-status?id=<deposit_id> — poll Eulen for delivery state."""
-        return self._api_request("GET", "/deposit-status", query={"id": deposit_id})
+        body = self._api_request("GET", "/deposit-status", query={"id": deposit_id})
+        return _unwrap_eulen_envelope(body, "/deposit-status")
+
+
+def _unwrap_eulen_envelope(body: dict, path: str) -> dict:
+    """Eulen wraps success payloads as {"response": {...}, "async": bool}.
+
+    Errors are surfaced separately via HTTPError in _api_request, so this
+    only runs on 2xx bodies — a missing/non-dict "response" indicates an
+    API contract change rather than a normal failure mode.
+    """
+    inner = body.get("response") if isinstance(body, dict) else None
+    if not isinstance(inner, dict):
+        raise RuntimeError(f"Eulen {path} returned malformed envelope: {body!r}")
+    return inner
 
 
 def format_brl(amount_cents: int) -> str:

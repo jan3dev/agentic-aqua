@@ -144,7 +144,6 @@ def resolve_lightning_address(address: str, amount_sats: int) -> str:
     callback = payreq.get("callback")
     min_sendable = payreq.get("minSendable")
     max_sendable = payreq.get("maxSendable")
-    metadata = payreq.get("metadata")
 
     _validate_safe_https_url(callback, "'callback'")
     if not isinstance(min_sendable, (int, float)) or not isinstance(max_sendable, (int, float)):
@@ -153,8 +152,6 @@ def resolve_lightning_address(address: str, amount_sats: int) -> str:
         )
     min_sendable = int(min_sendable)
     max_sendable = int(max_sendable)
-    if not isinstance(metadata, str):
-        raise ValueError("LNURL-pay 'metadata' must be a string")
 
     amount_msat = amount_sats * 1000
     if amount_msat < min_sendable or amount_msat > max_sendable:

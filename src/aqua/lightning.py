@@ -165,7 +165,6 @@ class LightningManager:
         Returns:
             LightningSwap with pending status and lockup_txid
         """
-        from_lightning_address = False
         if is_lightning_address(invoice):
             if amount_sats is None:
                 raise ValueError(
@@ -177,7 +176,6 @@ class LightningManager:
                     f"({BOLTZ_MIN_SATS}-{BOLTZ_MAX_SATS} sats)"
                 )
             invoice = resolve_lightning_address(invoice, amount_sats)
-            from_lightning_address = True
 
         valid_prefixes = ("lnbc", "lntb")
         if not invoice or not any(invoice.startswith(p) for p in valid_prefixes):
@@ -185,16 +183,16 @@ class LightningManager:
                 "Invalid invoice: must be a BOLT11 Lightning invoice starting with 'lnbc' (mainnet) or 'lntb' (testnet) or a Lightning Address (user@domain)"
             )
 
-        if amount_sats is not None:
-            decoded = decode_bolt11_amount_sats(invoice)
-            if from_lightning_address and decoded is None:
-                raise ValueError(
-                    f"Lightning Address resolved to a zero-amount invoice (expected {amount_sats} sats)"
-                )
-            if decoded is not None and decoded != amount_sats:
-                raise ValueError(
-                    f"amount_sats ({amount_sats}) does not match BOLT11 invoice amount ({decoded})"
-                )
+        invoice_amount = decode_bolt11_amount_sats(invoice)
+        if invoice_amount is None:
+            raise ValueError(
+                "Amountless BOLT11 invoices are not supported. Use a BOLT11 "
+                "invoice with an embedded amount, or a Lightning Address with amount_sats."
+            )
+        if amount_sats is not None and invoice_amount != amount_sats:
+            raise ValueError(
+                f"amount_sats ({amount_sats}) does not match BOLT11 invoice amount ({invoice_amount})"
+            )
 
         wallet_data = self.storage.load_wallet(wallet_name)
         if not wallet_data:
@@ -209,24 +207,14 @@ class LightningManager:
 
         network = wallet_data.network
 
-        invoice_amount = decode_bolt11_amount_sats(invoice)
-        if invoice_amount is not None:
-            if invoice_amount < BOLTZ_MIN_SATS:
-                raise ValueError(
-                    f"Invoice amount {invoice_amount} sats is below minimum ({BOLTZ_MIN_SATS} sats)"
-                )
-            if invoice_amount > BOLTZ_MAX_SATS:
-                raise ValueError(
-                    f"Invoice amount {invoice_amount} sats exceeds maximum ({BOLTZ_MAX_SATS} sats)"
-                )
-            # Validate balance before creating Boltz swap
-            balances = self.wallet_manager.get_balance(wallet_name)
-            lbtc_balance = next((b.amount for b in balances if b.ticker == "L-BTC"), 0)
-            if lbtc_balance < invoice_amount:
-                raise ValueError(
-                    f"Insufficient L-BTC balance: have {lbtc_balance} sats, need at least {invoice_amount} sats"
-                )
-
+        if invoice_amount < BOLTZ_MIN_SATS:
+            raise ValueError(
+                f"Invoice amount {invoice_amount} sats is below minimum ({BOLTZ_MIN_SATS} sats)"
+            )
+        if invoice_amount > BOLTZ_MAX_SATS:
+            raise ValueError(
+                f"Invoice amount {invoice_amount} sats exceeds maximum ({BOLTZ_MAX_SATS} sats)"
+            )
         client = BoltzClient(network=network)
         pairs = client.get_submarine_pairs()
         pair = pairs.get("L-BTC", {}).get("BTC")
@@ -236,6 +224,15 @@ class LightningManager:
         refund_privkey, refund_pubkey = generate_keypair()
         swap_resp = client.create_submarine_swap(invoice, refund_pubkey)
         expected_amount = swap_resp["expectedAmount"]
+
+        balances = self.wallet_manager.get_balance(wallet_name)
+        lbtc_balance = next((b.amount for b in balances if b.ticker == "L-BTC"), 0)
+        if lbtc_balance < expected_amount:
+            raise ValueError(
+                f"Insufficient L-BTC balance: have {lbtc_balance} sats, "
+                f"need at least {expected_amount} sats "
+                f"(invoice {invoice_amount} sats + Boltz swap fees)"
+            )
 
         swap = LightningSwap(
             swap_id=swap_resp["id"],

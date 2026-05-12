@@ -347,17 +347,26 @@ class TestLightningManagerSend:
             with pytest.raises(ValueError, match="below minimum"):
                 manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
 
+    @patch("aqua.lightning.generate_keypair")
     @patch.object(
         type(get_manager()),
         "get_balance",
         return_value=[],  # No balance
     )
     @patch("aqua.lightning.decode_bolt11_amount_sats")
+    @patch("aqua.lightning.BoltzClient")
     def test_send_insufficient_balance(
-        self, mock_decode, mock_get_balance, test_wallet
+        self, mock_boltz, mock_decode, mock_get_balance, mock_keygen, test_wallet
     ):
-        """Insufficient L-BTC balance raises ValueError before Boltz call."""
-        mock_decode.return_value = 100000
+        """Insufficient L-BTC balance raises ValueError using expected_amount (post-Boltz)."""
+        mock_keygen.return_value = ("privkey", "pubkey")
+        mock_decode.return_value = 50000
+
+        mock_boltz_client = MagicMock()
+        mock_boltz.return_value = mock_boltz_client
+        mock_boltz_client.get_submarine_pairs.return_value = MOCK_BOLTZ_SUBMARINE_PAIRS
+        mock_boltz_client.create_submarine_swap.return_value = MOCK_BOLTZ_SWAP_RESPONSE
+
         manager = get_lightning_manager()
 
         with pytest.raises(ValueError, match="Insufficient L-BTC balance"):
@@ -548,6 +557,28 @@ class TestLightningManagerSendLNAddress:
                 manager.pay_invoice(
                     VALID_INVOICE_MAINNET, "default", amount_sats=99_999
                 )
+
+    def test_amountless_bolt11_rejected(self, test_wallet):
+        """Amountless BOLT11 is rejected before any Boltz HTTP call."""
+        manager = get_lightning_manager()
+        with patch(
+            "aqua.lightning.decode_bolt11_amount_sats", return_value=None
+        ), patch("aqua.lightning.BoltzClient") as mock_boltz:
+            with pytest.raises(ValueError, match="Amountless BOLT11"):
+                manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
+            mock_boltz.assert_not_called()
+
+    def test_amountless_bolt11_rejected_even_with_amount_sats(self, test_wallet):
+        """Passing amount_sats does not unlock an amountless BOLT11."""
+        manager = get_lightning_manager()
+        with patch(
+            "aqua.lightning.decode_bolt11_amount_sats", return_value=None
+        ), patch("aqua.lightning.BoltzClient") as mock_boltz:
+            with pytest.raises(ValueError, match="Amountless BOLT11"):
+                manager.pay_invoice(
+                    VALID_INVOICE_MAINNET, "default", amount_sats=50_000
+                )
+            mock_boltz.assert_not_called()
 
 
 class TestLightningManagerReceiveStatus:
@@ -1058,14 +1089,22 @@ class TestLightningTools:
             )
 
     def test_lightning_send_tool_ln_address_requires_amount_sats(self):
-        """lightning_send rejects Lightning Address without amount_sats before manager."""
+        """lightning_send delegates LN-address-without-amount validation to the manager."""
         with patch("aqua.tools.get_lightning_manager") as mock_get:
+            mock_manager = MagicMock()
+            mock_manager.pay_invoice.side_effect = ValueError(
+                "amount_sats is required when paying a Lightning Address"
+            )
+            mock_get.return_value = mock_manager
+
             with pytest.raises(
                 ValueError, match="amount_sats is required when paying a Lightning Address"
             ):
                 lightning_send("alice@getalby.com", "default")
 
-            mock_get.assert_not_called()
+            mock_manager.pay_invoice.assert_called_once_with(
+                "alice@getalby.com", "default", password=None, amount_sats=None
+            )
 
     def test_lightning_send_tool_rejects_non_positive_amount_sats(self):
         """Invalid amount_sats uses same ValueError style as lw_send."""
