@@ -1,6 +1,9 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.13"
+
+[options]
+exclude-newer = "2026-04-05T00:00:00Z"
 
 [[package]]
 name = "agentic-aqua"
