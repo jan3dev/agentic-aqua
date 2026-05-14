@@ -162,8 +162,19 @@ class BitcoinWalletManager:
             self._clients[network] = [bdk.EsploraClient(u) for u in urls]
         return self._clients[network]
 
-    def _get_client(self, network: str) -> bdk.EsploraClient:
-        return self._get_clients(network)[0]
+    def _with_client_fallback(
+        self, network: str, fn: Callable[[bdk.EsploraClient], _T]
+    ) -> _T:
+        """Try fn against each Esplora client in order, retrying transient errors per client."""
+        clients = self._get_clients(network)
+        last_exc: Optional[Exception] = None
+        for client in clients:
+            try:
+                return _retry_on_network_error(lambda c=client: fn(c))
+            except Exception as exc:
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc
 
     def _get_btc_cache_path(self, wallet_name: str) -> Path:
         base = self.storage.get_cache_path(wallet_name)
@@ -357,26 +368,13 @@ class BitcoinWalletManager:
     def sync_wallet(self, wallet_name: str) -> None:
         """Sync wallet with blockchain via Esplora."""
         wallet, network = self._get_wallet(wallet_name)
-        clients = self._get_clients(network)
-
-        last_exc: Optional[Exception] = None
-        for client in clients:
-
-            def _scan(c=client):
-                request = wallet.start_full_scan().build()
-                return c.full_scan(request, STOP_GAP, PARALLEL_REQUESTS)
-
-            try:
-                update = _retry_on_network_error(_scan)
-                wallet.apply_update(update)
-                persister = self._persisters[wallet_name]
-                wallet.persist(persister)
-                return
-            except Exception as exc:
-                last_exc = exc
-                continue
-        assert last_exc is not None
-        raise last_exc
+        update = self._with_client_fallback(
+            network,
+            lambda c: c.full_scan(wallet.start_full_scan().build(), STOP_GAP, PARALLEL_REQUESTS),
+        )
+        wallet.apply_update(update)
+        persister = self._persisters[wallet_name]
+        wallet.persist(persister)
 
     def get_balance(self, wallet_name: str) -> int:
         """Get Bitcoin balance in satoshis."""
@@ -493,6 +491,5 @@ class BitcoinWalletManager:
         if not finalized:
             raise RuntimeError("Failed to finalize PSBT")
         tx = psbt.extract_tx()
-        client = self._get_client(network)
-        _retry_on_network_error(lambda: client.broadcast(tx))
+        self._with_client_fallback(network, lambda c: c.broadcast(tx))
         return tx.compute_txid().serialize()[::-1].hex()
