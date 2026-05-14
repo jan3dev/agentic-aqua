@@ -44,6 +44,7 @@ dev = [
 [project.scripts]
 aqua = "aqua.cli.main:cli"
 aqua-mcp = "aqua.server:main"
+agentic-aqua = "aqua.server:main"
 
 [project.urls]
 Homepage = "https://github.com/jan3dev/agentic-aqua"
