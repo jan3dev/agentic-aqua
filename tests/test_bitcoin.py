@@ -554,21 +554,24 @@ class TestEsploraFallback:
         assert c1.full_scan.call_count >= 1
         assert c2.full_scan.call_count >= 1
 
-    def test_send_broadcast_falls_back_to_second_explorer(self, isolated_managers):
-        """End-to-end: when first Esplora's broadcast fails, send() retries on the
-        second and still returns the txid."""
+    def test_send_broadcast_retries_transient_on_first_client_only(self, isolated_managers):
+        """send() uses ONLY the first Esplora client for broadcast (no cross-client
+        fallback), but does retry transient errors within that client. The second
+        client must never be touched even when the first hiccups transiently.
+
+        Rationale: cross-client broadcast fallback can mask a successful first
+        broadcast when the second client returns 'already known'. See Hallazgo #2.
+        """
         manager, btc_manager = isolated_managers
         manager.import_mnemonic(TEST_MNEMONIC, "w", "mainnet")
         btc_manager.create_wallet(TEST_MNEMONIC, "w", "mainnet")
 
-        # Wire two mock clients before send() touches the network.
+        # c1 fails once with a transient error, then succeeds on retry.
         c1 = MagicMock()
-        c1.broadcast.side_effect = Exception("connection reset")
+        c1.broadcast.side_effect = [Exception("connection reset"), None]
         c2 = MagicMock()
-        c2.broadcast.return_value = None
         btc_manager._clients["mainnet"] = [c1, c2]
 
-        # Fake tx: .compute_txid().serialize() → bytes; send() reverses + hexes them.
         fake_txid_bytes = bytes.fromhex("aa" * 32)
         fake_tx = MagicMock()
         fake_tx.compute_txid.return_value.serialize.return_value = fake_txid_bytes
@@ -601,5 +604,5 @@ class TestEsploraFallback:
             )
 
         assert txid == fake_txid_bytes[::-1].hex()
-        c1.broadcast.assert_called()
-        c2.broadcast.assert_called_once()
+        assert c1.broadcast.call_count == 2  # one transient failure + one success
+        c2.broadcast.assert_not_called()

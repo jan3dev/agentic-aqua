@@ -491,5 +491,6 @@ class BitcoinWalletManager:
         if not finalized:
             raise RuntimeError("Failed to finalize PSBT")
         tx = psbt.extract_tx()
-        self._with_client_fallback(network, lambda c: c.broadcast(tx))
+        client = self._get_clients(network)[0]
+        _retry_on_network_error(lambda: client.broadcast(tx))
         return tx.compute_txid().serialize()[::-1].hex()
