@@ -21,6 +21,7 @@ from aqua.tools import (
     btc_send,
     btc_transactions,
     get_btc_manager,
+    get_manager,
     lw_import_mnemonic,
     unified_balance,
 )
@@ -229,7 +230,9 @@ class TestUnifiedImportAndBalance:
     def test_unified_balance_aggregates_both_networks(self, isolated_managers):
         """unified_balance returns bitcoin and liquid sections."""
         lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="u", network="mainnet")
-        with patch.object(get_btc_manager(), "sync_wallet"):
+        with patch.object(get_btc_manager(), "sync_wallet"), patch.object(
+            get_manager(), "sync_wallet"
+        ):
             result = unified_balance(wallet_name="u")
         assert result["wallet_name"] == "u"
         assert "bitcoin" in result
@@ -247,7 +250,8 @@ class TestUnifiedImportAndBalance:
         signer = lwk.Signer(m, net)
         desc = str(signer.wpkh_slip77_descriptor())
         manager.import_descriptor(desc, "liquid_only", "mainnet")
-        result = unified_balance(wallet_name="liquid_only")
+        with patch.object(manager, "sync_wallet"):
+            result = unified_balance(wallet_name="liquid_only")
         assert result["wallet_name"] == "liquid_only"
         assert result["bitcoin"] is None
         assert "bitcoin_error" in result
