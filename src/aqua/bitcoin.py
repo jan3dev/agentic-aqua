@@ -58,6 +58,16 @@ RETRY_DELAY_SECONDS = 1.0
 _T = TypeVar("_T")
 
 
+def _is_transient_network_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return (
+        "connection reset" in msg
+        or "timed out" in msg
+        or "timeout" in msg
+        or "minreq" in msg
+    )
+
+
 def _retry_on_network_error(fn: Callable[[], _T]) -> _T:
     """Retry a network call on transient Esplora failures (connection reset, timeouts).
 
@@ -69,14 +79,7 @@ def _retry_on_network_error(fn: Callable[[], _T]) -> _T:
         try:
             return fn()
         except Exception as exc:
-            msg = str(exc).lower()
-            transient = (
-                "connection reset" in msg
-                or "timed out" in msg
-                or "timeout" in msg
-                or "minreq" in msg
-            )
-            if not transient:
+            if not _is_transient_network_error(exc):
                 raise
             last_exc = exc
             if attempt < MAX_RETRIES - 1:
@@ -165,13 +168,17 @@ class BitcoinWalletManager:
     def _with_client_fallback(
         self, network: str, fn: Callable[[bdk.EsploraClient], _T]
     ) -> _T:
-        """Try fn against each Esplora client in order, retrying transient errors per client."""
+        """Try fn against each Esplora client in order, retrying transient errors per client.
+        Only network-level transient failures trigger fallback to the next client.
+        """
         clients = self._get_clients(network)
         last_exc: Optional[Exception] = None
         for client in clients:
             try:
                 return _retry_on_network_error(lambda c=client: fn(c))
             except Exception as exc:
+                if not _is_transient_network_error(exc):
+                    raise
                 last_exc = exc
         assert last_exc is not None
         raise last_exc

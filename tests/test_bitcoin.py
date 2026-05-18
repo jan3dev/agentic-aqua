@@ -13,6 +13,7 @@ from aqua.bitcoin import (
     _derive_change_from_external,
     _extract_confirmation_height,
     _extract_xpub_metadata,
+    _is_transient_network_error,
 )
 from aqua.storage import Storage, WalletData
 from aqua.tools import (
@@ -518,11 +519,12 @@ class TestEsploraFallback:
         assert c1.full_scan.call_count >= 1
         c2.full_scan.assert_called_once()
 
-    def test_fallback_does_not_swallow_non_transient_but_still_tries_next(
+    def test_fallback_does_not_try_next_client_on_non_transient(
         self, isolated_managers
     ):
-        """Non-transient on first client should NOT retry that client, but still falls
-        through to the next (matches _with_client_fallback's per-client try/except)."""
+        """Non-transient errors propagate immediately from the first client; the
+        second client must NOT be invoked, since identical input would just fail
+        again with extra latency."""
         _, btc_manager = isolated_managers
         c1 = MagicMock()
         c1.broadcast.side_effect = ValueError("bad request")
@@ -530,12 +532,11 @@ class TestEsploraFallback:
         c2.broadcast.return_value = "ok"
         btc_manager._clients["mainnet"] = [c1, c2]
 
-        result = btc_manager._with_client_fallback("mainnet", lambda c: c.broadcast("tx"))
+        with pytest.raises(ValueError, match="bad request"):
+            btc_manager._with_client_fallback("mainnet", lambda c: c.broadcast("tx"))
 
-        assert result == "ok"
-        # Non-transient → only one attempt on c1 (no retry)
         c1.broadcast.assert_called_once()
-        c2.broadcast.assert_called_once()
+        c2.broadcast.assert_not_called()
 
     def test_fallback_raises_last_exception_when_all_fail(self, isolated_managers):
         _, btc_manager = isolated_managers
@@ -606,3 +607,22 @@ class TestEsploraFallback:
         assert txid == fake_txid_bytes[::-1].hex()
         assert c1.broadcast.call_count == 2  # one transient failure + one success
         c2.broadcast.assert_not_called()
+
+
+class TestTransientClassification:
+    """Verify _is_transient_network_error correctly classifies error messages."""
+
+    def test_connection_reset_is_transient(self):
+        assert _is_transient_network_error(Exception("connection reset")) is True
+
+    def test_timed_out_is_transient(self):
+        assert _is_transient_network_error(Exception("timed out")) is True
+
+    def test_minreq_is_transient(self):
+        assert _is_transient_network_error(Exception("minreq error")) is True
+
+    def test_value_error_bad_request_is_not_transient(self):
+        assert _is_transient_network_error(ValueError("bad request")) is False
+
+    def test_404_is_not_transient(self):
+        assert _is_transient_network_error(Exception("404 not found")) is False
