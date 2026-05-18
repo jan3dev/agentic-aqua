@@ -24,26 +24,34 @@ TEST_MNEMONIC = (
     "abandon abandon abandon abandon abandon about"
 )
 
-MOCK_DEPOSIT_RESPONSE = {
+# Eulen wraps every 2xx body as {"response": {...}, "async": bool}; tests must
+# mirror that shape so the client's unwrap is actually exercised.
+MOCK_DEPOSIT_FIELDS = {
     "id": "eulen_deposit_abc",
     "qrCopyPaste": "00020126580014br.gov.bcb.pix0136example-pix-copy-paste-string6304ABCD",
     "qrImageUrl": "https://depix.eulen.app/qr/eulen_deposit_abc.png",
     "expiration": "2026-05-08T23:59:59Z",
+}
+MOCK_DEPOSIT_RESPONSE = {"response": MOCK_DEPOSIT_FIELDS, "async": False}
+
+MOCK_STATUS_PENDING = {
+    "response": {
+        "status": "pending",
+        "valueInCents": 5000,
+        "expiration": "2026-05-08T23:59:59Z",
+    },
     "async": False,
 }
 
-MOCK_STATUS_PENDING = {
-    "status": "pending",
-    "valueInCents": 5000,
-    "expiration": "2026-05-08T23:59:59Z",
-}
-
 MOCK_STATUS_SETTLED = {
-    "status": "depix_sent",
-    "valueInCents": 5000,
-    "payerName": "FULANO DE TAL",
-    "blockchainTxID": "deadbeef" * 8,
-    "expiration": "2026-05-08T23:59:59Z",
+    "response": {
+        "status": "depix_sent",
+        "valueInCents": 5000,
+        "payerName": "FULANO DE TAL",
+        "blockchainTxID": "deadbeef" * 8,
+        "expiration": "2026-05-08T23:59:59Z",
+    },
+    "async": False,
 }
 
 
@@ -288,7 +296,7 @@ class TestPixManagerCreateDeposit:
         assert swap.swap_id == "eulen_deposit_abc"
         assert swap.amount_cents == 5000
         assert swap.qr_copy_paste.startswith("00020126")
-        assert swap.qr_image_url == MOCK_DEPOSIT_RESPONSE["qrImageUrl"]
+        assert swap.qr_image_url == MOCK_DEPOSIT_FIELDS["qrImageUrl"]
         assert swap.depix_address  # populated from wallet
         assert swap.status == "pending"
         # Confirm it was persisted
@@ -305,8 +313,21 @@ class TestPixManagerCreateDeposit:
         storage, wm = test_wallet
         manager = PixManager(storage=storage, wallet_manager=wm)
         with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.return_value = _mock_response({"id": "x"})  # no qrCopyPaste
+            # Envelope is well-formed but the inner payload lacks qrCopyPaste.
+            mock_urlopen.return_value = _mock_response(
+                {"response": {"id": "x"}, "async": False}
+            )
             with pytest.raises(RuntimeError, match="missing required fields"):
+                manager.create_deposit(5000, "default")
+
+    def test_malformed_envelope_raises(self, test_wallet):
+        """Eulen sometimes-or-always wraps bodies as {response: {...}, async: bool};
+        a flat body (no 'response' key) signals an API contract change and must fail loudly."""
+        storage, wm = test_wallet
+        manager = PixManager(storage=storage, wallet_manager=wm)
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = _mock_response({"id": "x", "qrCopyPaste": "y"})
+            with pytest.raises(RuntimeError, match="malformed envelope"):
                 manager.create_deposit(5000, "default")
 
     def test_rejects_testnet_wallet(self, testnet_wallet):
@@ -471,7 +492,7 @@ class TestPixTools:
 
         assert result["swap_id"] == "eulen_deposit_abc"
         assert result["qr_copy_paste"].startswith("00020126")
-        assert result["qr_image_url"] == MOCK_DEPOSIT_RESPONSE["qrImageUrl"]
+        assert result["qr_image_url"] == MOCK_DEPOSIT_FIELDS["qrImageUrl"]
         assert result["amount_cents"] == 5000
         assert result["amount_brl"] == "R$50,00"
         assert "Copia e Cola" in result["message"]
