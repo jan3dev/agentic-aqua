@@ -1101,7 +1101,7 @@ class _FakeSwapManager:
         }
 
     def execute_swap(self, asset_id, send_amount, wallet_name="default",
-                     password=None, send_bitcoins=True, **_):
+                     password=None, send_bitcoins=True, flexible_small_amount=False, **_):
         self.calls.append(
             ("execute_swap", {
                 "asset_id": asset_id,
@@ -1109,6 +1109,7 @@ class _FakeSwapManager:
                 "wallet_name": wallet_name,
                 "password": password,
                 "send_bitcoins": send_bitcoins,
+                "flexible_small_amount": flexible_small_amount,
             })
         )
         if self.execute_response is None:
@@ -1385,6 +1386,32 @@ class TestSideSwapSwap:
         )
         execute_calls = [c for c in swap.calls if c[0] == "execute_swap"]
         assert execute_calls[-1][1]["send_bitcoins"] is False
+
+    def test_swap_flexible_flag_passed_through(self, runner, sideswap_managers):
+        _import_wallet(runner)
+        _, swap = sideswap_managers
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideswap", "swap",
+             "--asset-ticker", "USDt", "--amount", "5000", "--flexible", "--yes"],
+            env=_cli_env(),
+        )
+        assert result.exit_code == 0, result.output
+        execute_calls = [c for c in swap.calls if c[0] == "execute_swap"]
+        assert len(execute_calls) == 1
+        assert execute_calls[0][1]["flexible_small_amount"] is True
+
+    def test_swap_default_strict_no_flexible(self, runner, sideswap_managers):
+        _import_wallet(runner)
+        _, swap = sideswap_managers
+        runner.invoke(
+            cli,
+            ["sideswap", "swap", "--asset-ticker", "USDt", "--amount", "100000", "--yes"],
+            env=_cli_env(),
+        )
+        execute_calls = [c for c in swap.calls if c[0] == "execute_swap"]
+        # Default debe ser False (estricto)
+        assert execute_calls[-1][1].get("flexible_small_amount", False) is False
 
     def test_swap_amount_must_be_positive(self, runner):
         result = runner.invoke(
