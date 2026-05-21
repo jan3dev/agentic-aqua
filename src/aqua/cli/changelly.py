@@ -83,8 +83,16 @@ def quote(ctx, external_network, direction, amount_from, amount_to):
 )
 @click.option("--settle-address", required=True, help="External chain address to receive at.")
 @click.option(
-    "--amount-from", required=True,
-    help="USDt-Liquid to send (decimal string, e.g. '100').",
+    "--amount-from", default=None,
+    help="USDt-Liquid to send (decimal string, e.g. '100'). Mutually exclusive with --amount-to.",
+)
+@click.option(
+    "--amount-to", default=None,
+    help=(
+        "Amount the recipient should receive (decimal string). "
+        "Mutually exclusive with --amount-from. "
+        "Fees are paid by the sender (matches AQUA APK behavior)."
+    ),
 )
 @click.option("--wallet-name", default="default", show_default=True)
 @click.option(
@@ -96,14 +104,21 @@ def quote(ctx, external_network, direction, amount_from, amount_to):
     help=_PASSWORD_HELP,
 )
 @click.pass_obj
-def send(ctx, external_network, settle_address, amount_from, wallet_name,
+def send(ctx, external_network, settle_address, amount_from, amount_to, wallet_name,
          skip_confirm, password_stdin):
     """Send USDt-Liquid out to USDt on another chain (fixed-rate).
 
     Gets a quote, creates the order, and broadcasts the USDt-Liquid deposit
     from the local wallet. A refund address is set automatically (the
     wallet's own Liquid address).
+
+    Use --amount-from to specify how much USDt-Liquid you send (fees deducted
+    from what the recipient gets). Use --amount-to to specify exactly what the
+    recipient receives (fees added on top and paid by the sender).
     """
+    if (amount_from is None) == (amount_to is None):
+        raise click.UsageError("Provide exactly one of --amount-from or --amount-to.")
+
     rate_id = None
     if not skip_confirm:
         click.echo("Fetching Changelly quote…", err=True)
@@ -112,13 +127,14 @@ def send(ctx, external_network, settle_address, amount_from, wallet_name,
                 external_network=external_network,
                 direction="send",
                 amount_from=amount_from,
+                amount_to=amount_to,
             )
         except Exception as e:
             raise click.UsageError(f"Could not fetch quote: {e}") from e
         rate_id = preview.get("id")
         click.echo(
-            f"Send: {preview.get('amountFrom')} USDt-Liquid\n"
-            f"Recv: {preview.get('amountTo')} USDt on {external_network} "
+            f"Deposit: {preview.get('amountFrom')} USDt-Liquid\n"
+            f"Receive: {preview.get('amountTo')} USDt on {external_network} "
             f"at {settle_address}\n"
             f"Network fee: {preview.get('networkFee')}\n"
             f"Quote expires (epoch): {preview.get('expiredAt')}",
@@ -137,6 +153,7 @@ def send(ctx, external_network, settle_address, amount_from, wallet_name,
                 "external_network": external_network,
                 "settle_address": settle_address,
                 "amount_from": amount_from,
+                "amount_to": amount_to,
                 "wallet_name": wallet_name,
                 "password": password,
                 "rate_id": rate_id,
@@ -156,11 +173,17 @@ def send(ctx, external_network, settle_address, amount_from, wallet_name,
     help="Source-chain refund address (STRONGLY RECOMMENDED).",
 )
 @click.option(
-    "--amount-from", required=True,
-    help="Amount the external sender will deposit (decimal string, e.g. '50').",
+    "--amount-from", default=None,
+    help="Amount the external sender will deposit (decimal string, e.g. '50'). "
+         "Mutually exclusive with --amount-to.",
+)
+@click.option(
+    "--amount-to", default=None,
+    help="Amount to receive in the wallet (decimal string). "
+         "Mutually exclusive with --amount-from.",
 )
 @click.pass_obj
-def receive(ctx, external_network, wallet_name, external_refund_address, amount_from):
+def receive(ctx, external_network, wallet_name, external_refund_address, amount_from, amount_to):
     """Create a variable-rate Changelly order to receive USDt-Liquid.
 
     Returns a deposit address on the source chain. The external sender pays
@@ -168,6 +191,8 @@ def receive(ctx, external_network, wallet_name, external_refund_address, amount_
     `--external-refund-address`, a stuck order requires manual intervention
     via Changelly's web UI.
     """
+    if (amount_from is None) == (amount_to is None):
+        raise click.UsageError("Provide exactly one of --amount-from or --amount-to.")
     if external_refund_address is None or not str(external_refund_address).strip():
         logger.warning(
             "Changelly receive: no --external-refund-address. Omitting it may leave "
@@ -181,6 +206,7 @@ def receive(ctx, external_network, wallet_name, external_refund_address, amount_
             wallet_name=wallet_name,
             external_refund_address=external_refund_address,
             amount_from=amount_from,
+            amount_to=amount_to,
         ),
     )
 
