@@ -1675,6 +1675,35 @@ class TestSideShiftSend:
         send_call = next(c for c in sideshift_manager.calls if c[0] == "send_shift")
         assert send_call[1]["liquid_asset_id"].startswith("ce091c99")
 
+    def test_send_auto_resolves_liquid_asset_id_for_usdt(self, runner, sideshift_manager):
+        """When depositing USDt on Liquid, --liquid-asset-id is resolved from the ticker."""
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideshift", "send",
+             "--deposit-coin", "USDt", "--deposit-network", "liquid",
+             "--settle-coin", "usdt", "--settle-network", "tron",
+             "--settle-address", "TXYZ",
+             "--deposit-amount", "100",
+             "--yes"],
+            env=_cli_env(),
+        )
+        assert result.exit_code == 0, result.output
+        send_call = next(c for c in sideshift_manager.calls if c[0] == "send_shift")
+        assert send_call[1]["liquid_asset_id"].startswith("ce091c99")
+
+    def test_send_unknown_liquid_ticker_errors(self, runner):
+        result = runner.invoke(
+            cli,
+            ["sideshift", "send",
+             "--deposit-coin", "xyznotreal", "--deposit-network", "liquid",
+             "--settle-coin", "usdt", "--settle-network", "tron",
+             "--settle-address", "TXYZ",
+             "--deposit-amount", "100",
+             "--yes"],
+        )
+        assert result.exit_code != 0
+        assert "Unknown Liquid asset" in result.output or "xyznotreal" in result.output
+
 
 class TestSideShiftReceive:
     def test_receive_into_liquid(self, runner, sideshift_manager):
