@@ -2,6 +2,7 @@
 
 import click
 
+from ..boltz import decode_bolt11_amount_sats
 from ..tools import (
     lightning_receive,
     lightning_send,
@@ -101,6 +102,23 @@ def send(ctx, invoice, ln_address, amount_sats, wallet_name, password_stdin):
                 "amount_sats": amount_sats,
             },
         ),
+    )
+
+
+@lightning.command("decode")
+@click.option("--invoice", required=True, help="BOLT11 Lightning invoice (lnbc... or lntb...).")
+@click.pass_obj
+def decode_invoice(ctx, invoice):
+    """Decode a BOLT11 invoice without paying it."""
+    normalized = invoice.strip().lower()
+    amount_sats = decode_bolt11_amount_sats(normalized)
+    run_tool(
+        ctx,
+        lambda: {
+            "invoice": normalized,
+            "amount_sats": amount_sats,
+            "network": "mainnet" if normalized.startswith("lnbc") else "testnet",
+        },
     )
 
 

@@ -762,6 +762,17 @@ class TestQrCommands:
 
 
 class TestLightningCommands:
+    def test_decode_invoice_returns_amount(self, runner):
+        invoice = "lnbc5u1p4pp9jxpp5l2nhh8dexvrv44p7j9yetznda2hvszaawqy3nfxqc3ljecnj33pssp550t5t0qp78syw0lh3dm266yasw5mtadgud3vy9nst48p2rga25lsxqyz5vqnp4qvyndeaqzman7h898jxm98dzkm0mlrsx36s93smrur7h0azyyuxc5rzjqwghf7zxvfkxq5a6sr65g0gdkv768p83mhsnt0msszapamzx2qvuxqqqqrt49lmtcqqqqqqqqqqq86qq9qrzjq25carzepgd4vqsyn44jrk85ezrpju92xyrk9apw4cdjh6yrwt5jgqqqqrt49lmtcqqqqqqqqqqq86qq9qrzjqdqk3f6qkpdx8s74wngv95h3dkumkdyyh0g5mv6jetkskxkcsvf74apyqr6zgqqqq8hxk2qqae4jsqyugqcqzpudqjdphkccfq2fhkx6m9ws9qyyssqg8aq5vj247zlwds357g2389p62mg8hmt4efrk8arm8yt8k2mlrz3xc725sts6w5w4ww3h6yz7m8lcyhzmnk27nt3yl683dax2vdcjpqqxfhx43"
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "lightning", "decode", "--invoice", invoice],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["amount_sats"] == 500
+        assert data["network"] == "mainnet"
+
     def test_status_missing_swap(self, runner):
         """Status for nonexistent swap should error."""
         result = runner.invoke(
