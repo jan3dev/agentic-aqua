@@ -23,10 +23,7 @@ from aqua.tools import (
 from aqua.wallet import WalletManager, Balance
 
 
-TEST_MNEMONIC = (
-    "abandon abandon abandon abandon abandon abandon "
-    "abandon abandon abandon abandon abandon about"
-)
+from tests.conftest import TEST_MNEMONIC
 
 VALID_INVOICE_MAINNET = "lnbc500u1ptest_valid_invoice"
 VALID_INVOICE_TESTNET = "lntb500u1ptest_valid_invoice"

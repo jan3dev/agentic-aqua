@@ -7,3 +7,5 @@ other credentials without manual exporting.
 from dotenv import load_dotenv
 
 load_dotenv()
+
+TEST_MNEMONIC = "tuna tuna tuna tuna tuna tuna tuna tuna tuna tuna tuna twelve"

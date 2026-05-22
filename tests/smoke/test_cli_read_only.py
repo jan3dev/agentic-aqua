@@ -17,7 +17,7 @@ from click.testing import CliRunner
 
 from aqua.cli.main import cli
 
-DEFAULT_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+DEFAULT_MNEMONIC = "tuna tuna tuna tuna tuna tuna tuna tuna tuna tuna tuna twelve"
 SIGNER_MNEMONIC = os.getenv("SIGNER_MNEMONIC", DEFAULT_MNEMONIC)
 CT_DESCRIPTOR_LIQUID = os.getenv("CT_DESCRIPTOR_LIQUID")
 BTC_DESCRIPTOR = os.getenv("BTC_DESCRIPTOR")

@@ -19,10 +19,7 @@ from aqua.pix import (
 from aqua.storage import Storage
 from aqua.wallet import WalletManager
 
-TEST_MNEMONIC = (
-    "abandon abandon abandon abandon abandon abandon "
-    "abandon abandon abandon abandon abandon about"
-)
+from tests.conftest import TEST_MNEMONIC
 
 # Eulen wraps every 2xx body as {"response": {...}, "async": bool}; tests must
 # mirror that shape so the client's unwrap is actually exercised.

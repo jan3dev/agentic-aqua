@@ -30,8 +30,7 @@ from aqua.tools import (
 )
 from aqua.wallet import WalletManager
 
-# Test mnemonic (well-known, NOT real funds)
-TEST_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+from tests.conftest import TEST_MNEMONIC
 
 
 @pytest.fixture(autouse=True)

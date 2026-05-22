@@ -15,10 +15,7 @@ from aqua.cli.main import cli
 from aqua.storage import Storage
 from aqua.wallet import WalletManager
 
-TEST_MNEMONIC = (
-    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon "
-    "abandon about"
-)
+from tests.conftest import TEST_MNEMONIC
 
 
 class StringIOWithIsatty(io.StringIO):
