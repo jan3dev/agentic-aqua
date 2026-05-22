@@ -980,7 +980,8 @@ def changelly_quote(
 def changelly_send(
     external_network: str,
     settle_address: str,
-    amount_from: str,
+    amount_from: str | None = None,
+    amount_to: str | None = None,
     wallet_name: str = "default",
     password: str | None = None,
     rate_id: str | None = None,
@@ -988,19 +989,25 @@ def changelly_send(
     """Send USDt-Liquid out via a Changelly fixed-rate swap.
 
     Flow:
-      1. Get a fixed-rate quote for `amount_from` USDt-Liquid → USDt-on-network
-         (skipped if `rate_id` supplied from a prior changelly_quote call).
+      1. Get a fixed-rate quote (skipped if `rate_id` supplied from a prior
+         changelly_quote call).
       2. Create the fixed order; Changelly returns a Liquid deposit address.
       3. Broadcast the USDt-Liquid deposit from the local wallet.
 
     A refund address is set automatically — the wallet's own Liquid address,
     so a stuck order refunds back to source.
 
+    Provide exactly one of `amount_from` or `amount_to`:
+    - `amount_from`: USDt-Liquid to send; fees deducted from what recipient gets.
+    - `amount_to`: what the recipient should receive; fees paid by the sender on top.
+
     Args:
         external_network: target USDt network (ethereum, tron, bsc, solana,
             polygon, ton).
         settle_address: external chain address where the user receives.
         amount_from: USDt-Liquid to send (decimal string, e.g. "100").
+        amount_to: amount recipient receives (decimal string). Mutually exclusive
+            with amount_from.
         wallet_name: Liquid wallet to sign with.
         password: mnemonic decryption password (if encrypted at rest).
         rate_id: rate id from a prior changelly_quote call. Pass this to lock
@@ -1010,12 +1017,18 @@ def changelly_send(
         order_id, deposit_hash (txid we broadcast), deposit_address,
         amount_from, amount_to, status, expires_at, track_url
     """
-    _validate_positive_decimal_string(amount_from, "amount_from")
+    if (amount_from is None) == (amount_to is None):
+        raise ValueError("Provide exactly one of amount_from or amount_to")
+    if amount_from is not None:
+        _validate_positive_decimal_string(amount_from, "amount_from")
+    if amount_to is not None:
+        _validate_positive_decimal_string(amount_to, "amount_to")
     if not settle_address or not settle_address.strip():
         raise ValueError("settle_address cannot be empty")
     swap = get_changelly_manager().send_swap(
         external_network=external_network,
         amount_from=amount_from,
+        amount_to=amount_to,
         settle_address=settle_address,
         wallet_name=wallet_name,
         password=password,
@@ -1028,7 +1041,8 @@ def changelly_receive(
     external_network: str,
     wallet_name: str = "default",
     external_refund_address: str | None = None,
-    amount_from: str = "",
+    amount_from: str | None = None,
+    amount_to: str | None = None,
 ) -> dict[str, Any]:
     """Receive USDt-Liquid via a Changelly variable-rate swap.
 
@@ -1036,6 +1050,10 @@ def changelly_receive(
     pays to it from any USDt-supporting wallet on that network; rate is set
     when the deposit confirms; Changelly settles to the wallet's Liquid
     address as USDt-Liquid.
+
+    Provide exactly one of `amount_from` or `amount_to`:
+    - `amount_from`: amount the external sender will deposit.
+    - `amount_to`: amount to receive in the Liquid wallet.
 
     Args:
         external_network: source USDt network (ethereum, tron, bsc, solana,
@@ -1045,17 +1063,25 @@ def changelly_receive(
             address to refund to if the order fails. Without one a stuck
             order requires manual web UI intervention.
         amount_from: amount the external sender will deposit (decimal string,
-            e.g. "50"). Required by the Ankara backend serializer.
+            e.g. "50"). Mutually exclusive with amount_to.
+        amount_to: amount to receive in the wallet (decimal string).
+            Mutually exclusive with amount_from.
 
     Returns:
         order_id, deposit_address, settle_address, amount_from, status, track_url
     """
-    _validate_positive_decimal_string(amount_from, "amount_from")
+    if (amount_from is None) == (amount_to is None):
+        raise ValueError("Provide exactly one of amount_from or amount_to")
+    if amount_from is not None:
+        _validate_positive_decimal_string(amount_from, "amount_from")
+    if amount_to is not None:
+        _validate_positive_decimal_string(amount_to, "amount_to")
     swap = get_changelly_manager().receive_swap(
         external_network=external_network,
         wallet_name=wallet_name,
         external_refund_address=external_refund_address,
         amount_from=amount_from,
+        amount_to=amount_to,
     )
     return swap.to_dict()
 

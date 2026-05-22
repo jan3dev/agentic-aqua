@@ -810,8 +810,8 @@ class _FakeChangellyManager:
             wallet_name=kwargs["wallet_name"],
             status="new",
             created_at="2026-05-08T12:00:00+00:00",
-            amount_from=kwargs["amount_from"],
-            amount_to="99",
+            amount_from=kwargs.get("amount_from"),
+            amount_to=kwargs.get("amount_to", "99"),
             deposit_hash="lqtxid" + ("0" * 58),
             track_url="https://changelly.com/track/ord_send",
         )
@@ -951,6 +951,44 @@ class TestChangellySend:
         )
         assert result.exit_code == 2
 
+    def test_send_with_amount_to_uses_recipient_amount(self, runner, changelly_manager):
+        """--amount-to specifies what the recipient receives (fees from sender)."""
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "changelly", "send",
+             "--external-network", "tron",
+             "--settle-address", "TXrecipient",
+             "--amount-to", "50",
+             "--yes"],
+            env=_cli_env(),
+        )
+        assert result.exit_code == 0, result.output
+        send_call = next(c for c in changelly_manager.calls if c[0] == "send_swap")
+        assert send_call[1].get("amount_to") == "50"
+        assert send_call[1].get("amount_from") is None
+
+    def test_send_requires_exactly_one_amount(self, runner):
+        # Neither --amount-from nor --amount-to
+        r1 = runner.invoke(
+            cli,
+            ["changelly", "send",
+             "--external-network", "tron",
+             "--settle-address", "TXabc",
+             "--yes"],
+        )
+        assert r1.exit_code != 0
+        # Both --amount-from and --amount-to
+        r2 = runner.invoke(
+            cli,
+            ["changelly", "send",
+             "--external-network", "tron",
+             "--settle-address", "TXabc",
+             "--amount-from", "100",
+             "--amount-to", "99",
+             "--yes"],
+        )
+        assert r2.exit_code != 0
+
 
 class TestChangellyReceive:
     def test_receive_returns_deposit_address(self, runner, changelly_manager):
@@ -967,6 +1005,38 @@ class TestChangellyReceive:
         assert data["refund_address"] == "TXrefund"
         recv_call = next(c for c in changelly_manager.calls if c[0] == "receive_swap")
         assert recv_call[1]["external_network"] == "tron"
+
+    def test_receive_with_amount_to(self, runner, changelly_manager):
+        """--amount-to specifies what should arrive in the wallet."""
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "changelly", "receive",
+             "--external-network", "tron",
+             "--external-refund-address", "TXrefund",
+             "--amount-to", "45"],
+        )
+        assert result.exit_code == 0, result.output
+        recv_call = next(c for c in changelly_manager.calls if c[0] == "receive_swap")
+        assert recv_call[1].get("amount_to") == "45"
+        assert recv_call[1].get("amount_from") is None
+
+    def test_receive_requires_exactly_one_amount(self, runner):
+        # Neither
+        r1 = runner.invoke(
+            cli,
+            ["changelly", "receive",
+             "--external-network", "tron"],
+        )
+        assert r1.exit_code != 0
+        # Both
+        r2 = runner.invoke(
+            cli,
+            ["changelly", "receive",
+             "--external-network", "tron",
+             "--amount-from", "50",
+             "--amount-to", "45"],
+        )
+        assert r2.exit_code != 0
 
 
 class TestChangellyStatus:
