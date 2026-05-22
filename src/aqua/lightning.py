@@ -176,6 +176,8 @@ class LightningManager:
                     f"({BOLTZ_MIN_SATS}-{BOLTZ_MAX_SATS} sats)"
                 )
             invoice = resolve_lightning_address(invoice, amount_sats)
+        else:
+            invoice = invoice.strip().lower()
 
         valid_prefixes = ("lnbc", "lntb")
         if not invoice or not any(invoice.startswith(p) for p in valid_prefixes):

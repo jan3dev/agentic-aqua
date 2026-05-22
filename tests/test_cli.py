@@ -826,6 +826,41 @@ class TestLightningCommands:
             amount_sats=1000,
         )
 
+    def test_send_uppercase_invoice_is_normalized_by_tool_layer(self, runner):
+        uppercase_invoice = (
+            "LNBC4U1P4PPSS2DQVWPE82ETZVYCSNP4QGT72S92AK77WSSZT7DQS8SHKJY0RE5R8FS8TNSAY4ZG7GPJEKRR7"
+            "PP5ZZZWZYNN2TDA7ZCKPLFZZWYPYJRJYJDYRU6PQPV8LJKGVX4Z2NGSSP58M0Y52ZKMU54RT7R8AJPLFZYYS"
+            "JLV7NFXMNTJ3EA4T9W7UW7PE7S9QYYSGQCQZP2XQYZ5VQ4LZJZEMW8MNUFCAHKTC608TDVML9PVUVW7JXEYSL"
+            "TAFET3FG3HKZ658N93F6YMH2ZS9GXVLUVYEAH4K8VQLMAH6K7SHL7C0TCCW59USPDRH0FJ"
+        )
+        with patch("aqua.cli.lightning.handle_password_retry") as mock_retry:
+            mock_retry.return_value = {
+                "swap_id": "boltz_456",
+                "lockup_txid": "def456",
+                "status": "processing",
+                "amount": 420,
+            }
+            result = runner.invoke(
+                cli,
+                [
+                    "--format",
+                    "json",
+                    "lightning",
+                    "send",
+                    "--invoice",
+                    uppercase_invoice,
+                    "--wallet-name",
+                    "tuna",
+                ],
+            )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["swap_id"] == "boltz_456"
+        called_tool = mock_retry.call_args.args[0]
+        called_payload = mock_retry.call_args.args[1]
+        assert called_tool.__name__ == "lightning_send"
+        assert called_payload["invoice"] == uppercase_invoice
+
 
 # ---------------------------------------------------------------------------
 # Changelly CLI
