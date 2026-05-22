@@ -167,6 +167,22 @@ def send(ctx, deposit_coin, deposit_network, settle_coin, settle_network,
     if (deposit_amount is None) == (settle_amount is None):
         raise click.UsageError("Provide exactly one of --deposit-amount or --settle-amount.")
 
+    # Auto-resolve liquid_asset_id from the deposit_coin ticker
+    if (
+        liquid_asset_id is None
+        and deposit_network.lower() == "liquid"
+        and deposit_coin.lower() != "btc"
+    ):
+        from ..assets import lookup_asset_by_ticker
+        info = lookup_asset_by_ticker(deposit_coin, "mainnet")
+        if info is None:
+            raise click.UsageError(
+                f"Unknown Liquid asset ticker '{deposit_coin}'. "
+                "Pass --liquid-asset-id explicitly, or run "
+                "'aqua liquid assets' to list known tickers."
+            )
+        liquid_asset_id = info.asset_id
+
     quote_id: str | None = None
     if not skip_confirm:
         click.echo("Fetching quote from SideShift…", err=True)
