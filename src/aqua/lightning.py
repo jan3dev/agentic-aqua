@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Optional
 
 from .ankara import AnkaraClient
+from .bolt11 import decode_bolt11_amount_sats
 from .boltz import (
     MAX_SWAP_AMOUNT_SATS as BOLTZ_MAX_SATS,
 )
@@ -13,7 +14,6 @@ from .boltz import (
 )
 from .boltz import (
     BoltzClient,
-    decode_bolt11_amount_sats,
     generate_keypair,
 )
 from .lnurl import is_lightning_address, resolve_lightning_address

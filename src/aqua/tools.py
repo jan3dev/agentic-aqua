@@ -10,7 +10,7 @@ from typing import Any
 
 from .assets import MAINNET_ASSETS, TESTNET_ASSETS, resolve_asset_name
 from .bitcoin import BitcoinWalletManager
-from .boltz import decode_bolt11_fields
+from .bolt11 import decode_bolt11_fields
 from .qr import decode_qr
 from .wallet import WalletManager
 

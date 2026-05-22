@@ -6,7 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from aqua.boltz import BoltzClient, SwapInfo, decode_bolt11_amount_sats, generate_keypair, verify_preimage
+from aqua.boltz import BoltzClient, SwapInfo, generate_keypair, verify_preimage
+from aqua.bolt11 import decode_bolt11_amount_sats
 import io
 import urllib.error
 
