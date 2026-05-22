@@ -14,6 +14,7 @@ from aqua.tools import (
     btc_export_descriptor,
     btc_import_descriptor,
     changelly_send,
+    decode_payment_qr,
     delete_wallet,
     get_btc_manager,
     get_manager,
@@ -722,6 +723,7 @@ class TestToolRegistry:
             "lightning_transaction_status",
             "pix_receive",
             "pix_status",
+            "decode_payment_qr",
             "delete_wallet",
             "btc_import_descriptor",
             "btc_export_descriptor",
@@ -756,6 +758,51 @@ class TestToolRegistry:
 
         for name, fn in TOOLS.items():
             assert callable(fn), f"Tool {name} is not callable"
+
+
+# ---------------------------------------------------------------------------
+# decode_payment_qr
+# ---------------------------------------------------------------------------
+
+
+class TestDecodePaymentQr:
+    def test_missing_image_raises(self):
+        with pytest.raises(ValueError, match="Image file not found"):
+            decode_payment_qr("/no/such/file.png")
+
+    @patch("aqua.qr.decode")
+    def test_no_qr_found_raises(self, mock_decode):
+        mock_decode.return_value = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "qr.png"
+            image_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc``\x00\x00\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
+            )
+            with pytest.raises(ValueError, match="No QR code found"):
+                decode_payment_qr(str(image_path))
+
+    @patch("aqua.qr.decode")
+    def test_multiple_qrs_raise(self, mock_decode):
+        mock_decode.return_value = [MagicMock(data=b"one"), MagicMock(data=b"two")]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "qr.png"
+            image_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc``\x00\x00\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
+            )
+            with pytest.raises(ValueError, match="Expected exactly one QR code"):
+                decode_payment_qr(str(image_path))
+
+    @patch("aqua.qr.decode")
+    def test_decodes_single_qr(self, mock_decode):
+        mock_decode.return_value = [MagicMock(data=b"bitcoin:bc1qexample")]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "qr.png"
+            image_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc``\x00\x00\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
+            )
+            result = decode_payment_qr(str(image_path))
+        assert result["text"] == "bitcoin:bc1qexample"
+        assert result["image_path"].endswith("qr.png")
 
 
 # ---------------------------------------------------------------------------

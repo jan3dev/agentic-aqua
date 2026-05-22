@@ -748,6 +748,19 @@ class TestBtcDescriptorCli:
 # Lightning commands
 
 
+class TestQrCommands:
+    def test_decode_qr_command(self, runner):
+        with patch("aqua.cli.qr.decode_payment_qr", return_value={"image_path": "./qr.png", "text": "bitcoin:bc1qexample"}) as mock_decode:
+            result = runner.invoke(
+                cli,
+                ["--format", "json", "qr", "decode", "--image", "./qr.png"],
+            )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["text"] == "bitcoin:bc1qexample"
+        mock_decode.assert_called_once_with("./qr.png")
+
+
 class TestLightningCommands:
     def test_status_missing_swap(self, runner):
         """Status for nonexistent swap should error."""

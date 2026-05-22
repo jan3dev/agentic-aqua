@@ -10,6 +10,7 @@ from typing import Any
 
 from .assets import MAINNET_ASSETS, TESTNET_ASSETS, resolve_asset_name
 from .bitcoin import BitcoinWalletManager
+from .qr import decode_qr_image
 from .wallet import WalletManager
 
 logger = logging.getLogger(__name__)
@@ -720,6 +721,19 @@ def lw_list_assets(network: str = "mainnet") -> dict[str, Any]:
             for info in registry.values()
         ],
     }
+
+
+def decode_payment_qr(image_path: str) -> dict[str, Any]:
+    """Decode a QR image and return the raw string inside it.
+
+    Args:
+        image_path: Path to an image file containing exactly one QR code.
+
+    Returns:
+        image_path: Normalized path to the image file.
+        text: Raw decoded QR string.
+    """
+    return decode_qr_image(image_path)
 
 
 def delete_wallet(wallet_name: str) -> dict[str, Any]:
@@ -1721,6 +1735,7 @@ TOOLS = {
     "lw_tx_status": lw_tx_status,
     "lw_list_wallets": lw_list_wallets,
     "lw_list_assets": lw_list_assets,
+    "decode_payment_qr": decode_payment_qr,
     "delete_wallet": delete_wallet,
     "btc_balance": btc_balance,
     "btc_address": btc_address,

@@ -12,6 +12,7 @@ def register_commands(cli):
     from .changelly import changelly
     from .lightning import lightning
     from .liquid import liquid
+    from .qr import qr
     from .serve import serve
     from .sideshift import sideshift
     from .sideswap import sideswap
@@ -21,6 +22,7 @@ def register_commands(cli):
     cli.add_command(liquid)
     cli.add_command(btc)
     cli.add_command(lightning)
+    cli.add_command(qr)
     cli.add_command(changelly)
     cli.add_command(sideshift)
     cli.add_command(sideswap)

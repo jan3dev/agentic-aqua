@@ -241,6 +241,19 @@ TOOL_SCHEMAS = {
             },
         },
     },
+    "decode_payment_qr": {
+        "description": "Decode a QR image and return the raw string inside it. Supports local image paths only. Expects exactly one QR code in the image.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image_path": {
+                    "type": "string",
+                    "description": "Path to a local image file containing a QR code",
+                }
+            },
+            "required": ["image_path"],
+        },
+    },
     "delete_wallet": {
         "description": "Delete a wallet and all its cached data. IMPORTANT: The agent MUST check balances and ask for user confirmation before calling this tool. Use the 'delete_wallet' prompt for the safe workflow.",
         "inputSchema": {
