@@ -26,6 +26,10 @@ MAX_SWAP_AMOUNT_SATS = 25_000_000
 
 
 
+class BoltzSwapAlreadyExistsError(RuntimeError):
+    """Raised when Boltz reports an invoice already has a swap."""
+
+
 @dataclass
 class SwapInfo:
     """Holds all data for an active/completed submarine swap."""
@@ -103,6 +107,13 @@ class BoltzClient:
             msg = f"Boltz API error ({e.code} {method} {path})"
             if detail:
                 msg += f": {detail}"
+            normalized = detail.lower().strip() if detail else ""
+            if e.code == 409 and "swap with this invoice exists already" in normalized:
+                raise BoltzSwapAlreadyExistsError(
+                    "A swap for this Lightning invoice already exists on Boltz. "
+                    "This usually means the same invoice was already submitted before, "
+                    "even if the local wallet did not finish the payment flow."
+                ) from e
             raise RuntimeError(msg) from e
         except urllib.error.URLError as e:
             logger.error("Boltz URL error %s %s reason=%s", method, path, e.reason)

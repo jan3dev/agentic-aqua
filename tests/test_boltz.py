@@ -6,7 +6,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from aqua.boltz import BoltzClient, SwapInfo, generate_keypair, verify_preimage
+from aqua.boltz import (
+    BoltzClient,
+    BoltzSwapAlreadyExistsError,
+    SwapInfo,
+    generate_keypair,
+    verify_preimage,
+)
 from aqua.bolt11 import decode_bolt11_amount_sats
 import io
 import urllib.error
@@ -196,6 +202,22 @@ class TestBoltzClient:
 
         with pytest.raises(RuntimeError, match="invoice already used"):
             client.get_submarine_pairs()
+
+    @patch("aqua.boltz.urllib.request.urlopen")
+    def test_api_request_duplicate_invoice_raises_specific_error(self, mock_urlopen):
+        """409 duplicate invoice response raises a dedicated error."""
+        err = urllib.error.HTTPError(
+            url="https://api.boltz.exchange/v2/swap/submarine",
+            code=409,
+            msg="Conflict",
+            hdrs=None,
+            fp=io.BytesIO(json.dumps({"error": "a swap with this invoice exists already"}).encode()),
+        )
+        mock_urlopen.side_effect = err
+        client = BoltzClient(network="mainnet")
+
+        with pytest.raises(BoltzSwapAlreadyExistsError, match="already exists"):
+            client.create_submarine_swap("lnbc500u1ptest...", "03" + "ff" * 32)
 
     @patch("aqua.boltz.urllib.request.urlopen")
     def test_api_request_http_error_without_body(self, mock_urlopen):

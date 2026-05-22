@@ -15,6 +15,7 @@ from .boltz import (
 )
 from .boltz import (
     BoltzClient,
+    BoltzSwapAlreadyExistsError,
     generate_keypair,
 )
 from .lnurl import is_lightning_address, resolve_lightning_address
@@ -236,7 +237,19 @@ class LightningManager:
 
         refund_privkey, refund_pubkey = generate_keypair()
         logger.info("Generated refund public key for Boltz swap wallet=%s", wallet_name)
-        swap_resp = client.create_submarine_swap(invoice, refund_pubkey)
+        try:
+            swap_resp = client.create_submarine_swap(invoice, refund_pubkey)
+        except BoltzSwapAlreadyExistsError as e:
+            logger.warning(
+                "Boltz reported duplicate invoice submission wallet=%s invoice_amount=%s",
+                wallet_name,
+                invoice_amount,
+            )
+            raise ValueError(
+                "Esta invoice ya fue enviada antes a Boltz y ya existe un swap remoto para ella. "
+                "No parece que el código la esté intentando pagar dos veces en esta misma ejecución; "
+                "el problema es que Boltz ya la conoce de un intento previo."
+            ) from e
         expected_amount = swap_resp["expectedAmount"]
         logger.info(
             "Boltz swap created id=%s expected_amount=%s timeout_block_height=%s",

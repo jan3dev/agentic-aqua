@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from aqua.boltz import BoltzSwapAlreadyExistsError
 from aqua.lightning import LightningManager
 
 
@@ -65,3 +66,24 @@ class TestLightningManagerPayInvoice:
         manager = LightningManager(_StorageStub(), _WalletManagerStub())
         with pytest.raises(ValueError, match="Invalid invoice"):
             manager.pay_invoice(invoice="NOT_AN_INVOICE", wallet_name="tuna")
+
+    @patch("aqua.lightning.generate_keypair", return_value=("11" * 32, "03" + "22" * 32))
+    @patch("aqua.lightning.BoltzClient")
+    def test_pay_invoice_returns_human_error_for_duplicate_remote_swap(self, mock_client_cls, _mock_keys):
+        mock_client = MagicMock()
+        mock_client.get_submarine_pairs.return_value = {"L-BTC": {"BTC": {"enabled": True}}}
+        mock_client.create_submarine_swap.side_effect = BoltzSwapAlreadyExistsError(
+            "A swap for this Lightning invoice already exists on Boltz."
+        )
+        mock_client_cls.return_value = mock_client
+
+        manager = LightningManager(_StorageStub(), _WalletManagerStub())
+        invoice = (
+            "lnbc10u1p4ppjp5dq2w3jhxapqx5np4qgt72s92ak77wsszt7dqs8shkjy0re5r8fs8tnsay4zg7gpjekrr7"
+            "pp5yk7s7ctwj3m0xt6zj0vd9pqlh3jrjd2j68udyhv9pwxdxx353xyqsp5mwjllru5zxej9umz4jx0gt8u0v"
+            "n0z36798csp08pm8cvqfye4rjq9qyysgqcqzp2xqyz5vqvgdxf2ttd92xps6rcatw45d0hj0sptn056mwpexv"
+            "cfnz37qm48fsrjeva3fvm6sedalmdsjjlrw4w5e23ehp5jr5n2mk70udq9s48ycqmktqny"
+        )
+
+        with pytest.raises(ValueError, match="ya fue enviada antes a Boltz"):
+            manager.pay_invoice(invoice=invoice, wallet_name="tuna")
