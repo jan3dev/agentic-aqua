@@ -2,6 +2,7 @@
 
 import base64
 import json
+import logging
 import os
 import re
 import shutil
@@ -13,6 +14,8 @@ from typing import Optional
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+logger = logging.getLogger(__name__)
 
 SALT_LENGTH = 16
 
@@ -54,12 +57,34 @@ class Config:
     default_wallet: str = "default"
     electrum_url: Optional[str] = None
     auto_sync: bool = True
+    enabled_tools: dict[str, bool] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
+        data = {**data}
+        raw = data.get("enabled_tools", {}) or {}
+        if not isinstance(raw, dict):
+            logger.warning(
+                "enabled_tools must be an object mapping tool name -> bool; "
+                "got %s. Treating as empty.",
+                type(raw).__name__,
+            )
+            raw = {}
+        coerced: dict[str, bool] = {}
+        for k, v in raw.items():
+            if isinstance(k, str) and isinstance(v, bool):
+                coerced[k] = v
+            else:
+                logger.warning(
+                    "Dropping invalid enabled_tools entry %r=%r "
+                    "(expected str -> bool).",
+                    k,
+                    v,
+                )
+        data["enabled_tools"] = coerced
         return cls(**data)
 
 
