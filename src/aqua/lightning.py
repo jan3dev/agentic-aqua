@@ -1,5 +1,6 @@
 """Lightning abstraction layer for unified send/receive interface."""
 
+import logging
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Optional
@@ -17,6 +18,8 @@ from .boltz import (
     generate_keypair,
 )
 from .lnurl import is_lightning_address, resolve_lightning_address
+
+logger = logging.getLogger(__name__)
 
 # Boltz API status string -> local lifecycle status (pending | processing | completed | failed)
 _BOLTZ_STATUS_MAP = {
@@ -218,17 +221,39 @@ class LightningManager:
                 f"Invoice amount {invoice_amount} sats exceeds maximum ({BOLTZ_MAX_SATS} sats)"
             )
         client = BoltzClient(network=network)
+        logger.info(
+            "lightning pay_invoice start wallet=%s network=%s invoice_amount=%s amount_override=%s",
+            wallet_name,
+            network,
+            invoice_amount,
+            amount_sats,
+        )
         pairs = client.get_submarine_pairs()
         pair = pairs.get("L-BTC", {}).get("BTC")
+        logger.info("Boltz pairs lookup network=%s pair_found=%s pair=%s", network, bool(pair), pair)
         if not pair:
             raise ValueError("L-BTC/BTC pair not available on Boltz")
 
         refund_privkey, refund_pubkey = generate_keypair()
+        logger.info("Generated refund public key for Boltz swap wallet=%s", wallet_name)
         swap_resp = client.create_submarine_swap(invoice, refund_pubkey)
         expected_amount = swap_resp["expectedAmount"]
+        logger.info(
+            "Boltz swap created id=%s expected_amount=%s timeout_block_height=%s",
+            swap_resp.get("id"),
+            expected_amount,
+            swap_resp.get("timeoutBlockHeight"),
+        )
 
         balances = self.wallet_manager.get_balance(wallet_name)
         lbtc_balance = next((b.amount for b in balances if b.ticker == "L-BTC"), 0)
+        logger.info(
+            "Wallet balance check wallet=%s lbtc_balance=%s expected_amount=%s invoice_amount=%s",
+            wallet_name,
+            lbtc_balance,
+            expected_amount,
+            invoice_amount,
+        )
         if lbtc_balance < expected_amount:
             raise ValueError(
                 f"Insufficient L-BTC balance: have {lbtc_balance} sats, "
@@ -251,9 +276,16 @@ class LightningManager:
         )
         self.storage.save_lightning_swap(swap)
 
+        logger.info(
+            "Sending L-BTC lockup tx wallet=%s address=%s amount=%s",
+            wallet_name,
+            swap_resp.get("address"),
+            expected_amount,
+        )
         lockup_txid = self.wallet_manager.send(
             wallet_name, swap_resp["address"], expected_amount, password=password
         )
+        logger.info("Lockup tx sent wallet=%s txid=%s", wallet_name, lockup_txid)
 
         swap.lockup_txid = lockup_txid
         swap.status = "processing"

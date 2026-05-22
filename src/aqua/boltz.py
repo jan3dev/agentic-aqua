@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import re
 import secrets
 import urllib.error
@@ -15,6 +16,8 @@ BOLTZ_API = {
     "mainnet": "https://api.boltz.exchange",
     "testnet": "https://api.testnet.boltz.exchange",
 }
+
+logger = logging.getLogger(__name__)
 
 # Client-side swap amount limits (satoshis)
 MIN_SWAP_AMOUNT_SATS = 100
@@ -67,22 +70,42 @@ class BoltzClient:
                 "User-Agent": "agentic-aqua",
             },
         )
+        logger.info("Boltz request %s %s body=%s", method, path, body)
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read().decode())
+                raw = resp.read().decode()
+                logger.info(
+                    "Boltz response %s %s status=%s body=%s",
+                    method,
+                    path,
+                    getattr(resp, "status", "unknown"),
+                    raw,
+                )
+                return json.loads(raw)
         except urllib.error.HTTPError as e:
             # Try to extract Boltz error message from response body
             detail = ""
+            raw_error = ""
             try:
-                err_body = json.loads(e.read().decode())
+                raw_error = e.read().decode()
+                err_body = json.loads(raw_error)
                 detail = err_body.get("error", err_body.get("message", ""))
             except Exception:
                 pass
+            logger.error(
+                "Boltz HTTP error %s %s status=%s reason=%s body=%s",
+                method,
+                path,
+                e.code,
+                getattr(e, "reason", ""),
+                raw_error,
+            )
             msg = f"Boltz API error ({e.code} {method} {path})"
             if detail:
                 msg += f": {detail}"
             raise RuntimeError(msg) from e
         except urllib.error.URLError as e:
+            logger.error("Boltz URL error %s %s reason=%s", method, path, e.reason)
             raise RuntimeError(f"Boltz API unreachable ({method} {path}): {e.reason}") from e
 
     def get_submarine_pairs(self) -> dict:
