@@ -27,7 +27,7 @@ from aqua.tools import (
     unified_balance,
 )
 
-TEST_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+from tests.conftest import TEST_MNEMONIC
 
 
 @pytest.fixture(autouse=True)

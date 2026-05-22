@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from aqua.storage import Storage, WalletData, Config, _validate_wallet_name
+from tests.conftest import TEST_MNEMONIC
 
 
 @pytest.fixture
@@ -88,7 +89,7 @@ class TestStorage:
 
     def test_mnemonic_encryption(self, temp_storage):
         """Test mnemonic encryption/decryption."""
-        mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        mnemonic = TEST_MNEMONIC
         password = "test123"
 
         encrypted = temp_storage.encrypt_mnemonic(mnemonic, password)
