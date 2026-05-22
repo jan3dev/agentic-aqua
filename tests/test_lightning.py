@@ -25,6 +25,9 @@ class _StorageStub:
     def save_lightning_swap(self, swap):
         return None
 
+    def find_lightning_swap_by_invoice(self, invoice):
+        return None
+
 
 class _WalletManagerStub:
     def get_balance(self, wallet_name):
@@ -85,5 +88,5 @@ class TestLightningManagerPayInvoice:
             "cfnz37qm48fsrjeva3fvm6sedalmdsjjlrw4w5e23ehp5jr5n2mk70udq9s48ycqmktqny"
         )
 
-        with pytest.raises(ValueError, match="ya fue enviada antes a Boltz"):
+        with pytest.raises(ValueError, match="not found in local storage"):
             manager.pay_invoice(invoice=invoice, wallet_name="tuna")

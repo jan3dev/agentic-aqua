@@ -347,6 +347,15 @@ class Storage:
             if SWAP_ID_PATTERN.fullmatch(p.stem)
         ]
 
+    def find_lightning_swap_by_invoice(self, invoice: str):
+        """Find a Lightning swap by invoice string. Returns LightningSwap or None."""
+        invoice = invoice.lower().strip()
+        for swap_id in self.list_lightning_swaps():
+            swap = self.load_lightning_swap(swap_id)
+            if swap and swap.invoice.lower().strip() == invoice:
+                return swap
+        return None
+
     # Pix swap operations
 
     def _pix_swap_path(self, swap_id: str) -> Path:

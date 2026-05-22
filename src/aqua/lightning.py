@@ -58,6 +58,7 @@ class LightningSwap:
     claim_txid: Optional[str] = None
     refund_private_key: Optional[str] = None
     timeout_block_height: Optional[int] = None
+    boltz_lockup_address: Optional[str] = None
 
     def to_dict(self) -> dict:
         """Convert to dict (includes internal fields for storage)."""
@@ -74,6 +75,7 @@ class LightningSwap:
             "claim_txid",
             "refund_private_key",
             "timeout_block_height",
+            "boltz_lockup_address",
         ]:
             data.setdefault(field_name, None)
         return cls(**data)
@@ -239,17 +241,13 @@ class LightningManager:
         logger.info("Generated refund public key for Boltz swap wallet=%s", wallet_name)
         try:
             swap_resp = client.create_submarine_swap(invoice, refund_pubkey)
-        except BoltzSwapAlreadyExistsError as e:
+        except BoltzSwapAlreadyExistsError:
             logger.warning(
-                "Boltz reported duplicate invoice submission wallet=%s invoice_amount=%s",
+                "Boltz 409: swap already exists for invoice wallet=%s invoice_amount=%s — attempting recovery",
                 wallet_name,
                 invoice_amount,
             )
-            raise ValueError(
-                "Esta invoice ya fue enviada antes a Boltz y ya existe un swap remoto para ella. "
-                "No parece que el código la esté intentando pagar dos veces en esta misma ejecución; "
-                "el problema es que Boltz ya la conoce de un intento previo."
-            ) from e
+            return self._resume_existing_swap(client, invoice, wallet_name, password)
         expected_amount = swap_resp["expectedAmount"]
         logger.info(
             "Boltz swap created id=%s expected_amount=%s timeout_block_height=%s",
@@ -286,6 +284,7 @@ class LightningManager:
             created_at=datetime.now(UTC).isoformat(),
             refund_private_key=refund_privkey,
             timeout_block_height=swap_resp["timeoutBlockHeight"],
+            boltz_lockup_address=swap_resp["address"],
         )
         self.storage.save_lightning_swap(swap)
 
@@ -305,6 +304,67 @@ class LightningManager:
         self.storage.save_lightning_swap(swap)
 
         return swap
+
+    def _resume_existing_swap(
+        self,
+        client: BoltzClient,
+        invoice: str,
+        wallet_name: str,
+        password: Optional[str],
+    ) -> "LightningSwap":
+        """Recover from a Boltz 409 by finding and resuming the existing local swap."""
+        existing = self.storage.find_lightning_swap_by_invoice(invoice)
+        if not existing:
+            raise ValueError(
+                "Boltz reports a swap already exists for this invoice, but it was not "
+                "found in local storage. Use Boltz swap restore with your wallet xpub "
+                f"to recover it manually."
+            )
+
+        boltz_status = client.get_swap_status(existing.swap_id).get("status", "")
+        logger.info(
+            "Resuming existing swap swap_id=%s boltz_status=%s lockup_txid=%s",
+            existing.swap_id,
+            boltz_status,
+            existing.lockup_txid,
+        )
+
+        terminal_ok = {"transaction.claimed", "invoice.settled", "transaction.claim.pending"}
+        if boltz_status in terminal_ok:
+            existing.status = "completed"
+            self.storage.save_lightning_swap(existing)
+            return existing
+
+        if boltz_status == "swap.expired":
+            raise ValueError(
+                f"Swap {existing.swap_id} has expired on Boltz. "
+                "Please request a new invoice from the recipient."
+            )
+
+        # Already funded — just return it for monitoring
+        if existing.lockup_txid:
+            return existing
+
+        # Not funded yet — re-send L-BTC using stored lockup address
+        if not existing.boltz_lockup_address:
+            raise ValueError(
+                f"Swap {existing.swap_id} found but lockup address not stored. "
+                "Cannot resume automatically — request a new invoice."
+            )
+
+        logger.info(
+            "Re-funding unfunded swap swap_id=%s address=%s amount=%s",
+            existing.swap_id,
+            existing.boltz_lockup_address,
+            existing.amount,
+        )
+        lockup_txid = self.wallet_manager.send(
+            wallet_name, existing.boltz_lockup_address, existing.amount, password=password
+        )
+        existing.lockup_txid = lockup_txid
+        existing.status = "processing"
+        self.storage.save_lightning_swap(existing)
+        return existing
 
     def get_receive_status(self, swap_id: str) -> dict:
         """
