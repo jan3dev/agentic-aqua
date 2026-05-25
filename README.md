@@ -62,8 +62,11 @@ Clone and install from source:
 ```bash
 git clone https://github.com/jan3dev/agentic-aqua.git
 cd agentic-aqua
-uv sync
+uv python install 3.13
+uv sync --python 3.13
 ```
+
+> **Why pin Python 3.13?** `bdkpython` currently publishes wheels for CPython 3.13, but not 3.14. If `uv sync` picks 3.14 automatically, installation fails on a clean machine.
 
 Configure Claude Desktop using the full path to `uv` (find with `which uv`):
 
@@ -275,10 +278,11 @@ All private key operations happen locally. Only blockchain sync uses Blockstream
 
 ```bash
 # Install with dev dependencies
-uv sync --all-extras
+uv python install 3.13
+uv sync --python 3.13 --all-extras
 
 # Run tests
-uv run python -m pytest tests/
+uv run --python 3.13 python -m pytest tests/
 
 # Format code
 uv run black src/
