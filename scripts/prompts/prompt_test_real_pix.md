@@ -46,17 +46,7 @@ Generate a Pix charge for R$5.00 (500 cents) so I can receive DePix into my Liqu
 
 ---
 
-### 3. (Manual) Pay the Pix Charge
-
-The tester opens their Brazilian banking app, selects **Pix Copia e Cola**, pastes the `qr_copy_paste` string returned in step 2, and confirms the R$5.00 payment.
-
-Alternatively the tester can open `qr_image_url` on a second device and scan it with the bank app.
-
-No MCP action required during this step.
-
----
-
-### 4. Poll the Charge Status
+### 3. Poll the Charge Status
 
 ```
 Check the status of Pix swap <SWAP_ID>.
@@ -70,7 +60,7 @@ Check the status of Pix swap <SWAP_ID>.
 
 ---
 
-### 5. Verify DePix in Wallet
+### 4. Verify DePix in Wallet
 
 ```
 Show me my Liquid balance and recent transactions.
@@ -82,7 +72,7 @@ Show me my Liquid balance and recent transactions.
 
 ---
 
-### 6. (Optional) Verify the DePix txid on the Explorer
+### 5. (Optional) Verify the DePix txid on the Explorer
 
 ```
 What is the status of Liquid transaction <BLOCKCHAIN_TXID>?
@@ -91,22 +81,6 @@ What is the status of Liquid transaction <BLOCKCHAIN_TXID>?
 **Expected behavior:**
 - `lw_tx_status(tx="<BLOCKCHAIN_TXID>")` returns confirmed/unconfirmed plus the explorer URL
 - The explorer URL (`https://blockstream.info/liquid/tx/<txid>`) opens to a confirmed transaction crediting the wallet's DePix address
-
----
-
-### 7. (Negative Path) Status Before Payment
-
-If you skip step 3 (no payment) and wait until the `expiration` window, the status should report `expired` or remain `pending` until the upstream timeout.
-
-```
-What is the status of Pix swap <SWAP_ID>?
-```
-
-**Expected behavior:**
-- `pix_status` returns `pending` (if still within expiry) or `expired` (after timeout)
-- No DePix is credited
-
----
 
 ## Notes
 
