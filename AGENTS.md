@@ -106,3 +106,10 @@ Project-level `CLAUDE.md` is symlinked from this file. Key user rules:
 - Never use silent-fallback "fake success" patterns — raise or report.
 
 <!-- MANUAL: Add project-specific notes below this line — preserved on regeneration. -->
+
+## Branching / PR target
+
+- `main` is the production branch.
+- `develop` is the integration branch for code that is still pending broader testing.
+- When opening code PRs by default, target `develop`, not `main`, unless the user explicitly asks otherwise.
+- When comparing branch work for PR prep, prefer `git diff develop...HEAD` / `git log develop...HEAD --oneline` unless a different base branch is requested.

@@ -24,6 +24,8 @@ from mcp.types import (
 )
 
 from . import __version__
+from .features import is_tool_enabled, load_config_with_merge  # noqa: E402
+from .storage import Config, Storage  # noqa: E402
 from .tools import TOOLS
 
 logging.basicConfig(level=logging.INFO)
@@ -1038,8 +1040,15 @@ TOOL_SCHEMAS = {
 }
 
 
-def create_server() -> Server:
-    """Create and configure the MCP server."""
+def create_server(config: Config | None = None) -> Server:
+    """Create and configure the MCP server.
+
+    If `config` is None, loads (and merges shipped defaults into) the user
+    config from `~/.aqua/config.json`. Tests can pass an explicit `Config` to
+    inject `enabled_tools` without touching the filesystem.
+    """
+    if config is None:
+        config = load_config_with_merge(Storage())
     server = Server(
         "agentic-aqua",
         instructions="""You are managing Bitcoin and Liquid Network cryptocurrency wallets.
@@ -2237,11 +2246,27 @@ If you have:
 
         raise ValueError(f"Unknown resource: {uri}")
 
+    _make_handlers(server, config)
+
+    return server
+
+
+def _make_handlers(server: Server, config: Config) -> None:
+    """Register MCP `list_tools` / `call_tool` handlers with `config` captured by closure.
+
+    Disabled tools (per `is_tool_enabled(name, config)`) are excluded from
+    `list_tools` and `call_tool` returns the existing `Unknown tool: <name>`
+    text — byte-identical to a genuinely unknown tool name, so disabled and
+    nonexistent tools are indistinguishable from the wire.
+    """
+
     @server.list_tools()
     async def list_tools() -> list[Tool]:
         """List available tools."""
         tools = []
         for name, schema in TOOL_SCHEMAS.items():
+            if not is_tool_enabled(name, config):
+                continue
             tools.append(
                 Tool(
                     name=name,
@@ -2254,7 +2279,7 @@ If you have:
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         """Execute a tool."""
-        if name not in TOOLS:
+        if name not in TOOLS or not is_tool_enabled(name, config):
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
         try:
@@ -2280,8 +2305,6 @@ If you have:
                     text=json.dumps(error_result, indent=2),
                 )
             ]
-
-    return server
 
 
 async def run_server():  # pragma: no cover
