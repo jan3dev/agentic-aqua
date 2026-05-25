@@ -49,7 +49,19 @@ def receive(ctx, amount, wallet_name, password_stdin):
 
 
 @lightning.command("send")
-@click.option("--invoice", required=True, help="BOLT11 Lightning invoice (lnbc... or lntb...).")
+@click.option(
+    "--invoice",
+    help="BOLT11 Lightning invoice (lnbc... or lntb...). Mutually exclusive with --ln-address.",
+)
+@click.option(
+    "--ln-address",
+    help="Lightning Address (user@domain.com). Requires --amount-sats. Mutually exclusive with --invoice.",
+)
+@click.option(
+    "--amount-sats",
+    type=int,
+    help="Amount in satoshis. Required with --ln-address; optional with --invoice (must match encoded amount if supplied).",
+)
 @click.option(
     "--wallet-name", default="default", show_default=True, help="Liquid wallet to pay from."
 )
@@ -65,8 +77,16 @@ def receive(ctx, amount, wallet_name, password_stdin):
     ),
 )
 @click.pass_obj
-def send(ctx, invoice, wallet_name, password_stdin):
-    """Pay a Lightning invoice using L-BTC (submarine swap via Boltz)."""
+def send(ctx, invoice, ln_address, amount_sats, wallet_name, password_stdin):
+    """Pay a Lightning invoice or Lightning Address using L-BTC."""
+    if bool(invoice) == bool(ln_address):
+        raise click.UsageError("Provide exactly one of --invoice or --ln-address")
+
+    if ln_address and amount_sats is None:
+        raise click.UsageError("--amount-sats is required when using --ln-address")
+
+    payment_target = ln_address or invoice
+
     password = resolve_secret(
         "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
     )
@@ -74,7 +94,12 @@ def send(ctx, invoice, wallet_name, password_stdin):
         ctx,
         lambda: handle_password_retry(
             lightning_send,
-            {"invoice": invoice, "wallet_name": wallet_name, "password": password},
+            {
+                "invoice": payment_target,
+                "wallet_name": wallet_name,
+                "password": password,
+                "amount_sats": amount_sats,
+            },
         ),
     )
 

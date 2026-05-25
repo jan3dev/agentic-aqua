@@ -1,0 +1,157 @@
+"""Feature flag system for MCP tools and CLI commands.
+
+Provides runtime config-driven gating of MCP tools and their corresponding CLI
+commands. The single source of truth is `Config.enabled_tools` persisted in
+`~/.aqua/config.json`. See `.omc/plans/feature-flags-mcp-cli.md`.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from .storage import Config, Storage
+from .tools import TOOLS
+
+logger = logging.getLogger(__name__)
+
+
+# Shipped defaults: every currently-known MCP tool defaults to True for v1.
+# Maintainers flip specific tools to False here per release to ship them
+# disabled-by-default.
+SHIPPED_DEFAULTS_ENABLED_TOOLS: dict[str, bool] = {name: True for name in TOOLS}
+
+
+# Mapping from (CLI group name, CLI command name) to MCP tool name.
+# Empty string for the group means top-level (registered directly on `cli`).
+# Verbatim from .omc/plans/feature-flags-mcp-cli.md Appendix A.
+CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
+    # Top-level
+    ("", "balance"): "unified_balance",
+
+    # wallet group (cli/wallet.py)
+    ("wallet", "generate-mnemonic"): "lw_generate_mnemonic",
+    ("wallet", "import-mnemonic"): "lw_import_mnemonic",
+    ("wallet", "list"): "lw_list_wallets",
+    ("wallet", "delete"): "delete_wallet",
+
+    # liquid group (cli/liquid.py)
+    ("liquid", "balance"): "lw_balance",
+    ("liquid", "address"): "lw_address",
+    ("liquid", "transactions"): "lw_transactions",
+    ("liquid", "send"): "lw_send",
+    ("liquid", "send-asset"): "lw_send_asset",
+    ("liquid", "assets"): "lw_list_assets",
+    ("liquid", "tx-status"): "lw_tx_status",
+    ("liquid", "import-descriptor"): "lw_import_descriptor",
+    ("liquid", "export-descriptor"): "lw_export_descriptor",
+
+    # btc group (cli/btc.py)
+    ("btc", "balance"): "btc_balance",
+    ("btc", "address"): "btc_address",
+    ("btc", "transactions"): "btc_transactions",
+    ("btc", "send"): "btc_send",
+    ("btc", "import-descriptor"): "btc_import_descriptor",
+    ("btc", "export-descriptor"): "btc_export_descriptor",
+
+    # lightning group (cli/lightning.py)
+    ("lightning", "receive"): "lightning_receive",
+    ("lightning", "send"): "lightning_send",
+    ("lightning", "status"): "lightning_transaction_status",
+
+    # changelly group (cli/changelly.py)
+    ("changelly", "currencies"): "changelly_list_currencies",
+    ("changelly", "quote"): "changelly_quote",
+    ("changelly", "send"): "changelly_send",
+    ("changelly", "receive"): "changelly_receive",
+    ("changelly", "status"): "changelly_status",
+
+    # sideshift group (cli/sideshift.py)
+    ("sideshift", "coins"): "sideshift_list_coins",
+    ("sideshift", "pair-info"): "sideshift_pair_info",
+    ("sideshift", "quote"): "sideshift_quote",
+    ("sideshift", "recommend"): "sideshift_recommend",
+    ("sideshift", "send"): "sideshift_send",
+    ("sideshift", "receive"): "sideshift_receive",
+    ("sideshift", "status"): "sideshift_status",
+
+    # sideswap group (cli/sideswap.py)
+    ("sideswap", "status"): "sideswap_server_status",
+    ("sideswap", "recommend"): "sideswap_recommend",
+    ("sideswap", "peg-quote"): "sideswap_peg_quote",
+    ("sideswap", "peg-in"): "sideswap_peg_in",
+    ("sideswap", "peg-out"): "sideswap_peg_out",
+    ("sideswap", "peg-status"): "sideswap_peg_status",
+    ("sideswap", "assets"): "sideswap_list_assets",
+    ("sideswap", "quote"): "sideswap_quote",
+    ("sideswap", "swap"): "sideswap_execute_swap",
+    ("sideswap", "swap-status"): "sideswap_swap_status",
+}
+
+
+# Tools available only via MCP — no Click command in `src/aqua/cli/`.
+# The PIX endpoints are agent-only by design (Brazilian instant-pay flows
+# triggered from chat); intentionally not exposed in the CLI.
+MCP_ONLY_TOOLS: frozenset[str] = frozenset({"pix_receive", "pix_status"})
+
+
+def is_tool_enabled(name: str, config: Config) -> bool:
+    """Return True if the MCP tool `name` is enabled by `config`.
+
+    `config` is REQUIRED — never read from a module global.
+    Falls back to `SHIPPED_DEFAULTS_ENABLED_TOOLS` when the user's
+    `enabled_tools` map lacks the key. Unknown tool names (not present in
+    `TOOLS`) default to True (forward-compat for tools the user expects to
+    land); the warning for unknown user-provided keys is emitted at config
+    load time in `load_config_with_merge`.
+    """
+    return config.enabled_tools.get(
+        name, SHIPPED_DEFAULTS_ENABLED_TOOLS.get(name, True)
+    )
+
+
+def _merge_with_defaults(
+    loaded: dict[str, bool],
+) -> tuple[dict[str, bool], bool]:
+    """Merge shipped defaults into `loaded`, preserving user's overrides.
+
+    Returns `(merged, changed)`. `changed` is True if any default keys were
+    inserted (so the caller can persist the file).
+    """
+    merged = dict(loaded)
+    changed = False
+    for key, default in SHIPPED_DEFAULTS_ENABLED_TOOLS.items():
+        if key not in merged:
+            merged[key] = default
+            changed = True
+    return merged, changed
+
+
+def load_config_with_merge(storage: Storage | None = None) -> Config:
+    """Load config, merge shipped defaults, warn on unknown keys, persist if changed.
+
+    - On first install (no config file): writes one with shipped defaults.
+    - On upgrade (config exists, lacks `enabled_tools` entries for new tools):
+      adds them and re-saves atomically.
+    - Unknown keys in `enabled_tools` (not in `TOOLS`): warned and otherwise
+      ignored (kept in the saved file so the user can fix the typo).
+    """
+    if storage is None:
+        storage = Storage()
+    config_existed = storage.config_path.exists()
+    config = storage.load_config()
+
+    # Warn on unknown keys (typos, removed tools).
+    for key in config.enabled_tools:
+        if key not in TOOLS:
+            logger.warning(
+                "Unknown tool in enabled_tools: %r (ignored). "
+                "Remove it from %s to silence this warning.",
+                key,
+                storage.config_path,
+            )
+
+    merged, changed = _merge_with_defaults(config.enabled_tools)
+    config.enabled_tools = merged
+    if changed or not config_existed:
+        storage.save_config(config)
+    return config

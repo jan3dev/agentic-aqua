@@ -13,10 +13,7 @@ from aqua.wallet import WalletManager
 import urllib.error
 
 
-TEST_MNEMONIC = (
-    "abandon abandon abandon abandon abandon abandon "
-    "abandon abandon abandon abandon abandon about"
-)
+from tests.conftest import TEST_MNEMONIC
 
 VALID_INVOICE = "lnbc500u1ptest_valid_bolt11_invoice_data"
 

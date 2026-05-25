@@ -31,6 +31,7 @@ from aqua.sideshift import (
     shift_is_success,
 )
 from aqua.storage import Storage, WalletData
+from tests.conftest import TEST_MNEMONIC
 
 
 L_BTC = "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d"
@@ -933,8 +934,7 @@ class TestManagerSend:
         # to produce the same stored format.
         wallet = storage.load_wallet("default")
         wallet.encrypted_mnemonic = storage.encrypt_mnemonic(
-            "abandon abandon abandon abandon abandon abandon abandon "
-            "abandon abandon abandon abandon about",
+            TEST_MNEMONIC,
             password="correct horse",
         )
         storage.save_wallet(wallet)
@@ -962,8 +962,7 @@ class TestManagerSend:
         mgr, _, _, storage = manager_setup
         wallet = storage.load_wallet("default")
         wallet.encrypted_mnemonic = storage.encrypt_mnemonic(
-            "abandon abandon abandon abandon abandon abandon abandon "
-            "abandon abandon abandon abandon about",
+            TEST_MNEMONIC,
             password="correct horse",
         )
         storage.save_wallet(wallet)

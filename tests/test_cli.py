@@ -15,10 +15,7 @@ from aqua.cli.main import cli
 from aqua.storage import Storage
 from aqua.wallet import WalletManager
 
-TEST_MNEMONIC = (
-    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon "
-    "abandon about"
-)
+from tests.conftest import TEST_MNEMONIC
 
 
 class StringIOWithIsatty(io.StringIO):
@@ -756,6 +753,75 @@ class TestLightningCommands:
             ["--format", "json", "lightning", "status", "--swap-id", "nonexistent"],
         )
         assert result.exit_code == 1
+
+    def test_send_help_mentions_ln_address_and_amount_sats(self, runner):
+        result = runner.invoke(cli, ["lightning", "send", "--help"])
+        assert result.exit_code == 0
+        normalized = " ".join(result.output.split())
+        assert "--ln-address" in result.output
+        assert "--amount-sats" in result.output
+        assert "Mutually exclusive with --invoice" in normalized
+
+    def test_send_requires_exactly_one_of_invoice_or_ln_address(self, runner):
+        result = runner.invoke(cli, ["lightning", "send"])
+        assert result.exit_code != 0
+        assert "Provide exactly one of --invoice or --ln-address" in result.output
+
+    def test_send_rejects_both_invoice_and_ln_address(self, runner):
+        result = runner.invoke(
+            cli,
+            [
+                "lightning",
+                "send",
+                "--invoice",
+                "lnbc500u1ptest_valid_invoice",
+                "--ln-address",
+                "alice@getalby.com",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "Provide exactly one of --invoice or --ln-address" in result.output
+
+    def test_send_requires_amount_sats_with_ln_address(self, runner):
+        result = runner.invoke(
+            cli,
+            ["lightning", "send", "--ln-address", "alice@getalby.com"],
+        )
+        assert result.exit_code != 0
+        assert "--amount-sats is required when using --ln-address" in result.output
+
+    def test_send_ln_address_passes_amount_sats_to_tool(self, runner):
+        with patch("aqua.cli.lightning.lightning_send") as mock_send:
+            mock_send.return_value = {
+                "swap_id": "boltz_123",
+                "lockup_txid": "abc123",
+                "status": "processing",
+                "amount": 1020,
+            }
+            result = runner.invoke(
+                cli,
+                [
+                    "--format",
+                    "json",
+                    "lightning",
+                    "send",
+                    "--ln-address",
+                    "alice@getalby.com",
+                    "--amount-sats",
+                    "1000",
+                    "--wallet-name",
+                    "tuna",
+                ],
+            )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["swap_id"] == "boltz_123"
+        mock_send.assert_called_once_with(
+            invoice="alice@getalby.com",
+            wallet_name="tuna",
+            password=None,
+            amount_sats=1000,
+        )
 
 
 # ---------------------------------------------------------------------------
