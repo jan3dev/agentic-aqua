@@ -33,22 +33,22 @@ SIGNER_MNEMONIC=${SIGNER_MNEMONIC}
 
 ---
 
-### 2. Create a Pix Charge for R$1,00
+### 2. Create a Pix Charge for R$5,00
 
 ```
-Generate a Pix charge for R$1.00 (100 cents) so I can receive DePix into my Liquid wallet.
+Generate a Pix charge for R$5.00 (500 cents) so I can receive DePix into my Liquid wallet.
 ```
 
 **Expected behavior:**
-- Invokes `pix_receive(amount_cents=100, wallet_name="prompt_wallet_<DATETIME>")`
-- Returns `swap_id`, `qr_copy_paste`, `qr_image_url`, `amount_cents=100`, `amount_brl="R$ 1,00"`, `depix_address` (lq1...), `expiration`, plus a `message` explaining how to pay
+- Invokes `pix_receive(amount_cents=500, wallet_name="prompt_wallet_<DATETIME>")`
+- Returns `swap_id`, `qr_copy_paste`, `qr_image_url`, `amount_cents=500`, `amount_brl="R$ 5,00"`, `depix_address` (lq1...), `expiration`, plus a `message` explaining how to pay
 - The agent shows both `qr_copy_paste` and `qr_image_url` to the user
 
 ---
 
 ### 3. (Manual) Pay the Pix Charge
 
-The tester opens their Brazilian banking app, selects **Pix Copia e Cola**, pastes the `qr_copy_paste` string returned in step 2, and confirms the R$1.00 payment.
+The tester opens their Brazilian banking app, selects **Pix Copia e Cola**, pastes the `qr_copy_paste` string returned in step 2, and confirms the R$5.00 payment.
 
 Alternatively the tester can open `qr_image_url` on a second device and scan it with the bank app.
 
@@ -77,7 +77,7 @@ Show me my Liquid balance and recent transactions.
 ```
 
 **Expected behavior:**
-- `lw_balance` shows a DePix asset entry with the credited amount (≈ R$1.00 worth)
+- `lw_balance` shows a DePix asset entry with the credited amount (≈ R$5.00 worth)
 - `lw_transactions(limit=5)` includes the incoming DePix tx with the `blockchain_txid` from step 4
 
 ---
@@ -110,6 +110,6 @@ What is the status of Pix swap <SWAP_ID>?
 
 ## Notes
 
-- **Amounts are in BRL cents**, not reais. `amount_cents=100` = R$1.00.
+- **Amounts are in BRL cents**, not reais. `amount_cents=500` = R$5.00.
 - Eulen pushes DePix automatically once the Pix payment settles — no claim step is required.
-- **Issue #41** tracks this manual QA pass.
+
