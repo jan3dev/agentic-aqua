@@ -16,10 +16,10 @@ Use an agent with Sonnet model.
 | `SIGNER_MNEMONIC` | BIP39 mnemonic (12 words) for the test wallet |
 | `CHANGELLY_SOL_DEST` | USDt-Solana address to receive in the send test |
 | `CHANGELLY_SOL_REFUND` | USDt-Solana refund address used in the receive test |
-| `CHANGELLY_USDT_AMOUNT` | Optional. Decimal USDt-Liquid amount. Default "10" |
 
 **IMPORTANT:**
-- Wallet must hold ≥ `CHANGELLY_USDT_AMOUNT` of USDt on Liquid for Section A.
+- Wallet must hold ≥ 51 USDt on Liquid for Section A.
+- Minimum for lusdt→usdtsol pair is ~50.05 USDT; 51 is used throughout these tests.
 - Each order is trackable via the `track_url` returned by Changelly.
 - ⚠️ Issue #54: fees may be deducted from the receive side (inconsistent with the Flutter APK). Capture the discrepancy in your test notes.
 
@@ -35,7 +35,7 @@ SIGNER_MNEMONIC=${SIGNER_MNEMONIC}
 **Expected behavior:**
 - Wallet imported (or reused) as `prompt_wallet_<DATETIME>`
 - `lw_balance` shows L-BTC and USDt
-- USDt-Liquid balance is ≥ ${CHANGELLY_USDT_AMOUNT}
+- USDt-Liquid balance is ≥ 51
 
 ---
 
@@ -44,11 +44,11 @@ SIGNER_MNEMONIC=${SIGNER_MNEMONIC}
 ### 2. Get a Send Quote
 
 ```
-Quote me sending ${CHANGELLY_USDT_AMOUNT} L-USDt to USDt on Solana via Changelly.
+Quote me sending 51 L-USDt to USDt on Solana via Changelly.
 ```
 
 **Expected behavior:**
-- Invokes `changelly_quote(external_network="solana", direction="send", amount_from="${CHANGELLY_USDT_AMOUNT}")`
+- Invokes `changelly_quote(external_network="solana", direction="send", amount_from="51")`
 - Returns Changelly payload including `id` (we will reuse as `rate_id`), `amountFrom`, `amountTo`, `networkFee`, `min`, `max`, `expiredAt`
 - ⚠️ If `Validation failed (400)`, see issue #51 and stop here.
 
@@ -61,7 +61,7 @@ Execute the Changelly send to ${CHANGELLY_SOL_DEST} using the quote id from the 
 ```
 
 **Expected behavior:**
-- Invokes `changelly_send(external_network="solana", settle_address="${CHANGELLY_SOL_DEST}", amount_from="${CHANGELLY_USDT_AMOUNT}", wallet_name="prompt_wallet_<DATETIME>", rate_id="<RATE_ID>")`
+- Invokes `changelly_send(external_network="solana", settle_address="${CHANGELLY_SOL_DEST}", amount_from="51", wallet_name="prompt_wallet_<DATETIME>", rate_id="<RATE_ID>")`
 - Internally fetches the Liquid deposit address from Changelly and broadcasts USDt-Liquid
 - Returns `order_id`, `deposit_hash` (Liquid txid), `deposit_address`, `amount_from`, `amount_to`, `status`, `expires_at`, `track_url`
 - `deposit_hash` is verifiable on `https://blockstream.info/liquid/tx/<txid>`
@@ -89,11 +89,11 @@ Check the status of Changelly order <ORDER_ID>.
 ### 5. Get a Receive Quote
 
 ```
-Quote me receiving ${CHANGELLY_USDT_AMOUNT} L-USDt from sending USDt on Solana via Changelly.
+Quote me receiving 51 L-USDt from sending USDt on Solana via Changelly.
 ```
 
 **Expected behavior:**
-- Invokes `changelly_quote(external_network="solana", direction="receive", amount_to="${CHANGELLY_USDT_AMOUNT}")`
+- Invokes `changelly_quote(external_network="solana", direction="receive", amount_to="51")`
 - Returns the Changelly quote payload
 
 ---
@@ -101,11 +101,11 @@ Quote me receiving ${CHANGELLY_USDT_AMOUNT} L-USDt from sending USDt on Solana v
 ### 6. Create Receive Order with Refund Address
 
 ```
-Create a Changelly receive order so I can deposit ${CHANGELLY_USDT_AMOUNT} USDt-Solana and have it settle to my Liquid wallet. Refund address on Solana is ${CHANGELLY_SOL_REFUND}.
+Create a Changelly receive order so I can deposit 51 USDt-Solana and have it settle to my Liquid wallet. Refund address on Solana is ${CHANGELLY_SOL_REFUND}.
 ```
 
 **Expected behavior:**
-- Invokes `changelly_receive(external_network="solana", wallet_name="prompt_wallet_<DATETIME>", external_refund_address="${CHANGELLY_SOL_REFUND}", amount_from="${CHANGELLY_USDT_AMOUNT}")`
+- Invokes `changelly_receive(external_network="solana", wallet_name="prompt_wallet_<DATETIME>", external_refund_address="${CHANGELLY_SOL_REFUND}", amount_from="51")`
 - Returns `order_id`, `deposit_address` (Solana), `settle_address` (lq1...), `amount_from`, `status`, `track_url`
 - ⚠️ Confirms refund address was set; if the agent omits it, surface the warning explicitly (issue #53)
 
