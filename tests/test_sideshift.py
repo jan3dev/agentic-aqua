@@ -25,6 +25,7 @@ from aqua.sideshift import (
     SideShiftShift,
     _check_pair_allowed,
     _decimal_to_sats_8dp,
+    _filter_coins_to_allowlist,
     recommend_shift_or_swap,
     shift_is_failed,
     shift_is_final,
@@ -244,6 +245,134 @@ class TestAllowedPairs:
             _check_pair_allowed("eth", "ethereum", side="deposit")
         with pytest.raises(ValueError, match="settle pair"):
             _check_pair_allowed("eth", "ethereum", side="settle")
+
+
+# Sample shaped like SideShift's `/v2/coins` response (real one is ~4500 lines).
+_SAMPLE_COINS = [
+    {
+        "networks": ["base", "polygon", "avax", "ethereum", "arbitrum", "optimism"],
+        "coin": "DAI",
+        "name": "Dai",
+        "hasMemo": False,
+        "tokenDetails": {
+            "ethereum": {"contractAddress": "0x6b17", "decimals": 18},
+            "polygon": {"contractAddress": "0x8f3c", "decimals": 18},
+        },
+        "networksWithMemo": [],
+    },
+    {
+        "networks": [
+            "optimism", "polygon", "solana", "stellar", "sui", "algorand",
+            "avax", "ethereum", "aptos", "arbitrum", "base", "bsc",
+            "tron", "ton", "liquid",
+        ],
+        "coin": "USDT",
+        "name": "Tether",
+        "hasMemo": False,
+        "tokenDetails": {
+            "ethereum": {"contractAddress": "0xdac1", "decimals": 6},
+            "tron":     {"contractAddress": "TR7N", "decimals": 6},
+            "solana":   {"contractAddress": "Es9v", "decimals": 6},
+            "polygon":  {"contractAddress": "0xc213", "decimals": 6},
+            "bsc":      {"contractAddress": "0x5535", "decimals": 18},
+            "ton":      {"contractAddress": "0:b113", "decimals": 6},
+            "avax":     {"contractAddress": "0x9702", "decimals": 6},
+            "stellar":  {"contractAddress": "USDT-G", "decimals": 7},
+        },
+        "networksWithMemo": ["stellar"],
+    },
+    {
+        "networks": ["bitcoin", "liquid"],
+        "coin": "BTC",
+        "name": "Bitcoin",
+        "hasMemo": False,
+        "networksWithMemo": [],
+    },
+    {
+        "networks": ["solana"],
+        "coin": "SKR",
+        "name": "Seeker",
+        "hasMemo": False,
+        "tokenDetails": {"solana": {"contractAddress": "SKR", "decimals": 6}},
+        "networksWithMemo": [],
+    },
+]
+
+
+class TestFilterCoinsToAllowlist:
+    """`list_coins` returns ~100 KB raw; the filter must trim it to the
+    curated allowlist before the MCP layer ships it to the agent."""
+
+    def test_only_allowlisted_coins_remain(self):
+        filtered = _filter_coins_to_allowlist(_SAMPLE_COINS)
+        kept = {c["coin"] for c in filtered}
+        assert kept == {"USDT", "BTC"}
+
+    def test_usdt_networks_intersected_to_allowlist(self):
+        filtered = _filter_coins_to_allowlist(_SAMPLE_COINS)
+        usdt = next(c for c in filtered if c["coin"] == "USDT")
+        assert set(usdt["networks"]) == {
+            "ethereum", "tron", "bsc", "solana", "polygon", "ton", "liquid",
+        }
+        # Stellar / aptos / sui / etc are dropped
+        assert "stellar" not in usdt["networks"]
+        assert "aptos" not in usdt["networks"]
+
+    def test_btc_only_keeps_mainchain_network(self):
+        filtered = _filter_coins_to_allowlist(_SAMPLE_COINS)
+        btc = next(c for c in filtered if c["coin"] == "BTC")
+        # (btc, liquid) is intentionally NOT on the allowlist — use SideSwap.
+        assert btc["networks"] == ["bitcoin"]
+
+    def test_token_details_pruned_to_allowed_networks(self):
+        filtered = _filter_coins_to_allowlist(_SAMPLE_COINS)
+        usdt = next(c for c in filtered if c["coin"] == "USDT")
+        details = usdt["tokenDetails"]
+        assert set(details) == {
+            "ethereum", "tron", "solana", "polygon", "bsc", "ton",
+        }
+        # Stellar token details dropped along with the network.
+        assert "stellar" not in details
+        assert "avax" not in details
+
+    def test_networks_with_memo_pruned(self):
+        filtered = _filter_coins_to_allowlist(_SAMPLE_COINS)
+        usdt = next(c for c in filtered if c["coin"] == "USDT")
+        # The sample's only memo-network is stellar, which is not allowed.
+        assert usdt["networksWithMemo"] == []
+
+    def test_coin_dropped_when_no_networks_remain(self):
+        # USDC isn't in `ALLOWED_PAIRS` at all — even if SideShift returns
+        # it, the filter must drop it.
+        raw = [{
+            "networks": ["ethereum", "tron"],
+            "coin": "USDC",
+            "name": "USD Coin",
+        }]
+        assert _filter_coins_to_allowlist(raw) == []
+
+    def test_filter_does_not_mutate_input(self):
+        import copy
+        original = copy.deepcopy(_SAMPLE_COINS)
+        _filter_coins_to_allowlist(_SAMPLE_COINS)
+        assert _SAMPLE_COINS == original
+
+    def test_manager_uses_filter(self):
+        # Ensure the SideShiftManager.list_coins actually filters before
+        # returning — not just the helper.
+        mgr = SideShiftManager.__new__(SideShiftManager)
+        mgr._client = MagicMock()
+        mgr._client.get_coins.return_value = _SAMPLE_COINS
+        result = mgr.list_coins()
+        assert {c["coin"] for c in result} == {"USDT", "BTC"}
+
+    def test_manager_override_returns_raw(self, monkeypatch):
+        monkeypatch.setenv("SIDESHIFT_ALLOW_ALL_NETWORKS", "1")
+        mgr = SideShiftManager.__new__(SideShiftManager)
+        mgr._client = MagicMock()
+        mgr._client.get_coins.return_value = _SAMPLE_COINS
+        result = mgr.list_coins()
+        assert result is _SAMPLE_COINS
 
 
 # ---------------------------------------------------------------------------

@@ -921,14 +921,16 @@ def pix_receive(
 
 
 def changelly_list_currencies() -> dict[str, Any]:
-    """List the currencies Changelly supports (Changelly's own asset id format).
+    """List the Changelly currencies enabled for swaps in agentic-aqua.
 
-    Useful for discovery; the agentic-aqua surface only enables the curated
-    USDt-Liquid ↔ USDt-on-{ethereum,tron,bsc,solana,polygon,ton} pairs for
-    actual swaps, but the read-only currency list is unrestricted.
+    Filtered server-side to the curated USDt-Liquid ↔ USDt-on-external-chain
+    set: `lusdt` (Liquid) plus the 6 external USDt variants (usdt20/usdtrx/
+    usdtbsc/usdtsol/usdtpolygon/usdton). Other Changelly assets aren't
+    exposed because we don't offer swaps for them. Set
+    `CHANGELLY_ALLOW_ALL_PAIRS=1` to bypass the filter.
 
     Returns:
-        currencies: list of asset id strings
+        currencies: list of asset id strings (≤ 7 entries)
         count: number of entries
     """
     currencies = get_changelly_manager().list_currencies()
@@ -1107,12 +1109,15 @@ def changelly_status(order_id: str) -> dict[str, Any]:
 
 
 def sideshift_list_coins() -> dict[str, Any]:
-    """List the coins and networks SideShift supports.
+    """List the SideShift coin/network identifiers enabled for swaps.
 
-    Use this to discover valid (coin, network) identifiers for the other
-    SideShift tools. Returns the SideShift response unchanged — each entry
-    has `coin`, `name`, `networks`, `hasMemo` (whether deposits to that
-    chain need a memo), `fixedOnly`/`variableOnly`, etc.
+    Filtered server-side to the curated allowlist (USDt across
+    ethereum/tron/bsc/solana/polygon/ton/liquid, plus mainchain BTC) so the
+    response stays small and only surfaces pairs we actually support. Each
+    kept entry has `coin`, `name`, `networks` (intersected with the
+    allowlist), `hasMemo`, `fixedOnly`/`variableOnly`, and a pruned
+    `tokenDetails`. Set `SIDESHIFT_ALLOW_ALL_NETWORKS=1` to bypass the
+    filter.
 
     Returns:
         coins: list of {coin, name, networks, hasMemo, ...}
