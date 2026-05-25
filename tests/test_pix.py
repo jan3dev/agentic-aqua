@@ -191,8 +191,13 @@ class TestEulenClient:
             assert called_req.full_url.endswith("/deposit")
             assert called_req.headers["Authorization"] == "Bearer test-token-xyz"
             nonce = called_req.headers["X-nonce"]  # urllib lowercases the second char
-            # nonce should be a uuid4 hex (32 chars, lowercase hex)
-            assert re.fullmatch(r"[0-9a-f]{32}", nonce)
+            # Eulen requires the standard dashed UUID format (8-4-4-4-12). The
+            # 32-char hex form was rejected with HTTP 400 "Not a valid UUID."
+            # See issue #78.
+            assert re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+                nonce,
+            )
             body = json.loads(called_req.data.decode())
             assert body == {"amountInCents": 5000, "depixAddress": "lq1test"}
 
@@ -207,6 +212,24 @@ class TestEulenClient:
             with pytest.raises(RuntimeError) as exc:
                 client.create_deposit(0, "lq1test")
             assert "invalid amount" in str(exc.value)
+            assert "400" in str(exc.value)
+
+    def test_create_deposit_http_error_extracts_response_errorMessage(self):
+        # Eulen wraps 4xx detail inside {"response": {"errorMessage": "..."}}.
+        # The previous error handler only looked at top-level "error"/"message",
+        # so the useful cause was silently dropped — see issue #78 finding 3.
+        client = EulenClient()
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            err = urllib.error.HTTPError("url", 400, "Bad Request", {}, MagicMock())
+            err.read = MagicMock(
+                return_value=json.dumps(
+                    {"response": {"errorMessage": "Invalid X-Nonce header value - Not a valid UUID."}}
+                ).encode()
+            )
+            mock_urlopen.side_effect = err
+            with pytest.raises(RuntimeError) as exc:
+                client.create_deposit(5000, "lq1test")
+            assert "Invalid X-Nonce" in str(exc.value)
             assert "400" in str(exc.value)
 
     def test_create_deposit_http_error_empty_body_omits_literal_braces(self):
@@ -371,6 +394,34 @@ class TestPixManagerGetDepositStatus:
         assert reloaded.status == "depix_sent"
         assert reloaded.blockchain_txid == "deadbeef" * 8
 
+    def test_approved_status_recognized_and_persisted(self, test_wallet):
+        # Eulen returns "approved" as the intermediate "Pix received, DePix
+        # in flight" state. Before issue #78, this was logged as an unknown
+        # status and the cached "pending" was kept — confusing the user.
+        storage, wm = test_wallet
+        seeded = self._seed_swap(storage, wm)
+
+        manager = PixManager(storage=storage, wallet_manager=wm)
+        approved_resp = {
+            "response": {
+                "status": "approved",
+                "valueInCents": 5000,
+                "expiration": "2026-05-08T23:59:59Z",
+            },
+            "async": False,
+        }
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = _mock_response(approved_resp)
+            result = manager.get_deposit_status(seeded.swap_id)
+
+        assert result["status"] == "approved"
+        assert "warning" not in result
+        assert "Pix payment received" in result["message"]
+
+        reloaded = storage.load_pix_swap(seeded.swap_id)
+        assert reloaded is not None
+        assert reloaded.status == "approved"
+
     def test_warning_on_remote_failure(self, test_wallet):
         storage, wm = test_wallet
         seeded = self._seed_swap(storage, wm)
@@ -493,6 +544,24 @@ class TestPixTools:
         assert result["amount_cents"] == 5000
         assert result["amount_brl"] == "R$50,00"
         assert "Copia e Cola" in result["message"]
+
+    def test_pix_receive_reports_fee_and_net(self, test_wallet):
+        # Eulen charges a flat R$0,99 per operation. The tool must surface
+        # both the fee and the expected net DePix so the user is not
+        # surprised on settlement — see issue #78 finding 4.
+        from aqua.pix import EULEN_FEE_CENTS
+        from aqua.tools import pix_receive
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = _mock_response(MOCK_DEPOSIT_RESPONSE)
+            result = pix_receive(amount_cents=5000)
+
+        assert result["fee_cents"] == EULEN_FEE_CENTS == 99
+        assert result["fee_brl"] == "R$0,99"
+        assert result["net_amount_cents"] == 5000 - 99
+        assert result["net_amount_brl"] == "R$49,01"
+        assert "R$0,99" in result["message"]
+        assert "R$49,01" in result["message"]
 
     def test_pix_status_dispatches(self, test_wallet):
         from aqua.tools import pix_receive, pix_status
