@@ -282,8 +282,14 @@ def quote(ctx, asset_id, asset_ticker, send_amount, recv_amount, reverse, networ
     "--password-stdin", "password_stdin", is_flag=True, default=False,
     help=_PASSWORD_HELP,
 )
+@click.option(
+    "--flexible", "flexible", is_flag=True, default=False,
+    help="Accept dealer-rounded send_amount adjustments up to ±3000 sats. "
+         "Required for small swaps (<25k sats) since SideSwap's dealer rounds amounts.",
+)
 @click.pass_obj
-def swap(ctx, asset_id, asset_ticker, amount, reverse, wallet_name, skip_confirm, password_stdin):
+def swap(ctx, asset_id, asset_ticker, amount, reverse, wallet_name, skip_confirm, password_stdin,
+         flexible):
     """Execute an atomic Liquid asset swap on SideSwap.
 
     Both directions are supported via --reverse. The PSET returned by SideSwap
@@ -367,6 +373,7 @@ def swap(ctx, asset_id, asset_ticker, amount, reverse, wallet_name, skip_confirm
                 "password": password,
                 "send_bitcoins": not reverse,
                 "min_recv_amount": min_recv_amount,
+                "flexible_small_amount": flexible,
             },
         ),
     )

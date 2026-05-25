@@ -540,18 +540,24 @@ class ChangellyManager:
     def send_swap(
         self,
         external_network: str,
-        amount_from: str,
         settle_address: str,
+        amount_from: Optional[str] = None,
+        amount_to: Optional[str] = None,
         wallet_name: str = "default",
         password: Optional[str] = None,
         rate_id: Optional[str] = None,
     ) -> "ChangellySwap":
         """Send USDt-Liquid out via a Changelly fixed-rate order.
 
+        Provide exactly one of `amount_from` or `amount_to`:
+        - `amount_from`: USDt-Liquid to send; fees deducted from what recipient gets.
+        - `amount_to`: what the recipient should receive; fees paid by sender on top.
+
         Args:
             external_network: target USDt network (e.g. "tron", "ethereum").
-            amount_from: USDt-Liquid to send (decimal string, e.g. "100").
             settle_address: external chain address to receive at.
+            amount_from: USDt-Liquid to send (decimal string, e.g. "100").
+            amount_to: amount recipient should receive (decimal string).
             wallet_name: local Liquid wallet to sign with.
             password: mnemonic decryption password (if encrypted at rest).
             rate_id: rate id from a prior changelly_quote call. If provided,
@@ -561,6 +567,8 @@ class ChangellyManager:
         Returns a persisted `ChangellySwap` with the broadcast `deposit_hash`
         and Changelly's order id.
         """
+        if (amount_from is None) == (amount_to is None):
+            raise ValueError("Provide exactly one of amount_from or amount_to")
         from_asset = LIQUID_USDT_ID
         to_asset = network_to_asset_id(external_network)
         # Validate the agreed pair and destination address before any HTTP work.
@@ -588,6 +596,7 @@ class ChangellyManager:
                 from_asset=from_asset,
                 to_asset=to_asset,
                 amount_from=amount_from,
+                amount_to=amount_to,
             )
             rate_id = quote.get("id") or quote.get("rateId")
             if not rate_id:
@@ -601,6 +610,7 @@ class ChangellyManager:
             address=settle_address,
             refund_address=refund_address,
             amount_from=amount_from,
+            amount_to=amount_to,
         )
         order_id = order.get("id")
         deposit_address = order.get("payinAddress")
@@ -656,9 +666,14 @@ class ChangellyManager:
         external_network: str,
         wallet_name: str = "default",
         external_refund_address: Optional[str] = None,
-        amount_from: str = "",
+        amount_from: Optional[str] = None,
+        amount_to: Optional[str] = None,
     ) -> "ChangellySwap":
         """Receive USDt-Liquid via a Changelly variable-rate order.
+
+        Provide exactly one of `amount_from` or `amount_to`:
+        - `amount_from`: amount the external sender will deposit.
+        - `amount_to`: amount to receive in the Liquid wallet.
 
         Args:
             external_network: source USDt network the external sender pays from.
@@ -667,7 +682,9 @@ class ChangellyManager:
                 on the source chain. Without it, a stuck order requires
                 manual intervention via the Changelly web UI.
             amount_from: amount the external sender will deposit (decimal string,
-                e.g. "50"). Required by the Ankara backend serializer.
+                e.g. "50"). Mutually exclusive with amount_to.
+            amount_to: amount to receive in the wallet (decimal string).
+                Mutually exclusive with amount_from.
         """
         from_asset = network_to_asset_id(external_network)
         to_asset = LIQUID_USDT_ID
@@ -690,6 +707,7 @@ class ChangellyManager:
             address=settle_address,
             refund_address=external_refund_address,
             amount_from=amount_from,
+            amount_to=amount_to,
         )
         order_id = order.get("id")
         deposit_address = order.get("payinAddress")

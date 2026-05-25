@@ -543,12 +543,13 @@ TOOL_SCHEMAS = {
                     "description": "Target USDt network",
                 },
                 "settle_address": {"type": "string", "description": "External chain address to receive USDt at"},
-                "amount_from": {"type": "string", "description": "USDt-Liquid to send (decimal string, e.g. '100')"},
+                "amount_from": {"type": "string", "description": "USDt-Liquid to send (decimal string, e.g. '100'). Mutually exclusive with amount_to."},
+                "amount_to": {"type": "string", "description": "Amount the recipient should receive (decimal string). Mutually exclusive with amount_from. Use this to pay fees from the sender side, matching AQUA APK behavior."},
                 "wallet_name": {"type": "string", "default": "default"},
                 "password": {"type": "string", "description": "Password to decrypt mnemonic (if encrypted at rest)"},
                 "rate_id": {"type": "string", "description": "Rate id from a prior changelly_quote call — pass this to lock the previewed rate and avoid drift"},
             },
-            "required": ["external_network", "settle_address", "amount_from"],
+            "required": ["external_network", "settle_address"],
         },
     },
     "changelly_receive": {
@@ -573,10 +574,14 @@ TOOL_SCHEMAS = {
                 },
                 "amount_from": {
                     "type": "string",
-                    "description": "Amount the external sender will deposit (decimal string, e.g. '50')",
+                    "description": "Amount the external sender will deposit (decimal string, e.g. '50'). Mutually exclusive with amount_to.",
+                },
+                "amount_to": {
+                    "type": "string",
+                    "description": "Amount to receive in the wallet (decimal string). Mutually exclusive with amount_from.",
                 },
             },
-            "required": ["external_network", "amount_from"],
+            "required": ["external_network"],
         },
     },
     "changelly_status": {

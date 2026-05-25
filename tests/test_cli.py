@@ -810,8 +810,8 @@ class _FakeChangellyManager:
             wallet_name=kwargs["wallet_name"],
             status="new",
             created_at="2026-05-08T12:00:00+00:00",
-            amount_from=kwargs["amount_from"],
-            amount_to="99",
+            amount_from=kwargs.get("amount_from"),
+            amount_to=kwargs.get("amount_to", "99"),
             deposit_hash="lqtxid" + ("0" * 58),
             track_url="https://changelly.com/track/ord_send",
         )
@@ -951,6 +951,44 @@ class TestChangellySend:
         )
         assert result.exit_code == 2
 
+    def test_send_with_amount_to_uses_recipient_amount(self, runner, changelly_manager):
+        """--amount-to specifies what the recipient receives (fees from sender)."""
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "changelly", "send",
+             "--external-network", "tron",
+             "--settle-address", "TXrecipient",
+             "--amount-to", "50",
+             "--yes"],
+            env=_cli_env(),
+        )
+        assert result.exit_code == 0, result.output
+        send_call = next(c for c in changelly_manager.calls if c[0] == "send_swap")
+        assert send_call[1].get("amount_to") == "50"
+        assert send_call[1].get("amount_from") is None
+
+    def test_send_requires_exactly_one_amount(self, runner):
+        # Neither --amount-from nor --amount-to
+        r1 = runner.invoke(
+            cli,
+            ["changelly", "send",
+             "--external-network", "tron",
+             "--settle-address", "TXabc",
+             "--yes"],
+        )
+        assert r1.exit_code != 0
+        # Both --amount-from and --amount-to
+        r2 = runner.invoke(
+            cli,
+            ["changelly", "send",
+             "--external-network", "tron",
+             "--settle-address", "TXabc",
+             "--amount-from", "100",
+             "--amount-to", "99",
+             "--yes"],
+        )
+        assert r2.exit_code != 0
+
 
 class TestChangellyReceive:
     def test_receive_returns_deposit_address(self, runner, changelly_manager):
@@ -967,6 +1005,38 @@ class TestChangellyReceive:
         assert data["refund_address"] == "TXrefund"
         recv_call = next(c for c in changelly_manager.calls if c[0] == "receive_swap")
         assert recv_call[1]["external_network"] == "tron"
+
+    def test_receive_with_amount_to(self, runner, changelly_manager):
+        """--amount-to specifies what should arrive in the wallet."""
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "changelly", "receive",
+             "--external-network", "tron",
+             "--external-refund-address", "TXrefund",
+             "--amount-to", "45"],
+        )
+        assert result.exit_code == 0, result.output
+        recv_call = next(c for c in changelly_manager.calls if c[0] == "receive_swap")
+        assert recv_call[1].get("amount_to") == "45"
+        assert recv_call[1].get("amount_from") is None
+
+    def test_receive_requires_exactly_one_amount(self, runner):
+        # Neither
+        r1 = runner.invoke(
+            cli,
+            ["changelly", "receive",
+             "--external-network", "tron"],
+        )
+        assert r1.exit_code != 0
+        # Both
+        r2 = runner.invoke(
+            cli,
+            ["changelly", "receive",
+             "--external-network", "tron",
+             "--amount-from", "50",
+             "--amount-to", "45"],
+        )
+        assert r2.exit_code != 0
 
 
 class TestChangellyStatus:
@@ -1101,7 +1171,7 @@ class _FakeSwapManager:
         }
 
     def execute_swap(self, asset_id, send_amount, wallet_name="default",
-                     password=None, send_bitcoins=True, **_):
+                     password=None, send_bitcoins=True, flexible_small_amount=False, **_):
         self.calls.append(
             ("execute_swap", {
                 "asset_id": asset_id,
@@ -1109,6 +1179,7 @@ class _FakeSwapManager:
                 "wallet_name": wallet_name,
                 "password": password,
                 "send_bitcoins": send_bitcoins,
+                "flexible_small_amount": flexible_small_amount,
             })
         )
         if self.execute_response is None:
@@ -1385,6 +1456,32 @@ class TestSideSwapSwap:
         )
         execute_calls = [c for c in swap.calls if c[0] == "execute_swap"]
         assert execute_calls[-1][1]["send_bitcoins"] is False
+
+    def test_swap_flexible_flag_passed_through(self, runner, sideswap_managers):
+        _import_wallet(runner)
+        _, swap = sideswap_managers
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideswap", "swap",
+             "--asset-ticker", "USDt", "--amount", "5000", "--flexible", "--yes"],
+            env=_cli_env(),
+        )
+        assert result.exit_code == 0, result.output
+        execute_calls = [c for c in swap.calls if c[0] == "execute_swap"]
+        assert len(execute_calls) == 1
+        assert execute_calls[0][1]["flexible_small_amount"] is True
+
+    def test_swap_default_strict_no_flexible(self, runner, sideswap_managers):
+        _import_wallet(runner)
+        _, swap = sideswap_managers
+        runner.invoke(
+            cli,
+            ["sideswap", "swap", "--asset-ticker", "USDt", "--amount", "100000", "--yes"],
+            env=_cli_env(),
+        )
+        execute_calls = [c for c in swap.calls if c[0] == "execute_swap"]
+        # Default debe ser False (estricto)
+        assert execute_calls[-1][1].get("flexible_small_amount", False) is False
 
     def test_swap_amount_must_be_positive(self, runner):
         result = runner.invoke(
@@ -1674,6 +1771,35 @@ class TestSideShiftSend:
         assert result.exit_code == 0
         send_call = next(c for c in sideshift_manager.calls if c[0] == "send_shift")
         assert send_call[1]["liquid_asset_id"].startswith("ce091c99")
+
+    def test_send_auto_resolves_liquid_asset_id_for_usdt(self, runner, sideshift_manager):
+        """When depositing USDt on Liquid, --liquid-asset-id is resolved from the ticker."""
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "sideshift", "send",
+             "--deposit-coin", "USDt", "--deposit-network", "liquid",
+             "--settle-coin", "usdt", "--settle-network", "tron",
+             "--settle-address", "TXYZ",
+             "--deposit-amount", "100",
+             "--yes"],
+            env=_cli_env(),
+        )
+        assert result.exit_code == 0, result.output
+        send_call = next(c for c in sideshift_manager.calls if c[0] == "send_shift")
+        assert send_call[1]["liquid_asset_id"].startswith("ce091c99")
+
+    def test_send_unknown_liquid_ticker_errors(self, runner):
+        result = runner.invoke(
+            cli,
+            ["sideshift", "send",
+             "--deposit-coin", "xyznotreal", "--deposit-network", "liquid",
+             "--settle-coin", "usdt", "--settle-network", "tron",
+             "--settle-address", "TXYZ",
+             "--deposit-amount", "100",
+             "--yes"],
+        )
+        assert result.exit_code != 0
+        assert "Unknown Liquid asset" in result.output or "xyznotreal" in result.output
 
 
 class TestSideShiftReceive:
