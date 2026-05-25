@@ -1,6 +1,6 @@
 # Read-Only Integration Test Prompts
 
-Manual test prompts for validating Aqua MCP **integration tools** (SideSwap, SideShift, Changelly) without spending coins or broadcasting transactions. Covers read-only flows: server status, asset listings, quotes, pair info, and recommendations.
+Manual test prompts for validating Aqua MCP **integration tools** (SideSwap, SideShift, ChangeChangelly) without spending coins or broadcasting transactions. Covers read-only flows: server status, asset listings, quotes, pair info, and recommendations.
 
 Use an agent with Haiku model to run these prompts. For Pix/DePix there is no purely read-only path (it requires creating a charge); see `prompt_test_real_pix.md`.
 
@@ -115,7 +115,7 @@ What is the SideShift rate for USDt on Tron to USDt on Liquid for around 50 USDt
 ```
 
 **Expected behavior:**
-- Invokes `sideshift_pair_info` with `from_coin="USDT"`, `from_network="tron"`, `to_coin="USDT"`, `to_network="liquid"`, `amount="50"`
+- Invokes `sideshift_pair_info` with `from_coin="USDT"`, `from_network="tron"`, `to_coin="USDT"`, `to_network="liquid"`, `amount="51"`
 - Returns `rate`, `min`, `max`, plus deposit/settle coin and network fields
 
 ---
@@ -123,11 +123,11 @@ What is the SideShift rate for USDt on Tron to USDt on Liquid for around 50 USDt
 ### 9. SideShift Fixed-Rate Quote (read-only)
 
 ```
-Quote a fixed-rate SideShift to send 0.0005 BTC from Bitcoin to USDt on Tron.
+Quote a fixed-rate SideShift to send 20 USDT from Liquid USDT to USDT on Ethereum.
 ```
 
 **Expected behavior:**
-- Invokes `sideshift_quote` with `deposit_coin="BTC"`, `deposit_network="bitcoin"`, `settle_coin="USDT"`, `settle_network="tron"`, `deposit_amount="0.0005"`
+- Invokes `sideshift_quote` with `deposit_coin="USDT"`, `deposit_network="liquid"`, `settle_coin="USDT"`, `settle_network="ethereum"`, `deposit_amount="20"`
 - Returns SideShift quote payload: `id`, `expiresAt`, `depositAmount`, `settleAmount`, `rate`
 - No shift is created
 
@@ -165,7 +165,7 @@ Quote me sending 50 L-USDt to USDt on Solana via Changelly.
 ```
 
 **Expected behavior:**
-- Invokes `changelly_quote` with `external_network="solana"`, `direction="send"`, `amount_from="50"`
+- Invokes `changelly_quote` with `external_network="solana"`, `direction="send"`, `amount_from="51"`
 - Returns Changelly response with `id` (rate_id), `result`, `amountFrom`, `amountTo`, `networkFee`, `min`, `max`, `expiredAt`
 - ⚠️ Issue #51: Changelly may return `Validation failed (400)` depending on region. If this happens, document and continue with the remaining prompts.
 
@@ -178,22 +178,7 @@ Quote me receiving 50 L-USDt from sending USDt on Solana via Changelly.
 ```
 
 **Expected behavior:**
-- Invokes `changelly_quote` with `external_network="solana"`, `direction="receive"`, `amount_to="50"` (or `amount_from="50"`)
+- Invokes `changelly_quote` with `external_network="solana"`, `direction="receive"`, `amount_to="51"` (or `amount_from="51"`)
 - Same response shape as prompt #12
-
----
-
-### 14. Lookup Status of a Known Swap/Shift (optional)
-
-If you have a previously generated `order_id` / `shift_id` from one of the real-money test files, paste it here. Otherwise skip.
-
-```
-Check the status of SideShift shift id <SHIFT_ID>.
-```
-
-**Expected behavior:**
-- Invokes `sideshift_status` with the provided ID
-- Returns the persisted record plus `is_final`, `is_success`, `is_failed`
-- Same shape applies to `sideswap_peg_status`, `sideswap_swap_status`, `changelly_status` if you swap the prompt accordingly
 
 ---
