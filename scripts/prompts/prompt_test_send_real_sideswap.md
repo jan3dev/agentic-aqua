@@ -13,8 +13,9 @@ Use an agent with Sonnet model — these flows are multi-step and require carefu
 |----------|-------------|
 | `SIGNER_MNEMONIC` | BIP39 mnemonic (12 words) for the test wallet |
 | `BTC_DEST_ADDRESS` | Bitcoin destination address (used as the peg-out target) |
-| `SIDESWAP_PEG_AMOUNT_SATS` | Optional. Sats to peg. Default 200,000. Must be ≥ `min_peg_in_amount` returned by `sideswap_server_status` |
-| `SIDESWAP_USDT_AMOUNT_SATS` | Optional. L-BTC sats for the asset swap. Default 5,000 |
+| `SIDESWAP_PEG_AMOUNT_SATS` | Optional. Sats to peg. Default 25,000 (covers peg-in min 10,000 and peg-out min 25,000). Verify live minimums with `sideswap_server_status` |
+| `SIDESWAP_USDT_AMOUNT_SATS` | Optional. L-BTC sats for the asset swap. Default 20,000 (below ~10,000–20,000 sats the dealer returns `no matching orders`) |
+| `SIDESWAP_DEPIX_AMOUNT_SATS` | Optional. L-BTC sats to swap to DePix in Section E. Default 20,000 (same floor as the USDt asset swap) |
 
 **IMPORTANT:**
 - BTC and L-BTC balances must cover the test amounts plus network and SideSwap fees.
@@ -181,6 +182,48 @@ Show me my updated Liquid balance for L-BTC and USDt.
 **Expected behavior:**
 - `lw_balance` reflects all swaps and pegs from this session
 - USDt balance reflects sections C and D netting out (modulo fees)
+
+---
+
+## Section E — Asset Swap L-BTC → DePix
+
+> SideSwap's quote/execute API supports **L-BTC ↔ asset** only. USDt ↔ DePix directly is not possible in a single SideSwap operation; this section exercises L-BTC → DePix.
+
+### 13. Resolve the DePix Asset ID
+
+```
+List the SideSwap assets so I have the asset_id for DePix.
+```
+
+**Expected behavior:**
+- Invokes `sideswap_list_assets(network="mainnet")`
+- Surfaces the `DePix` asset_id (`02f22f8d9c76ab41661a2729e4752e2c5d1a263012141b86ea98af5472df5189`); `instant_swaps: true`
+
+---
+
+### 14. Quote and Execute L-BTC → DePix
+
+```
+Quote sending ${SIDESWAP_DEPIX_AMOUNT_SATS} sats of L-BTC for DePix on SideSwap, then execute the swap if the price looks reasonable. Use flexible_small_amount=true.
+```
+
+**Expected behavior:**
+- Invokes `sideswap_quote(asset_id=<DEPIX>, send_amount=${SIDESWAP_DEPIX_AMOUNT_SATS}, send_bitcoins=True)` → returns DePix `recv_amount`
+- After confirmation, invokes `sideswap_execute_swap(asset_id=<DEPIX>, send_amount=${SIDESWAP_DEPIX_AMOUNT_SATS}, send_bitcoins=True, flexible_small_amount=True, min_recv_amount=<from previous quote>, wallet_name="prompt_wallet_<DATETIME>")`
+- Returns `order_id`, `txid`, `recv_amount` in DePix sats
+- Verifiable on `https://blockstream.info/liquid/tx/<txid>`
+
+---
+
+### 15. Verify DePix Credited
+
+```
+Show me my updated Liquid balance — I want to see the DePix that just settled.
+```
+
+**Expected behavior:**
+- `lw_balance` (or `unified_balance`) shows a DePix balance > 0 reflecting the swap
+- `lw_tx_status(tx="<TXID>")` returns confirmations and explorer URL
 
 ---
 
