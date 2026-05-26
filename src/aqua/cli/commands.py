@@ -68,6 +68,10 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
             mcp_name = CLI_COMMAND_TO_MCP_TOOL.get((group_name, cmd_name))
             if mcp_name is not None and not is_tool_enabled(mcp_name, config):
                 del group.commands[cmd_name]
+        # Skip the group entirely if every command in it was disabled —
+        # otherwise an empty group label still appears in `aqua --help`.
+        if not group.commands:
+            continue
         cli.add_command(group)
 
     # Top-level commands. `serve` is CLI-only (no MCP twin) — always register.
