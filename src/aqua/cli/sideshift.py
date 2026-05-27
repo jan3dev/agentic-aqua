@@ -141,7 +141,7 @@ def recommend(ctx, from_coin, from_network, to_coin, to_network):
 @click.option("--wallet-name", default="default", show_default=True)
 @click.option(
     "--liquid-asset-id", default=None,
-    help="Hex asset id; required when deposit-coin is a non-L-BTC Liquid asset.",
+    help="Optional hex asset id override. When omitted, auto-resolved from --deposit-coin against the known Liquid asset registry (USDt, DePix, JPYS, EURx, MEX).",
 )
 @click.option("--settle-memo", default=None, help="Required for memo networks (TON, BNB, etc.).")
 @click.option("--refund-memo", default=None)
@@ -162,7 +162,8 @@ def send(ctx, deposit_coin, deposit_network, settle_coin, settle_network,
     Gets a quote, creates the shift, and broadcasts the deposit from the
     local wallet. A refund address is set automatically (the wallet's own
     deposit-chain address). For non-L-BTC Liquid assets like USDt-Liquid,
-    pass `--liquid-asset-id <hex>`.
+    the Liquid asset id is auto-resolved from --deposit-coin; pass
+    --liquid-asset-id only to override the registry.
     """
     if (deposit_amount is None) == (settle_amount is None):
         raise click.UsageError("Provide exactly one of --deposit-amount or --settle-amount.")
