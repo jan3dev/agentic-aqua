@@ -519,7 +519,22 @@ class ChangellyManager:
     # -- Read-only helpers ---------------------------------------------------
 
     def list_currencies(self) -> list[str]:
-        return self.client.get_currencies()
+        """Return Changelly's currency list filtered to our curated allowlist.
+
+        Changelly's raw list is 764 plain tickers with no metadata; most are
+        unrelated to AQUA's scope (USDt-Liquid ↔ USDt-on-external-chain) and
+        only confuse the agent. We expose just `lusdt` and the 6 external
+        USDt variants in `EXTERNAL_USDT_IDS`, preserving the provider's
+        ordering.
+
+        The override env var `CHANGELLY_ALLOW_ALL_PAIRS=1` returns the raw
+        response unchanged for power use / debugging.
+        """
+        raw = self.client.get_currencies()
+        if _allow_all_pairs():
+            return raw
+        allowed = {LIQUID_USDT_ID, *EXTERNAL_USDT_IDS}
+        return [c for c in raw if c in allowed]
 
     def fixed_quote(
         self,

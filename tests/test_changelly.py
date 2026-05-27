@@ -204,6 +204,54 @@ class TestAllowedPairs:
             _check_pair_allowed("btc", "lusdt")
 
 
+class TestListCurrenciesFilter:
+    """Changelly's raw `getCurrencies` returns 764 tickers. We only expose
+    the curated USDt set (lusdt + 6 external variants)."""
+
+    _RAW = [
+        "btc", "eth", "ltc", "doge", "shib", "lusdt", "usdc",
+        "usdt20", "usdtrx", "usdtbsc", "usdtsol", "usdtpolygon", "usdton",
+        "xrp", "ada",
+    ]
+
+    def test_only_curated_usdt_remains(self):
+        mgr = ChangellyManager.__new__(ChangellyManager)
+        mgr._client = MagicMock()
+        mgr._client.get_currencies.return_value = list(self._RAW)
+        result = mgr.list_currencies()
+        assert set(result) == {
+            "lusdt", "usdt20", "usdtrx", "usdtbsc",
+            "usdtsol", "usdtpolygon", "usdton",
+        }
+
+    def test_preserves_provider_ordering(self):
+        mgr = ChangellyManager.__new__(ChangellyManager)
+        mgr._client = MagicMock()
+        mgr._client.get_currencies.return_value = list(self._RAW)
+        result = mgr.list_currencies()
+        # Ordering follows the raw list, not alphabetic.
+        assert result == [
+            "lusdt", "usdt20", "usdtrx", "usdtbsc",
+            "usdtsol", "usdtpolygon", "usdton",
+        ]
+
+    def test_unrelated_assets_dropped(self):
+        mgr = ChangellyManager.__new__(ChangellyManager)
+        mgr._client = MagicMock()
+        mgr._client.get_currencies.return_value = list(self._RAW)
+        result = mgr.list_currencies()
+        for unrelated in ("btc", "eth", "ltc", "shib", "usdc", "xrp", "ada"):
+            assert unrelated not in result
+
+    def test_override_env_var_returns_raw(self, monkeypatch):
+        monkeypatch.setenv("CHANGELLY_ALLOW_ALL_PAIRS", "1")
+        mgr = ChangellyManager.__new__(ChangellyManager)
+        mgr._client = MagicMock()
+        raw = list(self._RAW)
+        mgr._client.get_currencies.return_value = raw
+        assert mgr.list_currencies() is raw
+
+
 # ---------------------------------------------------------------------------
 # settle_address validation
 # ---------------------------------------------------------------------------

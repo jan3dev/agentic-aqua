@@ -117,6 +117,46 @@ def _check_pair_allowed(coin: str, network: str, side: str) -> None:
         )
 
 
+def _allowed_networks_for_coin(coin: str) -> set[str]:
+    """Networks present alongside `coin` in `ALLOWED_PAIRS` (lowercase)."""
+    norm = coin.lower()
+    return {network for c, network in ALLOWED_PAIRS if c == norm}
+
+
+def _filter_coins_to_allowlist(coins: list[dict]) -> list[dict]:
+    """Trim SideShift's `/v2/coins` response to entries in `ALLOWED_PAIRS`.
+
+    For each entry whose `coin` appears in the allowlist:
+      - keep only the `networks` that are allowed for that coin,
+      - prune `tokenDetails` to those same networks (drops ~10 KB of
+        unrelated contract addresses),
+      - drop the entry entirely if no allowed networks remain.
+    """
+    filtered: list[dict] = []
+    for entry in coins:
+        coin = entry.get("coin", "")
+        allowed = _allowed_networks_for_coin(coin)
+        if not allowed:
+            continue
+        kept_networks = [n for n in entry.get("networks", []) if n.lower() in allowed]
+        if not kept_networks:
+            continue
+        trimmed = dict(entry)
+        trimmed["networks"] = kept_networks
+        token_details = entry.get("tokenDetails")
+        if isinstance(token_details, dict):
+            trimmed["tokenDetails"] = {
+                k: v for k, v in token_details.items() if k.lower() in allowed
+            }
+        networks_with_memo = entry.get("networksWithMemo")
+        if isinstance(networks_with_memo, list):
+            trimmed["networksWithMemo"] = [
+                n for n in networks_with_memo if n.lower() in allowed
+            ]
+        filtered.append(trimmed)
+    return filtered
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -579,7 +619,20 @@ class SideShiftManager:
     # -- Read-only helpers ---------------------------------------------------
 
     def list_coins(self) -> list[dict]:
-        return self.client.get_coins()
+        """Return SideShift's coin list filtered to our curated allowlist.
+
+        SideShift's full response is ~100 KB and exceeds MCP token limits.
+        We only ever swap USDt ↔ USDt across the chains in `ALLOWED_PAIRS`
+        plus mainchain BTC, so filtering here keeps the agent context tight
+        and prevents confusion about unsupported assets.
+
+        The override env var `SIDESHIFT_ALLOW_ALL_NETWORKS=1` returns the
+        raw response unchanged for power use / debugging.
+        """
+        raw = self.client.get_coins()
+        if _allow_all_networks():
+            return raw
+        return _filter_coins_to_allowlist(raw)
 
     def pair_info(
         self,
