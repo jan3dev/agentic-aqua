@@ -96,3 +96,48 @@ def lookup_asset_by_ticker(ticker: str, network: str = "mainnet") -> Optional[As
         if info.ticker.lower() == target:
             return info
     return None
+
+
+def resolve_liquid_asset_id(
+    coin: str,
+    network: str,
+    explicit_id: Optional[str] = None,
+    *,
+    asset_network: str = "mainnet",
+) -> Optional[str]:
+    """Resolve the Liquid asset id from a (coin, network) pair.
+
+    Single source of truth for "given the user said `usdt` on Liquid, what
+    is the hex asset id?" Used by CLI and MCP entrypoints so the agent /
+    user never has to paste a 64-char hex.
+
+    Returns:
+        - None when `network` is not Liquid (Bitcoin sends don't take an
+          asset id).
+        - None when the deposit is L-BTC (coin == "btc" on liquid) — the
+          wallet's `send` path defaults to L-BTC when no asset id is given.
+        - `explicit_id` unchanged when the caller already supplied one
+          (lets power users override the registry).
+        - The hex asset id from the registry when the ticker matches a
+          known Liquid asset.
+
+    Raises:
+        ValueError when network is Liquid, coin is not L-BTC, no explicit
+        id was supplied, and the ticker is unknown. Error message lists
+        every known ticker so the caller can correct their input.
+    """
+    if network.lower() != "liquid":
+        return None
+    if coin.lower() == "btc":
+        return None
+    if explicit_id:
+        return explicit_id
+    info = lookup_asset_by_ticker(coin, asset_network)
+    if info is None:
+        registry = MAINNET_ASSETS if asset_network == "mainnet" else TESTNET_ASSETS
+        known = ", ".join(sorted(i.ticker for i in registry.values()))
+        raise ValueError(
+            f"Unknown Liquid asset ticker {coin!r}. Known tickers: {known}. "
+            "Pass an explicit asset_id to override the registry."
+        )
+    return info.asset_id
