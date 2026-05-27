@@ -892,9 +892,13 @@ def pix_receive(
     manager = get_pix_manager()
     swap = manager.create_deposit(amount_cents, wallet_name, password)
 
-    from .pix import format_brl
+    from .pix import EULEN_FEE_CENTS, format_brl
 
     amount_brl = format_brl(swap.amount_cents)
+    fee_cents = EULEN_FEE_CENTS
+    fee_brl = format_brl(fee_cents)
+    net_amount_cents = max(swap.amount_cents - fee_cents, 0)
+    net_amount_brl = format_brl(net_amount_cents)
     all_wallets = get_manager().storage.list_wallets()
     wallet_note = f" in wallet '{wallet_name}'" if len(all_wallets) > 1 else ""
     return {
@@ -903,6 +907,10 @@ def pix_receive(
         "qr_image_url": swap.qr_image_url,
         "amount_cents": swap.amount_cents,
         "amount_brl": amount_brl,
+        "fee_cents": fee_cents,
+        "fee_brl": fee_brl,
+        "net_amount_cents": net_amount_cents,
+        "net_amount_brl": net_amount_brl,
         "depix_address": swap.depix_address,
         "expiration": swap.expiration,
         "wallet_name": wallet_name,
@@ -910,6 +918,8 @@ def pix_receive(
             f"Pay {amount_brl} via Pix to receive DePix{wallet_note}. "
             "Paste qr_copy_paste into your banking app's 'Pix Copia e Cola' field, "
             "or open qr_image_url on your phone and scan with your bank app. "
+            f"Note: Eulen deducts a flat fee of {fee_brl} per deposit, so you will "
+            f"receive {net_amount_brl} in DePix. "
             f"Check status with swap_id: {swap.swap_id}"
         ),
     }

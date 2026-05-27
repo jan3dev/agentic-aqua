@@ -460,7 +460,7 @@ TOOL_SCHEMAS = {
         },
     },
     "pix_receive": {
-        "description": "Mint a Pix charge (Brazil) that pays out DePix (BRL stablecoin on Liquid) to the named wallet's next address. Returns the Pix Copia e Cola string and a hosted QR image URL — the user pays from their banking app. Amount is in BRL CENTS (100 = R$1.00). Requires EULEN_API_TOKEN env var.",
+        "description": "Mint a Pix charge (Brazil) that pays out DePix (BRL stablecoin on Liquid) to the named wallet's next address. Returns the Pix Copia e Cola string and a hosted QR image URL — the user pays from their banking app. Amount is in BRL CENTS (100 = R$1.00). Eulen deducts a FLAT FEE of R$0,99 per operation (regardless of amount), so DePix received = amount_cents − 99. The response includes fee_cents, fee_brl, net_amount_cents and net_amount_brl so the user can see the expected net up-front. Requires EULEN_API_TOKEN env var.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -482,7 +482,7 @@ TOOL_SCHEMAS = {
         },
     },
     "pix_status": {
-        "description": "Check the status of a Pix → DePix deposit. Status values: pending, depix_sent, under_review, canceled, error, refunded, expired. Eulen delivers DePix automatically — no claim step.",
+        "description": "Check the status of a Pix → DePix deposit. Status values: pending, approved (Pix received, DePix in flight), depix_sent, under_review, canceled, error, refunded, expired. Eulen delivers DePix automatically — no claim step.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1860,13 +1860,14 @@ Please:
 1. Verify the EULEN_API_TOKEN environment variable is set. If not, tell me to obtain one from https://depix.info/#partners and stop here.
 2. Ask me how much I want to deposit, IN REAIS (e.g. "R$50"). Convert to cents (R$50 → 5000 cents) before calling pix_receive. Be explicit about the unit so I do not get a 100× error.
 3. Mention the practical first-time limit on Eulen is around R$500; offer to use a smaller amount if mine is higher.
-4. Call pix_receive(amount_cents=…, wallet_name='{wallet_name}').
-5. Show me BOTH:
+4. BEFORE calling pix_receive, tell me Eulen will deduct a FLAT FEE of R$0,99 from the amount I pay (independent of the amount), so I will receive `amount − R$0,99` in DePix. Confirm the amount with me knowing this.
+5. Call pix_receive(amount_cents=…, wallet_name='{wallet_name}').
+6. Show me BOTH:
    - The `qr_copy_paste` string (EMV BR-Code) — I can paste this into my banking app's "Pix Copia e Cola" field.
    - The `qr_image_url` — I can open this on my phone and scan the QR with my bank app.
-   Explain I only need to do ONE of those, not both.
-6. After I confirm I have paid, call pix_status(swap_id=…) and report the status. Re-check on request until status="depix_sent" (DePix delivered) or a terminal failure.
-7. When delivered, show the `blockchain_txid` (Liquid txid) so I can verify on a block explorer.""",
+   Explain I only need to do ONE of those, not both. Also surface `net_amount_brl` so I see the exact DePix I will receive after the R$0,99 fee.
+7. After I confirm I have paid, call pix_status(swap_id=…) and report the status. Re-check on request until status="depix_sent" (DePix delivered) or a terminal failure. Status "approved" is an intermediate step (Pix received, DePix in flight) — not a failure.
+8. When delivered, show the `blockchain_txid` (Liquid txid) so I can verify on a block explorer.""",
                         ),
                     )
                 ]
