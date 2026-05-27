@@ -208,6 +208,22 @@ def test_enabled_tools_invalid_types_are_coerced(caplog):
     assert sum("Dropping invalid" in r.message for r in caplog.records) == 3
 
 
+def test_sideswap_and_pix_disabled_by_default():
+    """SideSwap + PIX tools ship disabled-by-default (manual opt-in)."""
+    expected_disabled = {
+        "pix_receive", "pix_status",
+        "sideswap_server_status", "sideswap_recommend",
+        "sideswap_peg_quote", "sideswap_peg_in", "sideswap_peg_out",
+        "sideswap_peg_status", "sideswap_list_assets", "sideswap_quote",
+        "sideswap_execute_swap", "sideswap_swap_status",
+    }
+    for name in expected_disabled:
+        assert SHIPPED_DEFAULTS_ENABLED_TOOLS[name] is False, name
+    for name, enabled in SHIPPED_DEFAULTS_ENABLED_TOOLS.items():
+        if name not in expected_disabled:
+            assert enabled is True, name
+
+
 def test_enabled_tools_non_dict_value_resets_to_empty(caplog):
     """Top-level enabled_tools must be an object; lists/strings are rejected."""
     with caplog.at_level(logging.WARNING, logger="aqua.storage"):

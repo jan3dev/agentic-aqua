@@ -15,10 +15,36 @@ from .tools import TOOLS
 logger = logging.getLogger(__name__)
 
 
-# Shipped defaults: every currently-known MCP tool defaults to True for v1.
-# Maintainers flip specific tools to False here per release to ship them
-# disabled-by-default.
-SHIPPED_DEFAULTS_ENABLED_TOOLS: dict[str, bool] = {name: True for name in TOOLS}
+# Tools shipped disabled-by-default. Users can re-enable any of these in
+# ~/.aqua/config.json under `enabled_tools`. SideSwap and Depix (PIX) are
+# gated behind manual opt-in until the broader rollout.
+_SHIPPED_DISABLED: frozenset[str] = frozenset({
+    # PIX / Depix (MCP-only, agent-driven)
+    "pix_receive",
+    "pix_status",
+    # SideSwap (swap + peg-in/peg-out)
+    "sideswap_server_status",
+    "sideswap_recommend",
+    "sideswap_peg_quote",
+    "sideswap_peg_in",
+    "sideswap_peg_out",
+    "sideswap_peg_status",
+    "sideswap_list_assets",
+    "sideswap_quote",
+    "sideswap_execute_swap",
+    "sideswap_swap_status",
+})
+
+assert _SHIPPED_DISABLED <= TOOLS.keys(), (
+    f"unknown tool in _SHIPPED_DISABLED: {_SHIPPED_DISABLED - TOOLS.keys()}"
+)
+
+# Shipped defaults: every currently-known MCP tool, with `_SHIPPED_DISABLED`
+# flipped to False. Maintainers add tool names to `_SHIPPED_DISABLED` to ship
+# them disabled-by-default.
+SHIPPED_DEFAULTS_ENABLED_TOOLS: dict[str, bool] = {
+    name: name not in _SHIPPED_DISABLED for name in TOOLS
+}
 
 
 # Mapping from (CLI group name, CLI command name) to MCP tool name.

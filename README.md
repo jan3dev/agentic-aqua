@@ -8,7 +8,7 @@ MCP server and CLI for managing **Bitcoin** and **Liquid Network** wallets throu
 - **Unified Wallet** - One seed (mnemonic) for Bitcoin and Liquid; `unified_balance` shows both
 - **Bitcoin (onchain)** - BIP84 wallets, balance and send via `btc_*` tools (BDK)
 - **Watch-Only** - Import CT descriptors for balance monitoring
-- **Send & Receive** - Full transaction support (L-BTC, BTC, and Liquid assets like USDt and DePix)
+- **Send & Receive** - Full transaction support (L-BTC, BTC, and Liquid assets like USDt)
 - **Lightning** - Send and receive via Lightning using L-BTC
 - **Assets** - Native support for L-BTC, USDt, and all Liquid assets
 - **Secure** - Encrypted storage, no remote servers for keys
@@ -158,7 +158,7 @@ aqua lightning --help
 
 # Wallet management
 aqua wallet generate-mnemonic
-aqua wallet import-mnemonic --wallet-name default --network mainnet
+aqua wallet import-mnemonic --mnemonic-stdin --wallet-name default --network mainnet --password-stdin
 aqua wallet list
 aqua wallet delete --wallet-name old
 
@@ -200,30 +200,13 @@ aqua-mcp         # direct MCP entrypoint
 
 Output defaults to a human-readable table on the terminal and JSON when piped. Force a format with `--format json` or `--format pretty`.
 
-### Loading seeds safely (env vars from a text file)
+### Loading seeds safely
 
-Avoid pasting seeds into shell prompts or chat with an AI agent — both shell history and agent transcripts may persist them. The recommended workflow is to keep secrets in a local text file with restricted permissions and load them as environment variables.
+Avoid pasting seeds into the chat with your agent. Because it will persists in logs and will be sent to the AI provider agent transcripts may persist them. The recommended workflow is to use this command that hide the text input:
 
-1. Create `~/.aqua/secrets.env` (or any path you prefer) and lock it down:
-
-   ```bash
-   mkdir -p ~/.aqua
-   cat > ~/.aqua/secrets.env <<'EOF'
-   AQUA_MNEMONIC="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-   AQUA_PASSWORD="Wild-red-dolphin-386"
-   EOF
-   chmod 600 ~/.aqua/secrets.env
-   ```
-
-2. Source it before running CLI commands and clear it afterwards:
-
-   ```bash
-   set -a; . ~/.aqua/secrets.env; set +a
-   aqua-cli wallet import-mnemonic --wallet-name default --network mainnet
-   unset AQUA_MNEMONIC AQUA_PASSWORD
-   ```
-
-   `aqua-cli` also auto-loads a `.env` file from the project root via `python-dotenv` if you prefer a per-project file.
+```bash
+aqua wallet import-mnemonic --mnemonic-stdin --wallet-name defaultx --network mainnet --password-stdin
+```
 
 The CLI honors these variables out of the box:
 

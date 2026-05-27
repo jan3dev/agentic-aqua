@@ -45,6 +45,14 @@ TRANSIENT_NETWORK_MARKERS = (
 _SMOKE_CLI_ATTEMPTS = 6
 _SMOKE_CLI_RETRY_DELAY_S = 3
 
+# Mainnet Esplora scans for `btc transactions` and `unified balance` routinely
+# take 50–120s each (BDK scans every derived address). Run them locally but
+# skip on GitHub Actions to keep CI under the wall-clock budget.
+_SKIP_ON_CI = pytest.mark.skipif(
+    os.getenv("GITHUB_ACTIONS") == "true",
+    reason="slow Esplora scan (50–120s); runs locally, skipped on CI",
+)
+
 
 @pytest.fixture(scope="module")
 def cli_runner():
@@ -110,6 +118,7 @@ class TestSmokeAddresses:
 
 
 class TestSmokeBalance:
+    @_SKIP_ON_CI
     def test_unified_balance(self, cli_runner, wallet_name):
         """Unified balance returns both networks."""
         result = cli_runner("balance", "--wallet-name", wallet_name)
@@ -118,6 +127,7 @@ class TestSmokeBalance:
 
 
 class TestSmokeBtcTransactions:
+    @_SKIP_ON_CI
     def test_btc_transactions(self, cli_runner, wallet_name):
         """BTC transactions returns a list."""
         result = cli_runner("btc", "transactions", "--wallet-name", wallet_name)
