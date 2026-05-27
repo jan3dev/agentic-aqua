@@ -8,7 +8,7 @@ MCP server and CLI for managing **Bitcoin** and **Liquid Network** wallets throu
 - **Unified Wallet** - One seed (mnemonic) for Bitcoin and Liquid; `unified_balance` shows both
 - **Bitcoin (onchain)** - BIP84 wallets, balance and send via `btc_*` tools (BDK)
 - **Watch-Only** - Import CT descriptors for balance monitoring
-- **Send & Receive** - Full transaction support (L-BTC, BTC, and Liquid assets like USDt and DePix)
+- **Send & Receive** - Full transaction support (L-BTC, BTC, and Liquid assets like USDt)
 - **Lightning** - Send and receive via Lightning using L-BTC
 - **Assets** - Native support for L-BTC, USDt, and all Liquid assets
 - **Secure** - Encrypted storage, no remote servers for keys
