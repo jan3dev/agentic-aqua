@@ -812,6 +812,7 @@ class TestLightningCommands:
                     "--wallet-name",
                     "tuna",
                 ],
+                env=_cli_env(),
             )
         assert result.exit_code == 0
         data = json.loads(result.output)
