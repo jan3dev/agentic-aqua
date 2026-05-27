@@ -185,9 +185,9 @@ class WalletManager:
             raise ValueError(f"Wallet '{wallet_name}' not found")
 
         if wallet.encrypted_mnemonic:
-            needs_password = self.storage.is_mnemonic_encrypted(wallet.encrypted_mnemonic)
+            needs_password = self.storage.requires_user_password(wallet.encrypted_mnemonic)
             if not needs_password or password:
-                mnemonic = self.storage.retrieve_mnemonic(wallet.encrypted_mnemonic, password)
+                mnemonic = self.storage.read_and_migrate_mnemonic(wallet, password)
                 net = self._get_network(wallet.network)
                 lwk_mnemonic = lwk.Mnemonic(mnemonic)
                 self._signers[wallet_name] = lwk.Signer(lwk_mnemonic, net)
@@ -331,7 +331,7 @@ class WalletManager:
         if wallet_name not in self._signers:
             if not wallet.encrypted_mnemonic:
                 raise ValueError("No mnemonic available for signing")
-            needs_password = self.storage.is_mnemonic_encrypted(wallet.encrypted_mnemonic)
+            needs_password = self.storage.requires_user_password(wallet.encrypted_mnemonic)
             if needs_password and not password:
                 raise ValueError("Password required to decrypt mnemonic")
             self.load_wallet(wallet_name, password)

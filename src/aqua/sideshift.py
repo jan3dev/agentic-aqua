@@ -735,7 +735,7 @@ class SideShiftManager:
         # Pre-validate the mnemonic decryption BEFORE creating the SideShift
         # order. Without this, a wrong password only surfaces at broadcast
         # time — leaving an orphan custodial order behind for every retry.
-        if wallet_data.encrypted_mnemonic and self.storage.is_mnemonic_encrypted(
+        if wallet_data.encrypted_mnemonic and self.storage.requires_user_password(
             wallet_data.encrypted_mnemonic
         ):
             if not password:
