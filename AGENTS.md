@@ -1,5 +1,6 @@
 <!-- Generated: 2026-05-20 | Updated: 2026-05-20 -->
 
+test
 # agentic-aqua
 
 MCP server for managing **Liquid Network** and **Bitcoin** wallets through AI assistants
