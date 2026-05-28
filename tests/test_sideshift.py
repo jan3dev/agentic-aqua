@@ -172,7 +172,7 @@ class TestRecommendation:
 
 class TestAllowedPairs:
     """Encodes the contract that we expose the same SideShift surface as AQUA
-    Flutter: USDt across 7 chains + BTC mainchain. L-BTC and arbitrary altcoins
+    Flutter: USDt across 6 chains + BTC mainchain. L-BTC and arbitrary altcoins
     are not in the allowlist; users hit the override env var if they want them.
     """
 

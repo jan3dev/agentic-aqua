@@ -119,7 +119,7 @@ def _check_pair_allowed(from_id: str, to_id: str) -> None:
     """Raise ValueError if the (from, to) pair isn't on the allowlist.
 
     Both legs combined must form a curated pair: exactly one leg is `lusdt`,
-    the other is one of the 6 external USDt variants. The override env var
+    the other is one of the 5 external USDt variants. The override env var
     bypasses the check entirely.
     """
     if _allow_all_pairs():
