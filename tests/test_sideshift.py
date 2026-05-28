@@ -185,7 +185,6 @@ class TestAllowedPairs:
             ("usdt", "bsc"),
             ("usdt", "solana"),
             ("usdt", "polygon"),
-            ("usdt", "ton"),
             ("usdt", "liquid"),
             ("btc", "bitcoin"),
         }
@@ -312,11 +311,12 @@ class TestFilterCoinsToAllowlist:
         filtered = _filter_coins_to_allowlist(_SAMPLE_COINS)
         usdt = next(c for c in filtered if c["coin"] == "USDT")
         assert set(usdt["networks"]) == {
-            "ethereum", "tron", "bsc", "solana", "polygon", "ton", "liquid",
+            "ethereum", "tron", "bsc", "solana", "polygon", "liquid",
         }
-        # Stellar / aptos / sui / etc are dropped
+        # Stellar / aptos / sui / ton / etc are dropped
         assert "stellar" not in usdt["networks"]
         assert "aptos" not in usdt["networks"]
+        assert "ton" not in usdt["networks"]
 
     def test_btc_only_keeps_mainchain_network(self):
         filtered = _filter_coins_to_allowlist(_SAMPLE_COINS)
@@ -329,11 +329,12 @@ class TestFilterCoinsToAllowlist:
         usdt = next(c for c in filtered if c["coin"] == "USDT")
         details = usdt["tokenDetails"]
         assert set(details) == {
-            "ethereum", "tron", "solana", "polygon", "bsc", "ton",
+            "ethereum", "tron", "solana", "polygon", "bsc",
         }
-        # Stellar token details dropped along with the network.
+        # Stellar / TON / avax token details dropped along with the network.
         assert "stellar" not in details
         assert "avax" not in details
+        assert "ton" not in details
 
     def test_networks_with_memo_pruned(self):
         filtered = _filter_coins_to_allowlist(_SAMPLE_COINS)
