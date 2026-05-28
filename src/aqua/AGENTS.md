@@ -19,7 +19,7 @@ Python package implementing the MCP server, wallet engines, and third-party swap
 | `boltz.py` | Boltz Exchange client. Submarine swap construction, BOLT11 amount decode, keypair gen. | `BoltzClient`, `generate_keypair` |
 | `ankara.py` | Ankara backend client for Lightning receive (L-BTC). | `AnkaraClient` |
 | `lnurl.py` | LUD-16 Lightning Address resolution → BOLT11. | `is_lightning_address`, `resolve_lightning_address` |
-| `pix.py` | Brazilian Pix → DePix on-ramp via Eulen REST API. | `PixManager` |
+| `pix.py` | Brazilian Pix on-ramp via Eulen REST API. | `PixManager` |
 | `changelly.py` | Custodial USDt cross-chain swaps via AQUA's Ankara proxy. Curated allowlist (mirrors AQUA Flutter). | `ChangellyClient`, `ChangellyManager` |
 | `sideshift.py` | Custodial cross-chain swaps via SideShift.ai. Curated allowlist mirrors AQUA Flutter; affiliate ID `PVmPh4Mp3`. | `SideShiftClient`, `SideShiftManager` |
 | `banner.py` | CLI ASCII banner rendering. | `render_banner` |
