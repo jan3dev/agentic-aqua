@@ -3,7 +3,7 @@
 import re
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import lwk
 import pytest
@@ -13,6 +13,7 @@ from aqua.bitcoin import (
     _derive_change_from_external,
     _extract_confirmation_height,
     _extract_xpub_metadata,
+    _is_transient_network_error,
 )
 from aqua.storage import Storage, WalletData
 from aqua.tools import (
@@ -21,11 +22,12 @@ from aqua.tools import (
     btc_send,
     btc_transactions,
     get_btc_manager,
+    get_manager,
     lw_import_mnemonic,
     unified_balance,
 )
 
-TEST_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+from tests.conftest import TEST_MNEMONIC
 
 
 @pytest.fixture(autouse=True)
@@ -229,7 +231,9 @@ class TestUnifiedImportAndBalance:
     def test_unified_balance_aggregates_both_networks(self, isolated_managers):
         """unified_balance returns bitcoin and liquid sections."""
         lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="u", network="mainnet")
-        with patch.object(get_btc_manager(), "sync_wallet"):
+        with patch.object(get_btc_manager(), "sync_wallet"), patch.object(
+            get_manager(), "sync_wallet"
+        ):
             result = unified_balance(wallet_name="u")
         assert result["wallet_name"] == "u"
         assert "bitcoin" in result
@@ -247,7 +251,8 @@ class TestUnifiedImportAndBalance:
         signer = lwk.Signer(m, net)
         desc = str(signer.wpkh_slip77_descriptor())
         manager.import_descriptor(desc, "liquid_only", "mainnet")
-        result = unified_balance(wallet_name="liquid_only")
+        with patch.object(manager, "sync_wallet"):
+            result = unified_balance(wallet_name="liquid_only")
         assert result["wallet_name"] == "liquid_only"
         assert result["bitcoin"] is None
         assert "bitcoin_error" in result
@@ -496,3 +501,132 @@ class TestDescriptorHelpers:
         """Returns all-None dict for non-xpub descriptor strings."""
         meta = _extract_xpub_metadata("wpkh(privkey-format/0/*)")
         assert meta == {"xpub": None, "fingerprint": None, "derivation_path": None}
+
+
+class TestEsploraFallback:
+    """Verify _with_client_fallback iterates Esplora clients on transient failures."""
+
+    def test_fallback_uses_second_when_first_raises_transient(self, isolated_managers):
+        _, btc_manager = isolated_managers
+        c1 = MagicMock()
+        c1.full_scan.side_effect = Exception("connection reset")
+        c2 = MagicMock()
+        c2.full_scan.return_value = "ok"
+        btc_manager._clients["mainnet"] = [c1, c2]
+
+        with patch("aqua.bitcoin.time.sleep"):
+            result = btc_manager._with_client_fallback(
+                "mainnet", lambda c: c.full_scan("req", 20, 3)
+            )
+
+        assert result == "ok"
+        assert c1.full_scan.call_count >= 1
+        c2.full_scan.assert_called_once()
+
+    def test_fallback_does_not_try_next_client_on_non_transient(
+        self, isolated_managers
+    ):
+        """Non-transient errors propagate immediately from the first client; the
+        second client must NOT be invoked, since identical input would just fail
+        again with extra latency."""
+        _, btc_manager = isolated_managers
+        c1 = MagicMock()
+        c1.broadcast.side_effect = ValueError("bad request")
+        c2 = MagicMock()
+        c2.broadcast.return_value = "ok"
+        btc_manager._clients["mainnet"] = [c1, c2]
+
+        with pytest.raises(ValueError, match="bad request"):
+            btc_manager._with_client_fallback("mainnet", lambda c: c.broadcast("tx"))
+
+        c1.broadcast.assert_called_once()
+        c2.broadcast.assert_not_called()
+
+    def test_fallback_raises_last_exception_when_all_fail(self, isolated_managers):
+        _, btc_manager = isolated_managers
+        c1 = MagicMock()
+        c1.full_scan.side_effect = Exception("timed out on c1")
+        c2 = MagicMock()
+        c2.full_scan.side_effect = Exception("timed out on c2")
+        btc_manager._clients["mainnet"] = [c1, c2]
+
+        with patch("aqua.bitcoin.time.sleep"):
+            with pytest.raises(Exception, match="timed out on c2"):
+                btc_manager._with_client_fallback(
+                    "mainnet", lambda c: c.full_scan("req", 20, 3)
+                )
+
+        assert c1.full_scan.call_count >= 1
+        assert c2.full_scan.call_count >= 1
+
+    def test_send_broadcast_retries_transient_on_first_client_only(self, isolated_managers):
+        """send() uses ONLY the first Esplora client for broadcast (no cross-client
+        fallback), but does retry transient errors within that client. The second
+        client must never be touched even when the first hiccups transiently.
+
+        Rationale: cross-client broadcast fallback can mask a successful first
+        broadcast when the second client returns 'already known'. See Hallazgo #2.
+        """
+        manager, btc_manager = isolated_managers
+        manager.import_mnemonic(TEST_MNEMONIC, "w", "mainnet")
+        btc_manager.create_wallet(TEST_MNEMONIC, "w", "mainnet")
+
+        # c1 fails once with a transient error, then succeeds on retry.
+        c1 = MagicMock()
+        c1.broadcast.side_effect = [Exception("connection reset"), None]
+        c2 = MagicMock()
+        btc_manager._clients["mainnet"] = [c1, c2]
+
+        fake_txid_bytes = bytes.fromhex("aa" * 32)
+        fake_tx = MagicMock()
+        fake_tx.compute_txid.return_value.serialize.return_value = fake_txid_bytes
+
+        fake_psbt = MagicMock()
+        fake_psbt.extract_tx.return_value = fake_tx
+
+        fake_wallet = MagicMock()
+        fake_wallet.sign.return_value = True
+
+        fake_builder = MagicMock()
+        fake_builder.add_recipient.return_value = fake_builder
+        fake_builder.fee_rate.return_value = fake_builder
+        fake_builder.finish.return_value = fake_psbt
+
+        with patch.object(btc_manager, "sync_wallet"), \
+             patch.object(
+                 btc_manager,
+                 "_get_wallet_with_signer",
+                 return_value=(fake_wallet, "mainnet"),
+             ), \
+             patch("aqua.bitcoin.bdk.TxBuilder", return_value=fake_builder), \
+             patch("aqua.bitcoin.bdk.Address"), \
+             patch("aqua.bitcoin.bdk.Amount"), \
+             patch("aqua.bitcoin.time.sleep"):
+            txid = btc_manager.send(
+                wallet_name="w",
+                address="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+                amount=10_000,
+            )
+
+        assert txid == fake_txid_bytes[::-1].hex()
+        assert c1.broadcast.call_count == 2  # one transient failure + one success
+        c2.broadcast.assert_not_called()
+
+
+class TestTransientClassification:
+    """Verify _is_transient_network_error correctly classifies error messages."""
+
+    def test_connection_reset_is_transient(self):
+        assert _is_transient_network_error(Exception("connection reset")) is True
+
+    def test_timed_out_is_transient(self):
+        assert _is_transient_network_error(Exception("timed out")) is True
+
+    def test_minreq_is_transient(self):
+        assert _is_transient_network_error(Exception("minreq error")) is True
+
+    def test_value_error_bad_request_is_not_transient(self):
+        assert _is_transient_network_error(ValueError("bad request")) is False
+
+    def test_404_is_not_transient(self):
+        assert _is_transient_network_error(Exception("404 not found")) is False

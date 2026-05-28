@@ -16,6 +16,7 @@ from .boltz import (
     decode_bolt11_amount_sats,
     generate_keypair,
 )
+from .lnurl import is_lightning_address, resolve_lightning_address
 
 # Boltz API status string -> local lifecycle status (pending | processing | completed | failed)
 _BOLTZ_STATUS_MAP = {
@@ -149,22 +150,48 @@ class LightningManager:
         invoice: str,
         wallet_name: str = "default",
         password: Optional[str] = None,
+        amount_sats: Optional[int] = None,
     ) -> LightningSwap:
         """
-        Pay a Lightning invoice using L-BTC via Boltz submarine swap.
+        Pay a Lightning invoice or Lightning Address using L-BTC via Boltz submarine swap.
 
         Args:
-            invoice: BOLT11 Lightning invoice (lnbc... or lntb...)
+            invoice: BOLT11 Lightning invoice (lnbc.../lntb...) OR Lightning Address (user@domain)
             wallet_name: Liquid wallet to pay from
             password: Password to decrypt mnemonic (if encrypted at rest)
+            amount_sats: Amount in sats. Required when `invoice` is a Lightning Address;
+                ignored for BOLT11 if it matches the invoice amount, error if it differs.
 
         Returns:
             LightningSwap with pending status and lockup_txid
         """
+        if is_lightning_address(invoice):
+            if amount_sats is None:
+                raise ValueError(
+                    "amount_sats is required when paying a Lightning Address"
+                )
+            if amount_sats < BOLTZ_MIN_SATS or amount_sats > BOLTZ_MAX_SATS:
+                raise ValueError(
+                    f"amount_sats {amount_sats} outside Boltz limits "
+                    f"({BOLTZ_MIN_SATS}-{BOLTZ_MAX_SATS} sats)"
+                )
+            invoice = resolve_lightning_address(invoice, amount_sats)
+
         valid_prefixes = ("lnbc", "lntb")
         if not invoice or not any(invoice.startswith(p) for p in valid_prefixes):
             raise ValueError(
-                "Invalid invoice: must be a BOLT11 Lightning invoice starting with 'lnbc' (mainnet) or 'lntb' (testnet)"
+                "Invalid invoice: must be a BOLT11 Lightning invoice starting with 'lnbc' (mainnet) or 'lntb' (testnet) or a Lightning Address (user@domain)"
+            )
+
+        invoice_amount = decode_bolt11_amount_sats(invoice)
+        if invoice_amount is None:
+            raise ValueError(
+                "Amountless BOLT11 invoices are not supported. Use a BOLT11 "
+                "invoice with an embedded amount, or a Lightning Address with amount_sats."
+            )
+        if amount_sats is not None and invoice_amount != amount_sats:
+            raise ValueError(
+                f"amount_sats ({amount_sats}) does not match BOLT11 invoice amount ({invoice_amount})"
             )
 
         wallet_data = self.storage.load_wallet(wallet_name)
@@ -180,24 +207,14 @@ class LightningManager:
 
         network = wallet_data.network
 
-        invoice_amount = decode_bolt11_amount_sats(invoice)
-        if invoice_amount is not None:
-            if invoice_amount < BOLTZ_MIN_SATS:
-                raise ValueError(
-                    f"Invoice amount {invoice_amount} sats is below minimum ({BOLTZ_MIN_SATS} sats)"
-                )
-            if invoice_amount > BOLTZ_MAX_SATS:
-                raise ValueError(
-                    f"Invoice amount {invoice_amount} sats exceeds maximum ({BOLTZ_MAX_SATS} sats)"
-                )
-            # Validate balance before creating Boltz swap
-            balances = self.wallet_manager.get_balance(wallet_name)
-            lbtc_balance = next((b.amount for b in balances if b.ticker == "L-BTC"), 0)
-            if lbtc_balance < invoice_amount:
-                raise ValueError(
-                    f"Insufficient L-BTC balance: have {lbtc_balance} sats, need at least {invoice_amount} sats"
-                )
-
+        if invoice_amount < BOLTZ_MIN_SATS:
+            raise ValueError(
+                f"Invoice amount {invoice_amount} sats is below minimum ({BOLTZ_MIN_SATS} sats)"
+            )
+        if invoice_amount > BOLTZ_MAX_SATS:
+            raise ValueError(
+                f"Invoice amount {invoice_amount} sats exceeds maximum ({BOLTZ_MAX_SATS} sats)"
+            )
         client = BoltzClient(network=network)
         pairs = client.get_submarine_pairs()
         pair = pairs.get("L-BTC", {}).get("BTC")
@@ -207,6 +224,15 @@ class LightningManager:
         refund_privkey, refund_pubkey = generate_keypair()
         swap_resp = client.create_submarine_swap(invoice, refund_pubkey)
         expected_amount = swap_resp["expectedAmount"]
+
+        balances = self.wallet_manager.get_balance(wallet_name)
+        lbtc_balance = next((b.amount for b in balances if b.ticker == "L-BTC"), 0)
+        if lbtc_balance < expected_amount:
+            raise ValueError(
+                f"Insufficient L-BTC balance: have {lbtc_balance} sats, "
+                f"need at least {expected_amount} sats "
+                f"(invoice {invoice_amount} sats + Boltz swap fees)"
+            )
 
         swap = LightningSwap(
             swap_id=swap_resp["id"],

@@ -72,3 +72,16 @@ def test_get_prompt_unknown_raises(prompt_handler):
     """Unknown prompt names should raise ValueError."""
     with pytest.raises(ValueError, match="Unknown prompt"):
         _call(prompt_handler, "nonexistent_prompt", None)
+
+
+def test_lightning_send_schema_includes_amount_sats():
+    """lightning_send tool schema exposes amount_sats and mentions Lightning Address."""
+    from aqua.server import TOOL_SCHEMAS
+
+    schema = TOOL_SCHEMAS["lightning_send"]
+    props = schema["inputSchema"]["properties"]
+    assert "amount_sats" in props
+    assert props["amount_sats"]["type"] == "integer"
+    assert "Lightning Address" in props["invoice"]["description"]
+    # amount_sats must remain optional (only invoice is required)
+    assert schema["inputSchema"]["required"] == ["invoice"]

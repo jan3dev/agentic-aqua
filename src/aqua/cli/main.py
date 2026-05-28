@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 _project_root = Path(__file__).resolve().parent.parent.parent.parent
 load_dotenv(_project_root / ".env")
 
+from ..banner import render_banner  # noqa: E402
 from .commands import register_commands  # noqa: E402
 
 # Default to WARNING so tool-level INFO logs don't spam stderr in CLI mode
@@ -24,7 +25,13 @@ class AquaContext:
         self.verbose = verbose
 
 
-@click.group(context_settings={"auto_envvar_prefix": "AQUA"})
+class AquaGroup(click.Group):
+    def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        click.echo(render_banner(), nl=False)
+        super().format_help(ctx, formatter)
+
+
+@click.group(cls=AquaGroup, context_settings={"auto_envvar_prefix": "AQUA"})
 @click.option(
     "--format",
     "fmt",

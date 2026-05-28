@@ -25,6 +25,7 @@ venv/
 ENV/
 env/
 .venv/
+.github/worktree/
 
 # IDE
 .idea/
