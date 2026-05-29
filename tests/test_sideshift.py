@@ -1139,6 +1139,57 @@ class TestManagerSend:
         assert wm.sent and wm.sent[0][3] == 50_000
 
 
+    @patch("aqua.sideshift.urllib.request.urlopen")
+    def test_send_usdt_liquid_without_asset_id_silently_sends_lbtc(
+        self, mock_urlopen, manager_setup
+    ):
+        """Reproduces the wrong-asset bug: caller asks SideShift for a
+        USDt-Liquid → USDt-Tron shift, omits `liquid_asset_id`, and the
+        manager broadcasts L-BTC (asset_id=None) to SideShift's deposit
+        address. SideShift is listening for USDT on that address; the L-BTC
+        deposit will not settle and the funds are stuck.
+        """
+        mgr, wm, _, _ = manager_setup
+        mock_urlopen.side_effect = [
+            _mock_response({"id": "q_bug", "depositAmount": "100",
+                            "settleAmount": "99.5", "rate": "0.995"}),
+            _mock_response({
+                "id": "shift_bug",
+                "depositAddress": "lq1qdeposit_bug",
+                "depositAmount": "100",
+                "settleAmount": "99.5",
+                "rate": "0.995",
+                "status": "waiting",
+                "depositCoin": "USDT",
+                "depositNetwork": "liquid",
+                "settleCoin": "USDT",
+                "settleNetwork": "tron",
+                "settleAddress": "TXYZ",
+            }),
+        ]
+
+        mgr.send_shift(
+            deposit_coin="usdt",
+            deposit_network="liquid",
+            settle_coin="usdt",
+            settle_network="tron",
+            settle_address="TXYZ",
+            deposit_amount="100",
+            wallet_name="default",
+            # liquid_asset_id intentionally omitted — this is the bug
+        )
+
+        # The manager called wallet.send with asset_id=None, meaning L-BTC
+        # was broadcast to a deposit address that SideShift created for USDt.
+        assert len(wm.sent) == 1
+        _, _, _, _, asset_id, _ = wm.sent[0]
+        assert asset_id is None, (
+            "BUG: USDt-Liquid send without liquid_asset_id should either "
+            "auto-resolve to USDT_LIQUID_ASSET_ID or raise ValueError. "
+            f"Got asset_id={asset_id!r} (None means L-BTC was sent)."
+        )
+
+
 class TestManagerReceive:
     @patch("aqua.sideshift.urllib.request.urlopen")
     def test_receive_into_liquid_returns_deposit_address(self, mock_urlopen, manager_setup):
@@ -1315,6 +1366,65 @@ class TestManagerStatus:
         assert "warning" in result
         # Status unchanged
         assert result["status"] == "waiting"
+
+    @patch("aqua.sideshift.urllib.request.urlopen")
+    def test_status_failed_broadcast_invisible_to_helpers(
+        self, mock_urlopen, manager_setup
+    ):
+        # Demonstrate finding #2: when send_shift sets shift.status = "failed"
+        # after a broadcast failure, the helpers shift_is_failed and
+        # shift_is_final both return False because "failed" is not in
+        # _FAILED_STATUSES / _FINAL_STATUSES.
+        mgr, wm, _, storage = manager_setup
+
+        # Set up the two network calls: quote + create-shift
+        mock_urlopen.side_effect = [
+            _mock_response({"id": "q_fail", "depositAmount": "100",
+                            "settleAmount": "99.5", "rate": "0.995"}),
+            _mock_response({
+                "id": "shift_failed_broadcast",
+                "depositAddress": "lq1qdeposit",
+                "depositAmount": "100",
+                "depositCoin": "USDT",
+                "depositNetwork": "liquid",
+                "settleCoin": "USDT",
+                "settleNetwork": "tron",
+                "status": "waiting",
+            }),
+        ]
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("broadcast failed")
+
+        wm.send = boom
+
+        with pytest.raises(RuntimeError):
+            mgr.send_shift(
+                deposit_coin="usdt",
+                deposit_network="liquid",
+                settle_coin="usdt",
+                settle_network="tron",
+                settle_address="TXYZ",
+                deposit_amount="100",
+                wallet_name="default",
+                liquid_asset_id=USDT_LIQUID,
+            )
+
+        # The persisted shift has status="failed" — but status() will attempt to
+        # refresh from the remote.  We simulate the remote also being unavailable
+        # so it falls back to the local persisted status.
+        mock_urlopen.side_effect = urllib.error.URLError("remote unavailable")
+
+        result = mgr.status("shift_failed_broadcast")
+        assert result["status"] == "failed", "shift should have status 'failed'"
+        # BUG: "failed" is not in _FAILED_STATUSES or _FINAL_STATUSES,
+        # so both helpers incorrectly return False for a terminated shift.
+        assert result["is_failed"] is False, (
+            "is_failed is False even though shift is terminated (bug confirmed)"
+        )
+        assert result["is_final"] is False, (
+            "is_final is False even though shift is terminated (bug confirmed)"
+        )
 
 
 # ---------------------------------------------------------------------------
