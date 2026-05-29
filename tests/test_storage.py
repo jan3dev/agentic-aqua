@@ -471,6 +471,28 @@ class TestDefaultPasswordEncryption:
         with pytest.raises(ValueError, match="Unsupported default encryption version"):
             temp_storage.retrieve_mnemonic(bogus, None)
 
+    # --- malformed default: prefix parsing ------------------------------
+
+    @pytest.mark.parametrize(
+        "bad_blob",
+        [
+            "default:",  # nothing after the prefix
+            "default:novalidversion",  # single segment, no second colon
+            "default::blob",  # empty version string
+            "default:abc:blob",  # non-integer version
+        ],
+    )
+    def test_retrieve_malformed_default_prefix_raises(self, temp_storage, bad_blob):
+        with pytest.raises(ValueError, match="Malformed default-encrypted mnemonic prefix"):
+            temp_storage.retrieve_mnemonic(bad_blob, None)
+
+    def test_malformed_prefix_error_truncates_long_input(self, temp_storage):
+        # Error message must not echo arbitrarily long ciphertext.
+        long_garbage = "default:abc:" + ("X" * 5000)
+        with pytest.raises(ValueError) as excinfo:
+            temp_storage.retrieve_mnemonic(long_garbage, None)
+        assert "X" * 100 not in str(excinfo.value)
+
     # --- requires_user_password truth table ------------------------------
 
     @pytest.mark.parametrize(
