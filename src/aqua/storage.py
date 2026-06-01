@@ -25,10 +25,8 @@ SWAP_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 
 # Hardcoded default password used to encrypt mnemonics at rest when the user
 # does not supply one. This is *obfuscation, not security* — it defeats
-# plaintext-seed scanners but offers no protection against an attacker with
-# source-code access. Treat as stable. If ever rotated, keep historical values
-# and try them in order in retrieve_mnemonic (the `default:N:` version prefix
-# enables this without format ambiguity).
+# plaintext-seed scanners.
+# (the `default:N:` version prefix enables this without format ambiguity).
 _DEFAULT_MNEMONIC_PASSWORD = "Delphinus entropiam novit sed semen suum numquam revelat"
 
 # Version embedded in the `default:N:` prefix. Bump this if the
@@ -191,9 +189,7 @@ class Storage:
         wallets that accept the same mnemonic (AQUA, Blockstream Green, etc.).
 
         When no password is supplied, the mnemonic is still encrypted using a
-        hardcoded default password (``default:N:`` prefix). This is
-        obfuscation, not security — it defeats automated plaintext-seed
-        scanners but does not protect against an attacker with source access.
+        hardcoded default password (``default:N:`` prefix).
         """
         if password:
             return "user:" + self.encrypt_mnemonic(mnemonic, password)
