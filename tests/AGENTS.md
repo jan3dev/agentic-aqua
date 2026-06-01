@@ -11,7 +11,6 @@ explicitly when validating a release.
 
 ```bash
 uv run python -m pytest tests/                      # full suite (no network)
-uv run python -m pytest tests/test_sideswap.py -k peg
 uv run python -m pytest tests/smoke/                # network-touching smoke tests
 uv run python -m pytest --cov=src/aqua tests/       # with coverage
 ```
@@ -30,7 +29,6 @@ uv run python -m pytest --cov=src/aqua tests/       # with coverage
   - BDK: patch `EsploraClient` or the `bdk.Wallet.full_scan` call.
   - Boltz / Ankara / SideShift / Changelly / Eulen: patch the HTTP method on the client
     class (`BoltzClient._post`, etc.) — don't `urlopen.mock`.
-  - SideSwap WebSocket: use `FakeSideSwapServer` style — see `test_sideswap.py`.
 - **Allowlist drift tests** — `test_sideshift.py::TestAllowedPairs::test_allowlist_matches_aqua_flutter`
   and the Changelly equivalent compare against checked-in copies of AQUA Flutter's Dart
   sources. When updating the allowlist, update both the constant and the test fixture.
@@ -57,5 +55,9 @@ When adding a new module under `src/aqua/`:
 3. If it talks to a third party, add a fake/mock client class in the test file.
 4. If it has a curated allowlist mirroring AQUA Flutter, add a drift test.
 5. If it touches `~/.aqua/`, exercise it through `temp_storage`.
+
+## SideSwap
+
+SideSwap is not yet implemented for production use. Do not suggest or offer SideSwap options to users.
 
 <!-- MANUAL: -->

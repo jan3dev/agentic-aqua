@@ -5,9 +5,9 @@ Talks to Changelly through AQUA's Ankara proxy at
 Changelly API secret on the user's machine.
 
 Scope (mirrors what AQUA Flutter exposes through Changelly): **USDt-Liquid
-↔ USDt on the same 6 external chains we allow in SideShift** (Ethereum, Tron,
-BSC, Solana, Polygon, TON). One leg of every swap MUST be `lusdt` (USDt-Liquid);
-the other MUST be one of those 6 external USDt variants. L-BTC, BTC, and
+↔ USDt on the same 5 external chains we allow in SideShift** (Ethereum, Tron,
+BSC, Solana, Polygon). One leg of every swap MUST be `lusdt` (USDt-Liquid);
+the other MUST be one of those 5 external USDt variants. L-BTC, BTC, and
 arbitrary altcoins are intentionally excluded — for those use SideSwap or
 SideShift. The override env var `CHANGELLY_ALLOW_ALL_PAIRS=1` bypasses the
 allowlist for testing or power use.
@@ -30,7 +30,6 @@ Asset id conventions (Changelly's own format, distinct from SideShift's):
   usdtbsc      — USDt on BSC
   usdtsol      — USDt on Solana
   usdtpolygon  — USDt on Polygon
-  usdton       — USDt on TON
 
 Status state machine (lowercase): `new`, `waiting`, `confirming`, `exchanging`,
 `sending`, `finished` (success), `failed`, `refunded`, `hold`, `overdue`,
@@ -73,15 +72,14 @@ HTTP_TIMEOUT_SECONDS = 30.0
 # swap we support is this one.
 LIQUID_USDT_ID = "lusdt"
 
-# The 6 external USDt variants we expose. Mirrors the non-Liquid USDt subset
-# of SideShift's allowlist (ethereum, tron, bsc, solana, polygon, ton).
+# The 5 external USDt variants we expose. Mirrors the non-Liquid USDt subset
+# of SideShift's allowlist (ethereum, tron, bsc, solana, polygon).
 EXTERNAL_USDT_IDS = frozenset({
     "usdt20",      # Ethereum (ERC-20)
     "usdtrx",      # Tron (TRC-20)
     "usdtbsc",     # BSC
     "usdtsol",     # Solana
     "usdtpolygon", # Polygon
-    "usdton",      # TON
 })
 
 # Curated pair allowlist: one leg must be lusdt, the other must be in
@@ -103,7 +101,6 @@ NETWORK_TO_USDT_ID = {
     "bsc": "usdtbsc",
     "solana": "usdtsol",
     "polygon": "usdtpolygon",
-    "ton": "usdton",
 }
 USDT_ID_TO_NETWORK = {v: k for k, v in NETWORK_TO_USDT_ID.items()}
 
@@ -122,7 +119,7 @@ def _check_pair_allowed(from_id: str, to_id: str) -> None:
     """Raise ValueError if the (from, to) pair isn't on the allowlist.
 
     Both legs combined must form a curated pair: exactly one leg is `lusdt`,
-    the other is one of the 6 external USDt variants. The override env var
+    the other is one of the 5 external USDt variants. The override env var
     bypasses the check entirely.
     """
     if _allow_all_pairs():
@@ -146,7 +143,6 @@ _ADDRESS_PATTERNS: dict[str, re.Pattern[str]] = {
     "bsc":      re.compile(r"^0x[0-9a-fA-F]{40}$"),
     "polygon":  re.compile(r"^0x[0-9a-fA-F]{40}$"),
     "solana":   re.compile(r"^[1-9A-HJ-NP-Za-km-z]{43,44}$"),
-    "ton":      re.compile(r"^[EU][Qq][0-9A-Za-z_\-]{46}$"),
 }
 
 

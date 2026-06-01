@@ -498,7 +498,7 @@ TOOL_SCHEMAS = {
         "description": (
             "List the currencies Changelly supports (Changelly's own asset id format). "
             "Useful for discovery; the agentic-aqua surface only enables the curated "
-            "USDt-Liquid ↔ USDt-on-{ethereum,tron,bsc,solana,polygon,ton} pairs for "
+            "USDt-Liquid ↔ USDt-on-{ethereum,tron,bsc,solana,polygon} pairs for "
             "actual swaps."
         ),
         "inputSchema": {"type": "object", "properties": {}},
@@ -514,7 +514,7 @@ TOOL_SCHEMAS = {
             "properties": {
                 "external_network": {
                     "type": "string",
-                    "enum": ["ethereum", "tron", "bsc", "solana", "polygon", "ton"],
+                    "enum": ["ethereum", "tron", "bsc", "solana", "polygon"],
                     "description": "USDt network on the non-Liquid side",
                 },
                 "direction": {
@@ -541,7 +541,7 @@ TOOL_SCHEMAS = {
             "properties": {
                 "external_network": {
                     "type": "string",
-                    "enum": ["ethereum", "tron", "bsc", "solana", "polygon", "ton"],
+                    "enum": ["ethereum", "tron", "bsc", "solana", "polygon"],
                     "description": "Target USDt network",
                 },
                 "settle_address": {"type": "string", "description": "External chain address to receive USDt at"},
@@ -566,7 +566,7 @@ TOOL_SCHEMAS = {
             "properties": {
                 "external_network": {
                     "type": "string",
-                    "enum": ["ethereum", "tron", "bsc", "solana", "polygon", "ton"],
+                    "enum": ["ethereum", "tron", "bsc", "solana", "polygon"],
                     "description": "Source USDt network the external sender pays from",
                 },
                 "wallet_name": {"type": "string", "default": "default"},
@@ -930,7 +930,7 @@ TOOL_SCHEMAS = {
             "Send funds out via SideShift. Gets a fixed-rate quote, creates the shift, "
             "and broadcasts the deposit from the local wallet. Deposit chain MUST be "
             "'bitcoin' or 'liquid'. Both legs must be in the curated allowlist (USDt on "
-            "ethereum/tron/bsc/solana/polygon/ton/liquid, or BTC on bitcoin) — mirrors "
+            "ethereum/tron/bsc/solana/polygon/liquid, or BTC on bitcoin) — mirrors "
             "AQUA Flutter's supported pairs. Set SIDESHIFT_ALLOW_ALL_NETWORKS=1 to bypass. "
             "A refund address is set automatically (the wallet's own deposit-chain "
             "address). For non-L-BTC Liquid assets (e.g. USDt-Liquid), pass liquid_asset_id. "
@@ -956,7 +956,7 @@ TOOL_SCHEMAS = {
                     "type": "string",
                     "description": "Hex asset id; required when sending a non-L-BTC Liquid asset",
                 },
-                "settle_memo": {"type": "string", "description": "Required for memo networks (TON, BNB, etc.)"},
+                "settle_memo": {"type": "string", "description": "Required for memo networks (BNB, etc.)"},
                 "refund_memo": {"type": "string"},
                 "quote_id": {
                     "type": "string",
@@ -980,7 +980,7 @@ TOOL_SCHEMAS = {
             "Returns a deposit address on the deposit chain — the user (or external "
             "sender) sends to it from any wallet. Settle chain MUST be 'bitcoin' or "
             "'liquid'. Both legs must be in the curated allowlist (USDt on "
-            "ethereum/tron/bsc/solana/polygon/ton/liquid, or BTC on bitcoin) — mirrors "
+            "ethereum/tron/bsc/solana/polygon/liquid, or BTC on bitcoin) — mirrors "
             "AQUA Flutter's supported pairs. Set SIDESHIFT_ALLOW_ALL_NETWORKS=1 to bypass. "
             "STRONGLY RECOMMEND passing external_refund_address (the deposit-side "
             "sender's address) so a stuck shift can refund automatically."
@@ -1127,7 +1127,7 @@ PIX → DEPIX (Brazilian Real on-ramp via Eulen):
 
 CHANGELLY (custodial USDt cross-chain swaps via AQUA's Ankara proxy):
 - Use changelly_send when the user wants to send USDt-Liquid OUT to USDt on
-  another chain (Ethereum, Tron, BSC, Solana, Polygon, TON).
+  another chain (Ethereum, Tron, BSC, Solana, Polygon).
 - Use changelly_receive when the user wants to receive USDt-Liquid IN from
   USDt on another chain. Returns a deposit address on the source chain.
 - ALWAYS call changelly_quote first for sends so the user can confirm the
@@ -1188,7 +1188,7 @@ SIDESHIFT (custodial cross-chain swaps):
 - TRUST MODEL: SideShift is custodial. They take the deposit and send from
   their hot wallet. This is different from SideSwap (atomic on Liquid) and
   Lightning (Boltz submarine, atomic). Communicate this trade-off to the user.
-- Memo networks (TON, BNB Beacon, Stellar, etc.) require a memo on either
+- Memo networks (BNB Beacon, Stellar, etc.) require a memo on either
   the deposit or settle side — pass settle_memo / refund_memo when prompted.
 
 WATCH-ONLY WALLETS:
@@ -1889,7 +1889,7 @@ on-chain — make sure I understand this trade-off.
 
 Please:
 1. Show my Liquid balance (lw_balance) so I can see how much USDt-Liquid I have
-2. Ask me which target USDt chain (ethereum, tron, bsc, solana, polygon, ton)
+2. Ask me which target USDt chain (ethereum, tron, bsc, solana, polygon)
 3. Ask me for:
    - The destination address on that chain
    - The amount of USDt-Liquid to send (decimal, e.g. "100")
@@ -1925,7 +1925,7 @@ Liquid address from their hot wallet. Trust model: trust the company.
 
 Please:
 1. Ask me which source USDt chain the external sender will pay from
-   (ethereum, tron, bsc, solana, polygon, ton)
+   (ethereum, tron, bsc, solana, polygon)
 2. STRONGLY recommend providing an external_refund_address — the source
    chain address the external sender controls. Without it, a stuck order
    requires manual web UI intervention. Ask for it.
@@ -2021,7 +2021,7 @@ Please:
    - The deposit address on the source chain (this is what the external
      sender pays to)
    - deposit_min and deposit_max
-   - deposit_memo IF PRESENT (the source chain requires a memo, e.g. TON,
+   - deposit_memo IF PRESENT (the source chain requires a memo, e.g.
      Stellar, BNB Beacon — the sender MUST include it)
    - Where the funds will arrive in my wallet
 6. Tell me to use sideshift_status with the shift_id to poll progress""",
