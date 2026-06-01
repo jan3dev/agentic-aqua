@@ -934,8 +934,8 @@ def changelly_list_currencies() -> dict[str, Any]:
     """List the Changelly currencies enabled for swaps in agentic-aqua.
 
     Filtered server-side to the curated USDt-Liquid ↔ USDt-on-external-chain
-    set: `lusdt` (Liquid) plus the 6 external USDt variants (usdt20/usdtrx/
-    usdtbsc/usdtsol/usdtpolygon/usdton). Other Changelly assets aren't
+    set: `lusdt` (Liquid) plus the 5 external USDt variants (usdt20/usdtrx/
+    usdtbsc/usdtsol/usdtpolygon). Other Changelly assets aren't
     exposed because we don't offer swaps for them. Set
     `CHANGELLY_ALLOW_ALL_PAIRS=1` to bypass the filter.
 
@@ -962,7 +962,7 @@ def changelly_quote(
 
     Args:
         external_network: USDt network (one of: ethereum, tron, bsc, solana,
-            polygon, ton).
+            polygon).
         direction: "send" or "receive". Default: "send".
         amount_from: amount the deposit side sends (decimal string).
         amount_to: amount the settle side receives (decimal string).
@@ -1015,7 +1015,7 @@ def changelly_send(
 
     Args:
         external_network: target USDt network (ethereum, tron, bsc, solana,
-            polygon, ton).
+            polygon).
         settle_address: external chain address where the user receives.
         amount_from: USDt-Liquid to send (decimal string, e.g. "100").
         amount_to: amount recipient receives (decimal string). Mutually exclusive
@@ -1069,7 +1069,7 @@ def changelly_receive(
 
     Args:
         external_network: source USDt network (ethereum, tron, bsc, solana,
-            polygon, ton).
+            polygon).
         wallet_name: Liquid wallet to receive into.
         external_refund_address: STRONGLY RECOMMENDED — the deposit-chain
             address to refund to if the order fails. Without one a stuck
@@ -1122,7 +1122,7 @@ def sideshift_list_coins() -> dict[str, Any]:
     """List the SideShift coin/network identifiers enabled for swaps.
 
     Filtered server-side to the curated allowlist (USDt across
-    ethereum/tron/bsc/solana/polygon/ton/liquid, plus mainchain BTC) so the
+    ethereum/tron/bsc/solana/polygon/liquid, plus mainchain BTC) so the
     response stays small and only surfaces pairs we actually support. Each
     kept entry has `coin`, `name`, `networks` (intersected with the
     allowlist), `hasMemo`, `fixedOnly`/`variableOnly`, and a pruned
@@ -1218,7 +1218,7 @@ def sideshift_send(
     The deposit chain MUST be one of {bitcoin, liquid} — those are the only
     chains we can sign on. Both legs (deposit + settle) must also be in the
     curated pair allowlist mirroring AQUA Flutter: USDt on
-    {ethereum, tron, bsc, solana, polygon, ton, liquid} or BTC on bitcoin.
+    {ethereum, tron, bsc, solana, polygon, liquid} or BTC on bitcoin.
     L-BTC (btc-liquid) is excluded — use SideSwap for L-BTC ↔ external.
     Set `SIDESHIFT_ALLOW_ALL_NETWORKS=1` to bypass.
 
@@ -1290,7 +1290,7 @@ def sideshift_receive(
     The settle chain MUST be one of {bitcoin, liquid} — those are the only
     chains we hold addresses for. Both legs (deposit + settle) must also be
     in the curated pair allowlist mirroring AQUA Flutter: USDt on
-    {ethereum, tron, bsc, solana, polygon, ton, liquid} or BTC on bitcoin.
+    {ethereum, tron, bsc, solana, polygon, liquid} or BTC on bitcoin.
     Set `SIDESHIFT_ALLOW_ALL_NETWORKS=1` to bypass.
 
     Args:

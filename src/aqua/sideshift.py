@@ -80,7 +80,6 @@ ALLOWED_PAIRS: frozenset[tuple[str, str]] = frozenset({
     ("usdt", "bsc"),
     ("usdt", "solana"),
     ("usdt", "polygon"),
-    ("usdt", "ton"),
     ("usdt", "liquid"),
     ("btc", "bitcoin"),
 })
@@ -240,7 +239,7 @@ class SideShiftShift:
     deposit_max: Optional[str] = None  # variable shifts only
     rate: Optional[str] = None
     quote_id: Optional[str] = None  # fixed shifts only
-    deposit_memo: Optional[str] = None  # for memo-required networks (TON, BNB, etc.)
+    deposit_memo: Optional[str] = None  # for memo-required networks (BNB, etc.)
     deposit_hash: Optional[str] = None  # txid where the deposit landed
     settle_hash: Optional[str] = None  # txid where the settlement landed
     last_checked_at: Optional[str] = None
@@ -692,7 +691,7 @@ class SideShiftManager:
             liquid_asset_id: hex asset id, required when the Liquid asset
                 is not L-BTC (e.g. USDt-Liquid).
             settle_memo / refund_memo: required for memo networks
-                (TON, BNB Beacon, etc.) on either side.
+                (BNB Beacon, etc.) on either side.
             quote_id: an existing fixed-rate quote id (from a prior
                 `quote()` call). When provided, skip the internal
                 `request_quote` call so the executed shift uses the same
@@ -735,7 +734,7 @@ class SideShiftManager:
         # Pre-validate the mnemonic decryption BEFORE creating the SideShift
         # order. Without this, a wrong password only surfaces at broadcast
         # time — leaving an orphan custodial order behind for every retry.
-        if wallet_data.encrypted_mnemonic and self.storage.is_mnemonic_encrypted(
+        if wallet_data.encrypted_mnemonic and self.storage.requires_user_password(
             wallet_data.encrypted_mnemonic
         ):
             if not password:

@@ -1144,7 +1144,7 @@ class SideSwapPegManager:
         # a wrong password would only surface at broadcast time — leaving an
         # orphaned SideSwap peg order behind for every retry. Watch-only and
         # unencrypted wallets skip this check (no mnemonic to decrypt).
-        if wallet_data.encrypted_mnemonic and self.storage.is_mnemonic_encrypted(
+        if wallet_data.encrypted_mnemonic and self.storage.requires_user_password(
             wallet_data.encrypted_mnemonic
         ):
             if not password:
@@ -1409,7 +1409,7 @@ class SideSwapSwapManager:
             raise ValueError(f"Wallet '{wallet_name}' not found")
         if wallet_data.watch_only:
             raise ValueError("Watch-only wallet cannot sign a SideSwap swap")
-        if wallet_data.encrypted_mnemonic and self.storage.is_mnemonic_encrypted(
+        if wallet_data.encrypted_mnemonic and self.storage.requires_user_password(
             wallet_data.encrypted_mnemonic
         ):
             if not password:

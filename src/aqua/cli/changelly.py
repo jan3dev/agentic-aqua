@@ -20,7 +20,7 @@ from .password import handle_password_retry, resolve_secret
 
 
 _EXTERNAL_NETWORK = click.Choice([
-    "ethereum", "tron", "bsc", "solana", "polygon", "ton",
+    "ethereum", "tron", "bsc", "solana", "polygon",
 ])
 _DIRECTION = click.Choice(["send", "receive"])
 _PASSWORD_HELP = (
@@ -32,12 +32,12 @@ _PASSWORD_HELP = (
 
 @click.group()
 def changelly():
-    """Changelly — USDt cross-chain swaps (Liquid ↔ ETH/Tron/BSC/Solana/Polygon/TON).
+    """Changelly — USDt cross-chain swaps (Liquid ↔ ETH/Tron/BSC/Solana/Polygon).
 
     Routed through AQUA's Ankara backend proxy. For Liquid-only swaps
     (e.g. L-BTC ↔ USDt-Liquid) prefer `aqua sideswap` (atomic on Liquid).
 
-    Scope: USDt-Liquid ↔ USDt on the 6 supported external chains. For BTC,
+    Scope: USDt-Liquid ↔ USDt on the 5 supported external chains. For BTC,
     L-BTC, or non-USDt swaps, use `aqua sideswap` or `aqua sideshift`.
     """
 

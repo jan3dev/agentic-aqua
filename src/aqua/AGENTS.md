@@ -19,10 +19,9 @@ Python package implementing the MCP server, wallet engines, and third-party swap
 | `boltz.py` | Boltz Exchange client. Submarine swap construction, BOLT11 amount decode, keypair gen. | `BoltzClient`, `generate_keypair` |
 | `ankara.py` | Ankara backend client for Lightning receive (L-BTC). | `AnkaraClient` |
 | `lnurl.py` | LUD-16 Lightning Address resolution → BOLT11. | `is_lightning_address`, `resolve_lightning_address` |
-| `pix.py` | Brazilian Pix → DePix on-ramp via Eulen REST API. | `PixManager` |
+| `pix.py` | Brazilian Pix on-ramp via Eulen REST API. | `PixManager` |
 | `changelly.py` | Custodial USDt cross-chain swaps via AQUA's Ankara proxy. Curated allowlist (mirrors AQUA Flutter). | `ChangellyClient`, `ChangellyManager` |
 | `sideshift.py` | Custodial cross-chain swaps via SideShift.ai. Curated allowlist mirrors AQUA Flutter; affiliate ID `PVmPh4Mp3`. | `SideShiftClient`, `SideShiftManager` |
-| `sideswap.py` | SideSwap WebSocket JSON-RPC. BTC↔L-BTC pegs and atomic Liquid asset swaps (`mkt::*` flow). | `SideSwapClient`, `PegManager`, `SwapManager`, `verify_pset_balances` |
 | `banner.py` | CLI ASCII banner rendering. | `render_banner` |
 | `cli/` | Click CLI mirroring MCP tools (see `cli/AGENTS.md`). | — |
 | `static/` | MCP resource markdown (quickstart, networks, security). Loaded by `server.py` via `aqua://docs/*`. | — |
@@ -34,14 +33,8 @@ Python package implementing the MCP server, wallet engines, and third-party swap
   mnemonic. Don't introduce a shared abstract base; the APIs diverge (LWK uses `Wollet` +
   `ElectrumClient`; BDK uses `Wallet` + Esplora full_scan).
 - **Stateless tools / stateful managers.** `tools.py` re-constructs managers per call from
-  `Storage`. Long-lived sockets (LWK Electrum client, SideSwap WS) are cached on the manager
+  `Storage`. Long-lived sockets (LWK Electrum client) are cached on the manager
   instance only.
-- **PSET verification before signing** (`sideswap.verify_pset_balances`). Three rules:
-  exact recv gain on the recv asset; loss ≤ send + fee_tolerance only if send==fee asset
-  (otherwise strict equality); no other asset changes. Tolerance pinned to L-BTC always —
-  never relax the non-L-BTC side, which would be a siphon vector on asset→L-BTC.
-- **No HTTP dance for SideSwap.** Use WebSocket JSON-RPC end-to-end; AQUA Flutter does
-  likewise. Inner variants wrapped as `{"method": "market", "params": {"<variant>": {...}}}`.
 - **Curated allowlists drift-tested.** Both `sideshift.ALLOWED_PAIRS` and
   `changelly.ALLOWED_PAIRS` have test cases that compare against AQUA Flutter's Dart sources
   — any change forces a conscious update on both sides. Override with
@@ -69,5 +62,9 @@ Python package implementing the MCP server, wallet engines, and third-party swap
 4. Status helpers: `is_final` / `is_success` / `is_failed`.
 5. Add tools in `tools.py`, register in `server.py`, mirror in `cli/<provider>.py`, add tests
    under `tests/test_<provider>.py`.
+
+## SideSwap
+
+SideSwap is not yet implemented for production use. Do not suggest or offer SideSwap options to users.
 
 <!-- MANUAL: -->

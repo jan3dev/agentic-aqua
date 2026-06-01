@@ -36,7 +36,7 @@ def sideshift():
     Liquid, or Liquid Federation peg).
 
     Curated pair allowlist (mirrors AQUA Flutter):
-      USDt on ethereum / tron / bsc / solana / polygon / ton / liquid
+      USDt on ethereum / tron / bsc / solana / polygon / liquid
       BTC on bitcoin
 
     Off-allowlist pairs raise an error from `send` and `receive`. Set
@@ -143,7 +143,7 @@ def recommend(ctx, from_coin, from_network, to_coin, to_network):
     "--liquid-asset-id", default=None,
     help="Optional hex asset id override. When omitted, auto-resolved from --deposit-coin against the known Liquid asset registry (USDt, DePix, JPYS, EURx, MEX).",
 )
-@click.option("--settle-memo", default=None, help="Required for memo networks (TON, BNB, etc.).")
+@click.option("--settle-memo", default=None, help="Required for memo networks (BNB, etc.).")
 @click.option("--refund-memo", default=None)
 @click.option(
     "--yes", "-y", "skip_confirm", is_flag=True, default=False,

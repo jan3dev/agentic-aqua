@@ -11,7 +11,7 @@ networks (unified wallet).
 ```
 AI Assistant ──MCP──▶ aqua.server ──▶ tools.py ──▶ wallet.py  (LWK ─ Electrum/Esplora)
                                               └─▶ bitcoin.py (BDK ─ Esplora)
-                                              └─▶ lightning.py / sideswap / sideshift /
+                                              └─▶ lightning.py / sideshift /
                                                   changelly / pix  (third-party clients)
 ```
 
@@ -91,10 +91,10 @@ Use `grep`/`Glob` only for exact strings or config lookups.
 - **MCP tool / prompt / resource schemas** — live in `src/aqua/server.py`. The MCP server is
   self-describing; don't duplicate the schema in markdown.
 - **Third-party protocol semantics** (Boltz status state machines, SideShift wire format,
-  Changelly endpoints, Eulen Pix endpoints, SideSwap mkt::* flow) — captured as docstrings
-  and constants inside the relevant module (e.g. `src/aqua/sideswap.py`).
+  Changelly endpoints, Eulen Pix endpoints) — captured as docstrings
+  and constants inside the relevant module.
 - **On-disk JSON schemas** (wallet file, swap files) — the `@dataclass` definitions in
-  `storage.py`, `lightning.py`, `sideswap.py`, etc. are the source of truth. Read the
+  `storage.py`, `lightning.py`, etc. are the source of truth. Read the
   dataclass to know the shape.
 - **User-facing docs** — `README.md` and the MCP resources under `src/aqua/static/`.
 
@@ -113,3 +113,7 @@ Project-level `CLAUDE.md` is symlinked from this file. Key user rules:
 - `develop` is the integration branch for code that is still pending broader testing.
 - When opening code PRs by default, target `develop`, not `main`, unless the user explicitly asks otherwise.
 - When comparing branch work for PR prep, prefer `git diff develop...HEAD` / `git log develop...HEAD --oneline` unless a different base branch is requested.
+
+## SideSwap
+
+SideSwap is not yet implemented for production use. Do not suggest or offer SideSwap options to users.

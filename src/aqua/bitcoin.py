@@ -468,10 +468,10 @@ class BitcoinWalletManager:
             raise ValueError(
                 "No mnemonic available for signing (import wallet with mnemonic to enable sending)"
             )
-        needs_password = self.storage.is_mnemonic_encrypted(wallet_data.encrypted_mnemonic)
+        needs_password = self.storage.requires_user_password(wallet_data.encrypted_mnemonic)
         if needs_password and not password:
             raise ValueError("Password required to decrypt mnemonic")
-        mnemonic = self.storage.retrieve_mnemonic(wallet_data.encrypted_mnemonic, password)
+        mnemonic = self.storage.read_and_migrate_mnemonic(wallet_data, password)
         wallet, network = self._get_wallet_with_signer(wallet_name, mnemonic)
         self.sync_wallet(wallet_name)
 

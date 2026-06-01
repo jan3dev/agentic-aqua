@@ -30,6 +30,7 @@ def wallet_name():
 
 
 # Esplora/Electrum: connection resets, timeouts, Windows WSAETIMEDOUT (10060), minreq
+# LWK wraps all Electrum retry failures as AllAttemptsErrored (empty server response = EOF)
 TRANSIENT_NETWORK_MARKERS = (
     "minreq",
     "connection reset",
@@ -39,6 +40,7 @@ TRANSIENT_NETWORK_MARKERS = (
     "connection attempt failed",
     "failed to respond",
     "established connection failed",
+    "allattemptserrored",
 )
 
 
