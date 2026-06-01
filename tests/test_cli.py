@@ -285,7 +285,7 @@ class TestWalletCommands:
         )
         assert result.exit_code == 0, result.output
         stored = manager.storage.load_wallet("enc_stdin")
-        assert manager.storage.is_mnemonic_encrypted(stored.encrypted_mnemonic)
+        assert manager.storage.requires_user_password(stored.encrypted_mnemonic)
 
     def test_password_via_env_var_encrypts_wallet(self, runner, isolated_manager):
         """AQUA_PASSWORD env var produces an encrypted wallet (regression test)."""
@@ -297,7 +297,7 @@ class TestWalletCommands:
         )
         assert result.exit_code == 0, result.output
         stored = manager.storage.load_wallet("enc_env")
-        assert manager.storage.is_mnemonic_encrypted(stored.encrypted_mnemonic)
+        assert manager.storage.requires_user_password(stored.encrypted_mnemonic)
 
     def test_password_via_prompt_encrypts_wallet(self, runner, isolated_manager):
         """--password-stdin on a TTY: read_secret prompts and encrypts the wallet.
@@ -325,10 +325,10 @@ class TestWalletCommands:
         assert result.exit_code == 0, result.output
         mock_read.assert_called_once_with("Password")
         stored = manager.storage.load_wallet("enc_prompt")
-        assert manager.storage.is_mnemonic_encrypted(stored.encrypted_mnemonic)
+        assert manager.storage.requires_user_password(stored.encrypted_mnemonic)
 
-    def test_no_password_stores_plaintext(self, runner, isolated_manager):
-        """No stdin flag, no env var, --password-stdin omitted → wallet unencrypted."""
+    def test_no_password_stores_default_encrypted(self, runner, isolated_manager):
+        """No stdin flag, no env var, --password-stdin omitted → wallet uses default encryption."""
         manager, _ = isolated_manager
         result = runner.invoke(
             cli,
@@ -337,8 +337,8 @@ class TestWalletCommands:
         )
         assert result.exit_code == 0, result.output
         stored = manager.storage.load_wallet("plain_one")
-        assert not manager.storage.is_mnemonic_encrypted(stored.encrypted_mnemonic)
-        assert stored.encrypted_mnemonic.startswith("plain:")
+        assert not manager.storage.requires_user_password(stored.encrypted_mnemonic)
+        assert stored.encrypted_mnemonic.startswith("default:1:")
 
     def test_list_wallets_empty(self, runner):
         result = runner.invoke(cli, ["--format", "json", "wallet", "list"])
