@@ -74,11 +74,11 @@ class BoltzClient:
                 "User-Agent": "agentic-aqua",
             },
         )
-        logger.info("Boltz request %s %s body=%s", method, path, body)
+        logger.debug("Boltz request %s %s body=%s", method, path, body)
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 raw = resp.read().decode()
-                logger.info(
+                logger.debug(
                     "Boltz response %s %s status=%s body=%s",
                     method,
                     path,

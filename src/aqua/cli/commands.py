@@ -54,6 +54,7 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
         ("changelly", changelly),
         ("sideshift", sideshift),
         ("sideswap", sideswap),
+        ("qr", qr),
     ]
 
     # First call: snapshot every subgroup's `.commands` so subsequent calls
@@ -76,8 +77,8 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
         cli.add_command(group)
 
     # Top-level commands. `serve` is CLI-only (no MCP twin) — always register.
+    # `qr` is gated as a group above (its `decode` subcommand maps to `qr_decode`).
     cli.add_command(serve)
-    cli.add_command(qr)
 
     # `balance` is gated by `unified_balance`'s flag.
     if is_tool_enabled("unified_balance", config):

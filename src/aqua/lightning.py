@@ -222,7 +222,7 @@ class LightningManager:
                 f"Invoice amount {invoice_amount} sats exceeds maximum ({BOLTZ_MAX_SATS} sats)"
             )
         client = BoltzClient(network=network)
-        logger.info(
+        logger.debug(
             "lightning pay_invoice start wallet=%s network=%s invoice_amount=%s amount_override=%s",
             wallet_name,
             network,
@@ -231,12 +231,12 @@ class LightningManager:
         )
         pairs = client.get_submarine_pairs()
         pair = pairs.get("L-BTC", {}).get("BTC")
-        logger.info("Boltz pairs lookup network=%s pair_found=%s pair=%s", network, bool(pair), pair)
+        logger.debug("Boltz pairs lookup network=%s pair_found=%s pair=%s", network, bool(pair), pair)
         if not pair:
             raise ValueError("L-BTC/BTC pair not available on Boltz")
 
         refund_privkey, refund_pubkey = generate_keypair()
-        logger.info("Generated refund public key for Boltz swap wallet=%s", wallet_name)
+        logger.debug("Generated refund public key for Boltz swap wallet=%s", wallet_name)
         try:
             swap_resp = client.create_submarine_swap(invoice, refund_pubkey)
         except BoltzSwapAlreadyExistsError as e:
@@ -251,7 +251,7 @@ class LightningManager:
                 "the issue is that Boltz already knows it from a previous attempt."
             ) from e
         expected_amount = swap_resp["expectedAmount"]
-        logger.info(
+        logger.debug(
             "Boltz swap created id=%s expected_amount=%s timeout_block_height=%s",
             swap_resp.get("id"),
             expected_amount,
@@ -260,7 +260,7 @@ class LightningManager:
 
         balances = self.wallet_manager.get_balance(wallet_name)
         lbtc_balance = next((b.amount for b in balances if b.ticker == "L-BTC"), 0)
-        logger.info(
+        logger.debug(
             "Wallet balance check wallet=%s lbtc_balance=%s expected_amount=%s invoice_amount=%s",
             wallet_name,
             lbtc_balance,
@@ -289,7 +289,7 @@ class LightningManager:
         )
         self.storage.save_lightning_swap(swap)
 
-        logger.info(
+        logger.debug(
             "Sending L-BTC lockup tx wallet=%s address=%s amount=%s",
             wallet_name,
             swap_resp.get("address"),
@@ -298,7 +298,7 @@ class LightningManager:
         lockup_txid = self.wallet_manager.send(
             wallet_name, swap_resp["address"], expected_amount, password=password
         )
-        logger.info("Lockup tx sent wallet=%s txid=%s", wallet_name, lockup_txid)
+        logger.debug("Lockup tx sent wallet=%s txid=%s", wallet_name, lockup_txid)
 
         swap.lockup_txid = lockup_txid
         swap.status = "processing"
