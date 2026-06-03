@@ -15,10 +15,7 @@ from aqua.cli.main import cli
 from aqua.storage import Storage
 from aqua.wallet import WalletManager
 
-TEST_MNEMONIC = (
-    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon "
-    "abandon about"
-)
+from tests.conftest import TEST_MNEMONIC
 
 
 class StringIOWithIsatty(io.StringIO):
@@ -288,7 +285,7 @@ class TestWalletCommands:
         )
         assert result.exit_code == 0, result.output
         stored = manager.storage.load_wallet("enc_stdin")
-        assert manager.storage.is_mnemonic_encrypted(stored.encrypted_mnemonic)
+        assert manager.storage.requires_user_password(stored.encrypted_mnemonic)
 
     def test_password_via_env_var_encrypts_wallet(self, runner, isolated_manager):
         """AQUA_PASSWORD env var produces an encrypted wallet (regression test)."""
@@ -300,7 +297,7 @@ class TestWalletCommands:
         )
         assert result.exit_code == 0, result.output
         stored = manager.storage.load_wallet("enc_env")
-        assert manager.storage.is_mnemonic_encrypted(stored.encrypted_mnemonic)
+        assert manager.storage.requires_user_password(stored.encrypted_mnemonic)
 
     def test_password_via_prompt_encrypts_wallet(self, runner, isolated_manager):
         """--password-stdin on a TTY: read_secret prompts and encrypts the wallet.
@@ -328,10 +325,10 @@ class TestWalletCommands:
         assert result.exit_code == 0, result.output
         mock_read.assert_called_once_with("Password")
         stored = manager.storage.load_wallet("enc_prompt")
-        assert manager.storage.is_mnemonic_encrypted(stored.encrypted_mnemonic)
+        assert manager.storage.requires_user_password(stored.encrypted_mnemonic)
 
-    def test_no_password_stores_plaintext(self, runner, isolated_manager):
-        """No stdin flag, no env var, --password-stdin omitted → wallet unencrypted."""
+    def test_no_password_stores_default_encrypted(self, runner, isolated_manager):
+        """No stdin flag, no env var, --password-stdin omitted → wallet uses default encryption."""
         manager, _ = isolated_manager
         result = runner.invoke(
             cli,
@@ -340,8 +337,8 @@ class TestWalletCommands:
         )
         assert result.exit_code == 0, result.output
         stored = manager.storage.load_wallet("plain_one")
-        assert not manager.storage.is_mnemonic_encrypted(stored.encrypted_mnemonic)
-        assert stored.encrypted_mnemonic.startswith("plain:")
+        assert not manager.storage.requires_user_password(stored.encrypted_mnemonic)
+        assert stored.encrypted_mnemonic.startswith("default:1:")
 
     def test_list_wallets_empty(self, runner):
         result = runner.invoke(cli, ["--format", "json", "wallet", "list"])
@@ -815,6 +812,7 @@ class TestLightningCommands:
                     "--wallet-name",
                     "tuna",
                 ],
+                env=_cli_env(),
             )
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -1328,6 +1326,12 @@ def sideswap_managers():
         tools_module._sideswap_swap_manager = saved_swap
 
 
+_SKIP_SIDESWAP_DISABLED = pytest.mark.skip(
+    reason="SideSwap ships disabled-by-default; CLI commands hidden via feature flag."
+)
+
+
+@_SKIP_SIDESWAP_DISABLED
 class TestSideSwapServerStatus:
     def test_status_uses_default_network(self, runner, sideswap_managers):
         peg, _ = sideswap_managers
@@ -1343,6 +1347,7 @@ class TestSideSwapServerStatus:
         assert peg.calls[-1] == ("get_server_status", {"network": "testnet"})
 
 
+@_SKIP_SIDESWAP_DISABLED
 class TestSideSwapRecommend:
     def test_recommend_btc_to_lbtc(self, runner, sideswap_managers):
         result = runner.invoke(
@@ -1372,6 +1377,7 @@ class TestSideSwapRecommend:
         assert result.exit_code != 0
 
 
+@_SKIP_SIDESWAP_DISABLED
 class TestSideSwapPegQuote:
     def test_peg_quote_default_is_peg_in(self, runner, sideswap_managers):
         peg, _ = sideswap_managers
@@ -1394,6 +1400,7 @@ class TestSideSwapPegQuote:
         assert last_call[1]["amount"] == 200_000
 
 
+@_SKIP_SIDESWAP_DISABLED
 class TestSideSwapPegIn:
     def test_peg_in_returns_deposit_address(self, runner, sideswap_managers):
         result = runner.invoke(
@@ -1417,6 +1424,7 @@ class TestSideSwapPegIn:
         assert peg_in_call[1]["wallet_name"] == "cold"
 
 
+@_SKIP_SIDESWAP_DISABLED
 class TestSideSwapPegOut:
     def test_peg_out_returns_lockup_txid(self, runner, sideswap_managers):
         result = runner.invoke(
@@ -1448,6 +1456,7 @@ class TestSideSwapPegOut:
         assert result.exit_code == 2
 
 
+@_SKIP_SIDESWAP_DISABLED
 class TestSideSwapPegStatus:
     def test_peg_status_passes_order_id(self, runner, sideswap_managers):
         peg, _ = sideswap_managers
@@ -1460,6 +1469,7 @@ class TestSideSwapPegStatus:
         assert peg.calls[-1] == ("status", {"order_id": "ord_xyz"})
 
 
+@_SKIP_SIDESWAP_DISABLED
 class TestSideSwapAssets:
     def test_assets_invokes_quote_subscription(self, runner, sideswap_managers):
         # The list-assets tool hits the live WS — patch fetch_assets directly
@@ -1474,6 +1484,7 @@ class TestSideSwapAssets:
         assert data["count"] == 0
 
 
+@_SKIP_SIDESWAP_DISABLED
 class TestSideSwapQuote:
     def test_quote_requires_send_or_recv(self, runner):
         result = runner.invoke(
@@ -1529,6 +1540,7 @@ class TestSideSwapQuote:
         assert result.exit_code == 2
 
 
+@_SKIP_SIDESWAP_DISABLED
 class TestSideSwapSwap:
     def test_swap_with_yes_flag_no_prompt(self, runner, sideswap_managers):
         _import_wallet(runner)  # so the network resolver finds a wallet

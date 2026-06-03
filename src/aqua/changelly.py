@@ -5,9 +5,9 @@ Talks to Changelly through AQUA's Ankara proxy at
 Changelly API secret on the user's machine.
 
 Scope (mirrors what AQUA Flutter exposes through Changelly): **USDt-Liquid
-↔ USDt on the same 6 external chains we allow in SideShift** (Ethereum, Tron,
-BSC, Solana, Polygon, TON). One leg of every swap MUST be `lusdt` (USDt-Liquid);
-the other MUST be one of those 6 external USDt variants. L-BTC, BTC, and
+↔ USDt on the same 5 external chains we allow in SideShift** (Ethereum, Tron,
+BSC, Solana, Polygon). One leg of every swap MUST be `lusdt` (USDt-Liquid);
+the other MUST be one of those 5 external USDt variants. L-BTC, BTC, and
 arbitrary altcoins are intentionally excluded — for those use SideSwap or
 SideShift. The override env var `CHANGELLY_ALLOW_ALL_PAIRS=1` bypasses the
 allowlist for testing or power use.
@@ -30,7 +30,6 @@ Asset id conventions (Changelly's own format, distinct from SideShift's):
   usdtbsc      — USDt on BSC
   usdtsol      — USDt on Solana
   usdtpolygon  — USDt on Polygon
-  usdton       — USDt on TON
 
 Status state machine (lowercase): `new`, `waiting`, `confirming`, `exchanging`,
 `sending`, `finished` (success), `failed`, `refunded`, `hold`, `overdue`,
@@ -73,15 +72,14 @@ HTTP_TIMEOUT_SECONDS = 30.0
 # swap we support is this one.
 LIQUID_USDT_ID = "lusdt"
 
-# The 6 external USDt variants we expose. Mirrors the non-Liquid USDt subset
-# of SideShift's allowlist (ethereum, tron, bsc, solana, polygon, ton).
+# The 5 external USDt variants we expose. Mirrors the non-Liquid USDt subset
+# of SideShift's allowlist (ethereum, tron, bsc, solana, polygon).
 EXTERNAL_USDT_IDS = frozenset({
     "usdt20",      # Ethereum (ERC-20)
     "usdtrx",      # Tron (TRC-20)
     "usdtbsc",     # BSC
     "usdtsol",     # Solana
     "usdtpolygon", # Polygon
-    "usdton",      # TON
 })
 
 # Curated pair allowlist: one leg must be lusdt, the other must be in
@@ -103,7 +101,6 @@ NETWORK_TO_USDT_ID = {
     "bsc": "usdtbsc",
     "solana": "usdtsol",
     "polygon": "usdtpolygon",
-    "ton": "usdton",
 }
 USDT_ID_TO_NETWORK = {v: k for k, v in NETWORK_TO_USDT_ID.items()}
 
@@ -122,7 +119,7 @@ def _check_pair_allowed(from_id: str, to_id: str) -> None:
     """Raise ValueError if the (from, to) pair isn't on the allowlist.
 
     Both legs combined must form a curated pair: exactly one leg is `lusdt`,
-    the other is one of the 6 external USDt variants. The override env var
+    the other is one of the 5 external USDt variants. The override env var
     bypasses the check entirely.
     """
     if _allow_all_pairs():
@@ -146,7 +143,6 @@ _ADDRESS_PATTERNS: dict[str, re.Pattern[str]] = {
     "bsc":      re.compile(r"^0x[0-9a-fA-F]{40}$"),
     "polygon":  re.compile(r"^0x[0-9a-fA-F]{40}$"),
     "solana":   re.compile(r"^[1-9A-HJ-NP-Za-km-z]{43,44}$"),
-    "ton":      re.compile(r"^[EU][Qq][0-9A-Za-z_\-]{46}$"),
 }
 
 
@@ -519,7 +515,22 @@ class ChangellyManager:
     # -- Read-only helpers ---------------------------------------------------
 
     def list_currencies(self) -> list[str]:
-        return self.client.get_currencies()
+        """Return Changelly's currency list filtered to our curated allowlist.
+
+        Changelly's raw list is 764 plain tickers with no metadata; most are
+        unrelated to AQUA's scope (USDt-Liquid ↔ USDt-on-external-chain) and
+        only confuse the agent. We expose just `lusdt` and the 6 external
+        USDt variants in `EXTERNAL_USDT_IDS`, preserving the provider's
+        ordering.
+
+        The override env var `CHANGELLY_ALLOW_ALL_PAIRS=1` returns the raw
+        response unchanged for power use / debugging.
+        """
+        raw = self.client.get_currencies()
+        if _allow_all_pairs():
+            return raw
+        allowed = {LIQUID_USDT_ID, *EXTERNAL_USDT_IDS}
+        return [c for c in raw if c in allowed]
 
     def fixed_quote(
         self,
@@ -580,7 +591,7 @@ class ChangellyManager:
             raise ValueError(f"Wallet '{wallet_name}' not found")
         if wallet_data.watch_only:
             raise ValueError("Watch-only wallet cannot sign a Changelly deposit")
-        if wallet_data.encrypted_mnemonic and self.storage.is_mnemonic_encrypted(
+        if wallet_data.encrypted_mnemonic and self.storage.requires_user_password(
             wallet_data.encrypted_mnemonic
         ):
             if not password:

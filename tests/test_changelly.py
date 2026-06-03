@@ -116,7 +116,6 @@ class TestNetworkToAssetId:
         ("bsc", "usdtbsc"),
         ("solana", "usdtsol"),
         ("polygon", "usdtpolygon"),
-        ("ton", "usdton"),
         ("TRON", "usdtrx"),  # case-insensitive
     ])
     def test_known_networks(self, network, expected):
@@ -143,13 +142,13 @@ class TestAllowedPairs:
         # Drift from AQUA's `ChangellyAssetIds` set in
         # `lib/features/changelly/models/changelly_models.dart` should fail
         # loudly so we have a forced conversation about it.
-        expected_external = {"usdt20", "usdtrx", "usdtbsc", "usdtsol", "usdtpolygon", "usdton"}
+        expected_external = {"usdt20", "usdtrx", "usdtbsc", "usdtsol", "usdtpolygon"}
         assert set(EXTERNAL_USDT_IDS) == expected_external
-        # 6 chains × 2 directions = 12 ordered pairs
-        assert len(ALLOWED_PAIRS) == 12
+        # 5 chains × 2 directions = 10 ordered pairs
+        assert len(ALLOWED_PAIRS) == 10
 
     def test_btc_lbtc_usdc_etc_NOT_in_allowlist(self):
-        # Explicitly: only USDt, only the 6 external chains, only paired
+        # Explicitly: only USDt, only the 5 external chains, only paired
         # with USDt-Liquid.
         assert ("btc", "lusdt") not in ALLOWED_PAIRS
         assert ("lbtc", "usdtrx") not in ALLOWED_PAIRS
@@ -204,6 +203,54 @@ class TestAllowedPairs:
             _check_pair_allowed("btc", "lusdt")
 
 
+class TestListCurrenciesFilter:
+    """Changelly's raw `getCurrencies` returns 764 tickers. We only expose
+    the curated USDt set (lusdt + 5 external variants)."""
+
+    _RAW = [
+        "btc", "eth", "ltc", "doge", "shib", "lusdt", "usdc",
+        "usdt20", "usdtrx", "usdtbsc", "usdtsol", "usdtpolygon", "usdton",
+        "xrp", "ada",
+    ]
+
+    def test_only_curated_usdt_remains(self):
+        mgr = ChangellyManager.__new__(ChangellyManager)
+        mgr._client = MagicMock()
+        mgr._client.get_currencies.return_value = list(self._RAW)
+        result = mgr.list_currencies()
+        assert set(result) == {
+            "lusdt", "usdt20", "usdtrx", "usdtbsc",
+            "usdtsol", "usdtpolygon",
+        }
+
+    def test_preserves_provider_ordering(self):
+        mgr = ChangellyManager.__new__(ChangellyManager)
+        mgr._client = MagicMock()
+        mgr._client.get_currencies.return_value = list(self._RAW)
+        result = mgr.list_currencies()
+        # Ordering follows the raw list, not alphabetic.
+        assert result == [
+            "lusdt", "usdt20", "usdtrx", "usdtbsc",
+            "usdtsol", "usdtpolygon",
+        ]
+
+    def test_unrelated_assets_dropped(self):
+        mgr = ChangellyManager.__new__(ChangellyManager)
+        mgr._client = MagicMock()
+        mgr._client.get_currencies.return_value = list(self._RAW)
+        result = mgr.list_currencies()
+        for unrelated in ("btc", "eth", "ltc", "shib", "usdc", "xrp", "ada", "usdton"):
+            assert unrelated not in result
+
+    def test_override_env_var_returns_raw(self, monkeypatch):
+        monkeypatch.setenv("CHANGELLY_ALLOW_ALL_PAIRS", "1")
+        mgr = ChangellyManager.__new__(ChangellyManager)
+        mgr._client = MagicMock()
+        raw = list(self._RAW)
+        mgr._client.get_currencies.return_value = raw
+        assert mgr.list_currencies() is raw
+
+
 # ---------------------------------------------------------------------------
 # settle_address validation
 # ---------------------------------------------------------------------------
@@ -216,8 +263,6 @@ class TestValidateSettleAddress:
         ("bsc",      "0xAbCdEf1234567890abcdef1234567890abCdEf12"),
         ("polygon",  "0xAbCdEf1234567890abcdef1234567890abCdEf12"),
         ("solana",   "So11111111111111111111111111111111111111112"),  # 44-char wrapped SOL mint
-        ("ton",      "EQ" + "D" * 46),                          # EQ + 46 base64url = 48
-        ("ton",      "UQ" + "D" * 46),                          # UQ + 46 base64url = 48
     ])
     def test_valid_addresses_pass(self, network, address):
         _validate_settle_address(network, address)
@@ -229,7 +274,6 @@ class TestValidateSettleAddress:
         ("ethereum", "TXYZabc123456789012", "valid ethereum"),  # Tron addr on ETH
         ("ethereum", "0xShort",            "valid ethereum"),
         ("solana",   "0x1234",             "valid solana"),
-        ("ton",      "0x1234",             "valid ton"),
     ])
     def test_invalid_addresses_raise(self, network, address, match):
         with pytest.raises(ValueError, match=match):

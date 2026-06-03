@@ -80,7 +80,6 @@ ALLOWED_PAIRS: frozenset[tuple[str, str]] = frozenset({
     ("usdt", "bsc"),
     ("usdt", "solana"),
     ("usdt", "polygon"),
-    ("usdt", "ton"),
     ("usdt", "liquid"),
     ("btc", "bitcoin"),
 })
@@ -115,6 +114,46 @@ def _check_pair_allowed(coin: str, network: str, side: str) -> None:
             f"allowlist (matches AQUA Flutter's supported set): {allowed}. "
             "Set SIDESHIFT_ALLOW_ALL_NETWORKS=1 to bypass."
         )
+
+
+def _allowed_networks_for_coin(coin: str) -> set[str]:
+    """Networks present alongside `coin` in `ALLOWED_PAIRS` (lowercase)."""
+    norm = coin.lower()
+    return {network for c, network in ALLOWED_PAIRS if c == norm}
+
+
+def _filter_coins_to_allowlist(coins: list[dict]) -> list[dict]:
+    """Trim SideShift's `/v2/coins` response to entries in `ALLOWED_PAIRS`.
+
+    For each entry whose `coin` appears in the allowlist:
+      - keep only the `networks` that are allowed for that coin,
+      - prune `tokenDetails` to those same networks (drops ~10 KB of
+        unrelated contract addresses),
+      - drop the entry entirely if no allowed networks remain.
+    """
+    filtered: list[dict] = []
+    for entry in coins:
+        coin = entry.get("coin", "")
+        allowed = _allowed_networks_for_coin(coin)
+        if not allowed:
+            continue
+        kept_networks = [n for n in entry.get("networks", []) if n.lower() in allowed]
+        if not kept_networks:
+            continue
+        trimmed = dict(entry)
+        trimmed["networks"] = kept_networks
+        token_details = entry.get("tokenDetails")
+        if isinstance(token_details, dict):
+            trimmed["tokenDetails"] = {
+                k: v for k, v in token_details.items() if k.lower() in allowed
+            }
+        networks_with_memo = entry.get("networksWithMemo")
+        if isinstance(networks_with_memo, list):
+            trimmed["networksWithMemo"] = [
+                n for n in networks_with_memo if n.lower() in allowed
+            ]
+        filtered.append(trimmed)
+    return filtered
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +239,7 @@ class SideShiftShift:
     deposit_max: Optional[str] = None  # variable shifts only
     rate: Optional[str] = None
     quote_id: Optional[str] = None  # fixed shifts only
-    deposit_memo: Optional[str] = None  # for memo-required networks (TON, BNB, etc.)
+    deposit_memo: Optional[str] = None  # for memo-required networks (BNB, etc.)
     deposit_hash: Optional[str] = None  # txid where the deposit landed
     settle_hash: Optional[str] = None  # txid where the settlement landed
     last_checked_at: Optional[str] = None
@@ -579,7 +618,20 @@ class SideShiftManager:
     # -- Read-only helpers ---------------------------------------------------
 
     def list_coins(self) -> list[dict]:
-        return self.client.get_coins()
+        """Return SideShift's coin list filtered to our curated allowlist.
+
+        SideShift's full response is ~100 KB and exceeds MCP token limits.
+        We only ever swap USDt ↔ USDt across the chains in `ALLOWED_PAIRS`
+        plus mainchain BTC, so filtering here keeps the agent context tight
+        and prevents confusion about unsupported assets.
+
+        The override env var `SIDESHIFT_ALLOW_ALL_NETWORKS=1` returns the
+        raw response unchanged for power use / debugging.
+        """
+        raw = self.client.get_coins()
+        if _allow_all_networks():
+            return raw
+        return _filter_coins_to_allowlist(raw)
 
     def pair_info(
         self,
@@ -639,7 +691,7 @@ class SideShiftManager:
             liquid_asset_id: hex asset id, required when the Liquid asset
                 is not L-BTC (e.g. USDt-Liquid).
             settle_memo / refund_memo: required for memo networks
-                (TON, BNB Beacon, etc.) on either side.
+                (BNB Beacon, etc.) on either side.
             quote_id: an existing fixed-rate quote id (from a prior
                 `quote()` call). When provided, skip the internal
                 `request_quote` call so the executed shift uses the same
@@ -682,7 +734,7 @@ class SideShiftManager:
         # Pre-validate the mnemonic decryption BEFORE creating the SideShift
         # order. Without this, a wrong password only surfaces at broadcast
         # time — leaving an orphan custodial order behind for every retry.
-        if wallet_data.encrypted_mnemonic and self.storage.is_mnemonic_encrypted(
+        if wallet_data.encrypted_mnemonic and self.storage.requires_user_password(
             wallet_data.encrypted_mnemonic
         ):
             if not password:

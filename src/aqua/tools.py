@@ -907,9 +907,13 @@ def pix_receive(
     manager = get_pix_manager()
     swap = manager.create_deposit(amount_cents, wallet_name, password)
 
-    from .pix import format_brl
+    from .pix import EULEN_FEE_CENTS, format_brl
 
     amount_brl = format_brl(swap.amount_cents)
+    fee_cents = EULEN_FEE_CENTS
+    fee_brl = format_brl(fee_cents)
+    net_amount_cents = max(swap.amount_cents - fee_cents, 0)
+    net_amount_brl = format_brl(net_amount_cents)
     all_wallets = get_manager().storage.list_wallets()
     wallet_note = f" in wallet '{wallet_name}'" if len(all_wallets) > 1 else ""
     return {
@@ -918,6 +922,10 @@ def pix_receive(
         "qr_image_url": swap.qr_image_url,
         "amount_cents": swap.amount_cents,
         "amount_brl": amount_brl,
+        "fee_cents": fee_cents,
+        "fee_brl": fee_brl,
+        "net_amount_cents": net_amount_cents,
+        "net_amount_brl": net_amount_brl,
         "depix_address": swap.depix_address,
         "expiration": swap.expiration,
         "wallet_name": wallet_name,
@@ -925,6 +933,8 @@ def pix_receive(
             f"Pay {amount_brl} via Pix to receive DePix{wallet_note}. "
             "Paste qr_copy_paste into your banking app's 'Pix Copia e Cola' field, "
             "or open qr_image_url on your phone and scan with your bank app. "
+            f"Note: Eulen deducts a flat fee of {fee_brl} per deposit, so you will "
+            f"receive {net_amount_brl} in DePix. "
             f"Check status with swap_id: {swap.swap_id}"
         ),
     }
@@ -936,14 +946,16 @@ def pix_receive(
 
 
 def changelly_list_currencies() -> dict[str, Any]:
-    """List the currencies Changelly supports (Changelly's own asset id format).
+    """List the Changelly currencies enabled for swaps in agentic-aqua.
 
-    Useful for discovery; the agentic-aqua surface only enables the curated
-    USDt-Liquid ↔ USDt-on-{ethereum,tron,bsc,solana,polygon,ton} pairs for
-    actual swaps, but the read-only currency list is unrestricted.
+    Filtered server-side to the curated USDt-Liquid ↔ USDt-on-external-chain
+    set: `lusdt` (Liquid) plus the 5 external USDt variants (usdt20/usdtrx/
+    usdtbsc/usdtsol/usdtpolygon). Other Changelly assets aren't
+    exposed because we don't offer swaps for them. Set
+    `CHANGELLY_ALLOW_ALL_PAIRS=1` to bypass the filter.
 
     Returns:
-        currencies: list of asset id strings
+        currencies: list of asset id strings (≤ 7 entries)
         count: number of entries
     """
     currencies = get_changelly_manager().list_currencies()
@@ -965,7 +977,7 @@ def changelly_quote(
 
     Args:
         external_network: USDt network (one of: ethereum, tron, bsc, solana,
-            polygon, ton).
+            polygon).
         direction: "send" or "receive". Default: "send".
         amount_from: amount the deposit side sends (decimal string).
         amount_to: amount the settle side receives (decimal string).
@@ -1018,7 +1030,7 @@ def changelly_send(
 
     Args:
         external_network: target USDt network (ethereum, tron, bsc, solana,
-            polygon, ton).
+            polygon).
         settle_address: external chain address where the user receives.
         amount_from: USDt-Liquid to send (decimal string, e.g. "100").
         amount_to: amount recipient receives (decimal string). Mutually exclusive
@@ -1072,7 +1084,7 @@ def changelly_receive(
 
     Args:
         external_network: source USDt network (ethereum, tron, bsc, solana,
-            polygon, ton).
+            polygon).
         wallet_name: Liquid wallet to receive into.
         external_refund_address: STRONGLY RECOMMENDED — the deposit-chain
             address to refund to if the order fails. Without one a stuck
@@ -1122,12 +1134,15 @@ def changelly_status(order_id: str) -> dict[str, Any]:
 
 
 def sideshift_list_coins() -> dict[str, Any]:
-    """List the coins and networks SideShift supports.
+    """List the SideShift coin/network identifiers enabled for swaps.
 
-    Use this to discover valid (coin, network) identifiers for the other
-    SideShift tools. Returns the SideShift response unchanged — each entry
-    has `coin`, `name`, `networks`, `hasMemo` (whether deposits to that
-    chain need a memo), `fixedOnly`/`variableOnly`, etc.
+    Filtered server-side to the curated allowlist (USDt across
+    ethereum/tron/bsc/solana/polygon/liquid, plus mainchain BTC) so the
+    response stays small and only surfaces pairs we actually support. Each
+    kept entry has `coin`, `name`, `networks` (intersected with the
+    allowlist), `hasMemo`, `fixedOnly`/`variableOnly`, and a pruned
+    `tokenDetails`. Set `SIDESHIFT_ALLOW_ALL_NETWORKS=1` to bypass the
+    filter.
 
     Returns:
         coins: list of {coin, name, networks, hasMemo, ...}
@@ -1218,7 +1233,7 @@ def sideshift_send(
     The deposit chain MUST be one of {bitcoin, liquid} — those are the only
     chains we can sign on. Both legs (deposit + settle) must also be in the
     curated pair allowlist mirroring AQUA Flutter: USDt on
-    {ethereum, tron, bsc, solana, polygon, ton, liquid} or BTC on bitcoin.
+    {ethereum, tron, bsc, solana, polygon, liquid} or BTC on bitcoin.
     L-BTC (btc-liquid) is excluded — use SideSwap for L-BTC ↔ external.
     Set `SIDESHIFT_ALLOW_ALL_NETWORKS=1` to bypass.
 
@@ -1236,7 +1251,7 @@ def sideshift_send(
         password: mnemonic decryption password (if encrypted)
         liquid_asset_id: required when deposit is a non-L-BTC Liquid asset
             (e.g. USDt-Liquid: pass the asset id hex)
-        settle_memo / refund_memo: required for memo networks (TON, BNB, etc.)
+        settle_memo / refund_memo: required for memo networks (BNB, etc.)
         quote_id: optional fixed-rate quote id from a prior `sideshift_quote`
             call. Pass `preview["id"]` after the user confirms the preview to
             ensure the shift executes at the rate the user just saw. Without
@@ -1285,7 +1300,7 @@ def sideshift_receive(
     The settle chain MUST be one of {bitcoin, liquid} — those are the only
     chains we hold addresses for. Both legs (deposit + settle) must also be
     in the curated pair allowlist mirroring AQUA Flutter: USDt on
-    {ethereum, tron, bsc, solana, polygon, ton, liquid} or BTC on bitcoin.
+    {ethereum, tron, bsc, solana, polygon, liquid} or BTC on bitcoin.
     Set `SIDESHIFT_ALLOW_ALL_NETWORKS=1` to bypass.
 
     Args:

@@ -24,10 +24,15 @@ EULEN_API_TOKEN_ENV = "EULEN_API_TOKEN"
 # explain it to the user rather than passing the raw API error through.
 PIX_MIN_AMOUNT_CENTS = 100  # R$1.00 — Eulen's documented absolute minimum
 
+# Flat fee Eulen deducts from every Pix→DePix operation, independent of amount.
+# Not returned by the API; documented here so the tool layer can surface it.
+EULEN_FEE_CENTS = 99  # R$0,99
+
 # Eulen status values returned by GET /deposit-status.
 EULEN_STATUS_VALUES = frozenset(
     {
         "pending",
+        "approved",
         "depix_sent",
         "under_review",
         "canceled",
@@ -102,7 +107,7 @@ class EulenClient:
                 "Content-Type": "application/json",
                 "User-Agent": "agentic-aqua",
                 "Authorization": f"Bearer {self.token}",
-                "X-Nonce": uuid.uuid4().hex,
+                "X-Nonce": str(uuid.uuid4()),
             },
         )
         try:
@@ -112,7 +117,12 @@ class EulenClient:
             detail = ""
             try:
                 err_body = json.loads(e.read().decode())
-                detail = err_body.get("error") or err_body.get("message") or ""
+                detail = (
+                    err_body.get("error")
+                    or err_body.get("message")
+                    or (err_body.get("response") or {}).get("errorMessage")
+                    or ""
+                )
             except Exception:
                 pass
             msg = f"Eulen API error ({e.code} {method} {path})"
@@ -162,6 +172,7 @@ def format_brl(amount_cents: int) -> str:
 
 _STATUS_MESSAGES = {
     "pending": "Waiting for Pix payment. Pay the QR / Copia e Cola in your banking app.",
+    "approved": "Pix payment received. DePix transfer in progress — should arrive shortly.",
     "depix_sent": "DePix delivered to your Liquid wallet.",
     "under_review": "Eulen is reviewing the payment (compliance/AML). This may take time.",
     "canceled": "The deposit was canceled.",

@@ -16,7 +16,6 @@ rendered to terminal/JSON instead of MCP responses.
 | `liquid.py` | `aqua liquid` | Liquid balance, address, send, transactions. |
 | `btc.py` | `aqua btc` | Bitcoin equivalents. |
 | `lightning.py` | `aqua lightning` | Receive (Ankara), send (Boltz), status. |
-| `sideswap.py` | `aqua sideswap` | Server status, peg quote/in/out, asset quote/swap, status. |
 | `sideshift.py` | `aqua sideshift` | Cross-chain quote, send, receive, status. |
 | `changelly.py` | `aqua changelly` | USDt cross-chain quote, send, receive, status. |
 | `serve.py` | `aqua serve` | Run the MCP stdio server from the CLI. |
@@ -49,5 +48,9 @@ Use this pattern for any new command that signs transactions.
 - Errors: catch `ValueError` at the command boundary and render via the error envelope.
   Do not let raw tracebacks reach the user unless `--verbose`.
 - New CLI command → register in `commands.py`, add a smoke test in `tests/test_cli.py`.
+
+## SideSwap
+
+SideSwap is not yet implemented for production use. Do not suggest or offer SideSwap options to users.
 
 <!-- MANUAL: -->

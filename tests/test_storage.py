@@ -1,14 +1,25 @@
 """Tests for storage module."""
 
+import base64
+import logging
 import os
 import stat
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from aqua.storage import Storage, WalletData, Config, _validate_wallet_name
+from aqua.storage import (
+    Storage,
+    WalletData,
+    Config,
+    _DEFAULT_MNEMONIC_PASSWORD,
+    _DEFAULT_PWD_VERSION,
+    _validate_wallet_name,
+)
+from tests.conftest import TEST_MNEMONIC
 
 
 @pytest.fixture
@@ -88,7 +99,7 @@ class TestStorage:
 
     def test_mnemonic_encryption(self, temp_storage):
         """Test mnemonic encryption/decryption."""
-        mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        mnemonic = TEST_MNEMONIC
         password = "test123"
 
         encrypted = temp_storage.encrypt_mnemonic(mnemonic, password)
@@ -392,3 +403,298 @@ class TestLightningSwapStorage:
         path = temp_storage._lightning_swap_path("secure_swap")
         mode = stat.S_IMODE(os.stat(path).st_mode)
         assert mode == 0o600, f"Expected 0600, got {oct(mode)}"
+
+
+# ---------------------------------------------------------------------------
+# Default at-rest encryption (issue #84)
+# ---------------------------------------------------------------------------
+
+
+def _make_plain_blob(mnemonic: str) -> str:
+    """Build a legacy ``plain:`` mnemonic blob (no encryption)."""
+    return "plain:" + base64.b64encode(mnemonic.encode()).decode()
+
+
+def _make_untagged_legacy_blob(storage: Storage, mnemonic: str, password: str) -> str:
+    """Build a legacy untagged blob (raw user-password-encrypted, no prefix)."""
+    return storage.encrypt_mnemonic(mnemonic, password)
+
+
+class TestDefaultPasswordEncryption:
+    """Tests for the default-password at-rest encryption (#84)."""
+
+    # --- store_mnemonic / retrieve_mnemonic ------------------------------
+
+    def test_store_mnemonic_no_password_produces_default_prefix(self, temp_storage):
+        stored = temp_storage.store_mnemonic(TEST_MNEMONIC, None)
+        assert stored.startswith(f"default:{_DEFAULT_PWD_VERSION}:")
+
+    def test_store_mnemonic_with_password_produces_user_prefix(self, temp_storage):
+        stored = temp_storage.store_mnemonic(TEST_MNEMONIC, "s3cret")
+        assert stored.startswith("user:")
+        # Sanity: payload is not the literal mnemonic.
+        assert TEST_MNEMONIC not in stored
+
+    def test_retrieve_default_prefix_no_password_needed(self, temp_storage):
+        stored = temp_storage.store_mnemonic(TEST_MNEMONIC, None)
+        assert temp_storage.retrieve_mnemonic(stored, None) == TEST_MNEMONIC
+        # Even with a (wrong/extra) password argument, default decrypt ignores it.
+        assert temp_storage.retrieve_mnemonic(stored, "ignored") == TEST_MNEMONIC
+
+    def test_retrieve_user_prefix_needs_password(self, temp_storage):
+        stored = temp_storage.store_mnemonic(TEST_MNEMONIC, "s3cret")
+        with pytest.raises(ValueError, match="Password required"):
+            temp_storage.retrieve_mnemonic(stored, None)
+
+    def test_retrieve_user_prefix_with_password(self, temp_storage):
+        stored = temp_storage.store_mnemonic(TEST_MNEMONIC, "s3cret")
+        assert temp_storage.retrieve_mnemonic(stored, "s3cret") == TEST_MNEMONIC
+
+    def test_retrieve_plain_prefix_legacy(self, temp_storage):
+        legacy = _make_plain_blob(TEST_MNEMONIC)
+        # No migration happens inside retrieve_mnemonic (pure read).
+        assert temp_storage.retrieve_mnemonic(legacy, None) == TEST_MNEMONIC
+
+    def test_retrieve_untagged_legacy_needs_password(self, temp_storage):
+        legacy = _make_untagged_legacy_blob(temp_storage, TEST_MNEMONIC, "s3cret")
+        with pytest.raises(ValueError, match="Password required"):
+            temp_storage.retrieve_mnemonic(legacy, None)
+
+    def test_retrieve_untagged_legacy_with_password(self, temp_storage):
+        legacy = _make_untagged_legacy_blob(temp_storage, TEST_MNEMONIC, "s3cret")
+        assert temp_storage.retrieve_mnemonic(legacy, "s3cret") == TEST_MNEMONIC
+
+    def test_retrieve_unsupported_default_version_raises(self, temp_storage):
+        # Encrypted with the real default password but tagged as v99.
+        raw = temp_storage.encrypt_mnemonic(TEST_MNEMONIC, _DEFAULT_MNEMONIC_PASSWORD)
+        bogus = f"default:99:{raw}"
+        with pytest.raises(ValueError, match="Unsupported default encryption version"):
+            temp_storage.retrieve_mnemonic(bogus, None)
+
+    # --- malformed default: prefix parsing ------------------------------
+
+    @pytest.mark.parametrize(
+        "bad_blob",
+        [
+            "default:",  # nothing after the prefix
+            "default:novalidversion",  # single segment, no second colon
+            "default::blob",  # empty version string
+            "default:abc:blob",  # non-integer version
+        ],
+    )
+    def test_retrieve_malformed_default_prefix_raises(self, temp_storage, bad_blob):
+        with pytest.raises(ValueError, match="Malformed default-encrypted mnemonic prefix"):
+            temp_storage.retrieve_mnemonic(bad_blob, None)
+
+    def test_malformed_prefix_error_truncates_long_input(self, temp_storage):
+        # Error message must not echo arbitrarily long ciphertext.
+        long_garbage = "default:abc:" + ("X" * 5000)
+        with pytest.raises(ValueError) as excinfo:
+            temp_storage.retrieve_mnemonic(long_garbage, None)
+        assert "X" * 100 not in str(excinfo.value)
+
+    # --- requires_user_password truth table ------------------------------
+
+    @pytest.mark.parametrize(
+        "make_blob, expected",
+        [
+            (lambda s: s.store_mnemonic(TEST_MNEMONIC, None), False),  # default:1:
+            (
+                lambda s: "default:99:"
+                + s.encrypt_mnemonic(TEST_MNEMONIC, _DEFAULT_MNEMONIC_PASSWORD),
+                False,
+            ),  # default:99: (unsupported version still doesn't require user pw)
+            (lambda s: s.store_mnemonic(TEST_MNEMONIC, "pw"), True),  # user:
+            (lambda s: _make_plain_blob(TEST_MNEMONIC), False),  # plain:
+            (
+                lambda s: _make_untagged_legacy_blob(s, TEST_MNEMONIC, "pw"),
+                True,
+            ),  # untagged legacy
+        ],
+        ids=["default-v1", "default-v99", "user", "plain", "untagged-legacy"],
+    )
+    def test_requires_user_password_truth_table(self, temp_storage, make_blob, expected):
+        blob = make_blob(temp_storage)
+        assert temp_storage.requires_user_password(blob) is expected
+
+    # --- read_and_migrate_mnemonic ---------------------------------------
+
+    def test_lazy_migration_plain_to_default(self, temp_storage):
+        """A ``plain:`` wallet read via read_and_migrate_mnemonic is rewritten to ``default:1:``."""
+        wallet = WalletData(
+            name="legacy_plain",
+            network="mainnet",
+            descriptor="ct(...)",
+            encrypted_mnemonic=_make_plain_blob(TEST_MNEMONIC),
+        )
+        temp_storage.save_wallet(wallet)
+
+        returned = temp_storage.read_and_migrate_mnemonic(wallet, None)
+        assert returned == TEST_MNEMONIC
+
+        # Reload from disk and verify it was rewritten.
+        reloaded = temp_storage.load_wallet("legacy_plain")
+        assert reloaded.encrypted_mnemonic.startswith(f"default:{_DEFAULT_PWD_VERSION}:")
+        assert not temp_storage.requires_user_password(reloaded.encrypted_mnemonic)
+        # And the round-trip still gives the original mnemonic.
+        assert temp_storage.retrieve_mnemonic(reloaded.encrypted_mnemonic, None) == TEST_MNEMONIC
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix mode bits")
+    def test_lazy_migration_atomicity(self, temp_storage):
+        """After migration the wallet file remains 0o600 and is valid JSON."""
+        import json
+
+        wallet = WalletData(
+            name="atomic_plain",
+            network="mainnet",
+            descriptor="ct(...)",
+            encrypted_mnemonic=_make_plain_blob(TEST_MNEMONIC),
+        )
+        temp_storage.save_wallet(wallet)
+
+        temp_storage.read_and_migrate_mnemonic(wallet, None)
+
+        path = temp_storage._wallet_path("atomic_plain")
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+        assert mode == 0o600, f"Expected 0600 after migration, got {oct(mode)}"
+        with open(path) as f:
+            data = json.load(f)
+        assert data["encrypted_mnemonic"].startswith(f"default:{_DEFAULT_PWD_VERSION}:")
+
+    def test_lazy_migration_continues_on_write_failure(self, temp_storage, caplog):
+        """If save_wallet raises OSError during migration, plaintext is still returned."""
+        wallet = WalletData(
+            name="ro_plain",
+            network="mainnet",
+            descriptor="ct(...)",
+            encrypted_mnemonic=_make_plain_blob(TEST_MNEMONIC),
+        )
+        temp_storage.save_wallet(wallet)
+
+        with patch.object(
+            temp_storage, "save_wallet", side_effect=OSError("read-only filesystem")
+        ):
+            with caplog.at_level(logging.WARNING, logger="aqua.storage"):
+                returned = temp_storage.read_and_migrate_mnemonic(wallet, None)
+
+        assert returned == TEST_MNEMONIC
+        # logger.warning must mention the wallet name.
+        assert any("ro_plain" in rec.message for rec in caplog.records)
+        assert any(rec.levelno == logging.WARNING for rec in caplog.records)
+
+    def test_read_and_migrate_does_not_touch_default_user_or_untagged(self, temp_storage):
+        """Non-plain blobs are NOT rewritten by read_and_migrate_mnemonic."""
+        # default:1: blob — should pass through untouched.
+        default_blob = temp_storage.store_mnemonic(TEST_MNEMONIC, None)
+        w1 = WalletData(
+            name="def_w", network="mainnet", descriptor="ct(...)",
+            encrypted_mnemonic=default_blob,
+        )
+        temp_storage.save_wallet(w1)
+        assert temp_storage.read_and_migrate_mnemonic(w1, None) == TEST_MNEMONIC
+        assert temp_storage.load_wallet("def_w").encrypted_mnemonic == default_blob
+
+        # user: blob.
+        user_blob = temp_storage.store_mnemonic(TEST_MNEMONIC, "pw")
+        w2 = WalletData(
+            name="user_w", network="mainnet", descriptor="ct(...)",
+            encrypted_mnemonic=user_blob,
+        )
+        temp_storage.save_wallet(w2)
+        assert temp_storage.read_and_migrate_mnemonic(w2, "pw") == TEST_MNEMONIC
+        assert temp_storage.load_wallet("user_w").encrypted_mnemonic == user_blob
+
+        # untagged legacy.
+        untagged = _make_untagged_legacy_blob(temp_storage, TEST_MNEMONIC, "pw")
+        w3 = WalletData(
+            name="untagged_w", network="mainnet", descriptor="ct(...)",
+            encrypted_mnemonic=untagged,
+        )
+        temp_storage.save_wallet(w3)
+        assert temp_storage.read_and_migrate_mnemonic(w3, "pw") == TEST_MNEMONIC
+        assert temp_storage.load_wallet("untagged_w").encrypted_mnemonic == untagged
+
+    # --- End-to-end via WalletManager / BitcoinWalletManager -------------
+
+    def test_default_encrypted_wallet_signs_without_password(self, temp_storage):
+        """No-password import yields a wallet that loads signer with no password."""
+        from aqua.wallet import WalletManager
+
+        wm = WalletManager(storage=temp_storage)
+        wm.import_mnemonic(TEST_MNEMONIC, "default_signer", "mainnet")
+
+        # Drop cached signer to force the disk read path.
+        wm._signers.pop("default_signer", None)
+        loaded = wm.load_wallet("default_signer")
+        assert loaded.encrypted_mnemonic.startswith(f"default:{_DEFAULT_PWD_VERSION}:")
+        assert "default_signer" in wm._signers
+
+    def test_user_encrypted_wallet_still_requires_password(self, temp_storage):
+        """User-password wallets continue to need the password.
+
+        Contract: load_wallet without password silently skips signer caching
+        (legacy behavior), but any signing operation (``send``) must raise
+        ``ValueError("Password required ...")``. With the correct password,
+        both load and signing setup succeed.
+        """
+        from aqua.wallet import WalletManager
+
+        wm = WalletManager(storage=temp_storage)
+        wm.import_mnemonic(TEST_MNEMONIC, "user_signer", "mainnet", password="s3cret")
+        wm._signers.pop("user_signer", None)
+
+        # Without a password: signer is NOT loaded (legacy behavior preserved;
+        # load_wallet does not raise here, but the signer simply is not cached).
+        wm.load_wallet("user_signer")
+        assert "user_signer" not in wm._signers
+
+        # A signing operation without the password must raise.
+        with pytest.raises(ValueError, match="Password required"):
+            wm.send("user_signer", "lq1qbogus", 1000)
+
+        # With the correct password the signer loads.
+        wm.load_wallet("user_signer", password="s3cret")
+        assert "user_signer" in wm._signers
+
+    def test_bitcoin_send_migrates_plain_wallet(self, temp_storage):
+        """BitcoinWalletManager.send on a legacy plain: wallet migrates it on disk.
+
+        We intercept ``_get_wallet_with_signer`` to short-circuit the BDK
+        broadcast path; by that point ``read_and_migrate_mnemonic`` must have
+        already rewritten the on-disk blob to ``default:1:``.
+        """
+        from aqua.bitcoin import BitcoinWalletManager
+
+        # Build a plain: BTC-capable wallet directly via the storage layer.
+        # We do not call WalletManager.import_mnemonic (that path now produces
+        # default:1:), so we hand-roll the legacy state for this test.
+        legacy_blob = _make_plain_blob(TEST_MNEMONIC)
+        wallet = WalletData(
+            name="btc_plain",
+            network="mainnet",
+            descriptor="ct(...)",  # not exercised; bitcoin.py only uses btc_* fields
+            btc_descriptor="wpkh([deadbeef/84'/0'/0']xpub.../0/*)",
+            btc_change_descriptor="wpkh([deadbeef/84'/0'/0']xpub.../1/*)",
+            encrypted_mnemonic=legacy_blob,
+            watch_only=False,
+        )
+        temp_storage.save_wallet(wallet)
+
+        btc_manager = BitcoinWalletManager(storage=temp_storage)
+
+        # Short-circuit BDK after migration has already happened.
+        sentinel = RuntimeError("short-circuit after migration")
+        with patch.object(
+            btc_manager, "_get_wallet_with_signer", side_effect=sentinel
+        ):
+            with pytest.raises(RuntimeError, match="short-circuit after migration"):
+                btc_manager.send(
+                    wallet_name="btc_plain",
+                    address="bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+                    amount=1000,
+                )
+
+        # The on-disk blob must now be default:1: regardless of the short-circuit.
+        reloaded = temp_storage.load_wallet("btc_plain")
+        assert reloaded.encrypted_mnemonic.startswith(f"default:{_DEFAULT_PWD_VERSION}:")
+        assert temp_storage.retrieve_mnemonic(reloaded.encrypted_mnemonic, None) == TEST_MNEMONIC

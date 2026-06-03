@@ -30,8 +30,7 @@ from aqua.tools import (
 )
 from aqua.wallet import WalletManager
 
-# Test mnemonic (well-known, NOT real funds)
-TEST_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+from tests.conftest import TEST_MNEMONIC
 
 
 @pytest.fixture(autouse=True)
@@ -676,14 +675,14 @@ class TestWalletManagerInternals:
         isolated_manager.load_wallet("restore_test", password="mypass")
         assert "restore_test" in isolated_manager._signers
 
-    def test_send_no_password_uses_plaintext_mnemonic(self, isolated_manager):
-        """Wallet imported without password stores mnemonic as plaintext and can sign."""
+    def test_send_no_password_uses_default_encryption(self, isolated_manager):
+        """Wallet imported without password uses default encryption and can sign."""
         lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="no_sign")
         isolated_manager._signers.pop("no_sign", None)
         wallet = isolated_manager.storage.load_wallet("no_sign")
         assert wallet.encrypted_mnemonic is not None
-        assert wallet.encrypted_mnemonic.startswith("plain:")
-        assert not isolated_manager.storage.is_mnemonic_encrypted(wallet.encrypted_mnemonic)
+        assert wallet.encrypted_mnemonic.startswith("default:1:")
+        assert not isolated_manager.storage.requires_user_password(wallet.encrypted_mnemonic)
 
         isolated_manager.load_wallet("no_sign")
         assert "no_sign" in isolated_manager._signers

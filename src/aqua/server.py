@@ -24,6 +24,8 @@ from mcp.types import (
 )
 
 from . import __version__
+from .features import is_tool_enabled, load_config_with_merge  # noqa: E402
+from .storage import Config, Storage  # noqa: E402
 from .tools import TOOLS
 
 logging.basicConfig(level=logging.INFO)
@@ -471,7 +473,7 @@ TOOL_SCHEMAS = {
         },
     },
     "pix_receive": {
-        "description": "Mint a Pix charge (Brazil) that pays out DePix (BRL stablecoin on Liquid) to the named wallet's next address. Returns the Pix Copia e Cola string and a hosted QR image URL — the user pays from their banking app. Amount is in BRL CENTS (100 = R$1.00). Requires EULEN_API_TOKEN env var.",
+        "description": "Mint a Pix charge (Brazil) that pays out DePix (BRL stablecoin on Liquid) to the named wallet's next address. Returns the Pix Copia e Cola string and a hosted QR image URL — the user pays from their banking app. Amount is in BRL CENTS (100 = R$1.00). Eulen deducts a FLAT FEE of R$0,99 per operation (regardless of amount), so DePix received = amount_cents − 99. The response includes fee_cents, fee_brl, net_amount_cents and net_amount_brl so the user can see the expected net up-front. Requires EULEN_API_TOKEN env var.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -493,7 +495,7 @@ TOOL_SCHEMAS = {
         },
     },
     "pix_status": {
-        "description": "Check the status of a Pix → DePix deposit. Status values: pending, depix_sent, under_review, canceled, error, refunded, expired. Eulen delivers DePix automatically — no claim step.",
+        "description": "Check the status of a Pix → DePix deposit. Status values: pending, approved (Pix received, DePix in flight), depix_sent, under_review, canceled, error, refunded, expired. Eulen delivers DePix automatically — no claim step.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -509,7 +511,7 @@ TOOL_SCHEMAS = {
         "description": (
             "List the currencies Changelly supports (Changelly's own asset id format). "
             "Useful for discovery; the agentic-aqua surface only enables the curated "
-            "USDt-Liquid ↔ USDt-on-{ethereum,tron,bsc,solana,polygon,ton} pairs for "
+            "USDt-Liquid ↔ USDt-on-{ethereum,tron,bsc,solana,polygon} pairs for "
             "actual swaps."
         ),
         "inputSchema": {"type": "object", "properties": {}},
@@ -525,7 +527,7 @@ TOOL_SCHEMAS = {
             "properties": {
                 "external_network": {
                     "type": "string",
-                    "enum": ["ethereum", "tron", "bsc", "solana", "polygon", "ton"],
+                    "enum": ["ethereum", "tron", "bsc", "solana", "polygon"],
                     "description": "USDt network on the non-Liquid side",
                 },
                 "direction": {
@@ -552,7 +554,7 @@ TOOL_SCHEMAS = {
             "properties": {
                 "external_network": {
                     "type": "string",
-                    "enum": ["ethereum", "tron", "bsc", "solana", "polygon", "ton"],
+                    "enum": ["ethereum", "tron", "bsc", "solana", "polygon"],
                     "description": "Target USDt network",
                 },
                 "settle_address": {"type": "string", "description": "External chain address to receive USDt at"},
@@ -577,7 +579,7 @@ TOOL_SCHEMAS = {
             "properties": {
                 "external_network": {
                     "type": "string",
-                    "enum": ["ethereum", "tron", "bsc", "solana", "polygon", "ton"],
+                    "enum": ["ethereum", "tron", "bsc", "solana", "polygon"],
                     "description": "Source USDt network the external sender pays from",
                 },
                 "wallet_name": {"type": "string", "default": "default"},
@@ -941,7 +943,7 @@ TOOL_SCHEMAS = {
             "Send funds out via SideShift. Gets a fixed-rate quote, creates the shift, "
             "and broadcasts the deposit from the local wallet. Deposit chain MUST be "
             "'bitcoin' or 'liquid'. Both legs must be in the curated allowlist (USDt on "
-            "ethereum/tron/bsc/solana/polygon/ton/liquid, or BTC on bitcoin) — mirrors "
+            "ethereum/tron/bsc/solana/polygon/liquid, or BTC on bitcoin) — mirrors "
             "AQUA Flutter's supported pairs. Set SIDESHIFT_ALLOW_ALL_NETWORKS=1 to bypass. "
             "A refund address is set automatically (the wallet's own deposit-chain "
             "address). For non-L-BTC Liquid assets (e.g. USDt-Liquid), pass liquid_asset_id. "
@@ -967,7 +969,7 @@ TOOL_SCHEMAS = {
                     "type": "string",
                     "description": "Hex asset id; required when sending a non-L-BTC Liquid asset",
                 },
-                "settle_memo": {"type": "string", "description": "Required for memo networks (TON, BNB, etc.)"},
+                "settle_memo": {"type": "string", "description": "Required for memo networks (BNB, etc.)"},
                 "refund_memo": {"type": "string"},
                 "quote_id": {
                     "type": "string",
@@ -991,7 +993,7 @@ TOOL_SCHEMAS = {
             "Returns a deposit address on the deposit chain — the user (or external "
             "sender) sends to it from any wallet. Settle chain MUST be 'bitcoin' or "
             "'liquid'. Both legs must be in the curated allowlist (USDt on "
-            "ethereum/tron/bsc/solana/polygon/ton/liquid, or BTC on bitcoin) — mirrors "
+            "ethereum/tron/bsc/solana/polygon/liquid, or BTC on bitcoin) — mirrors "
             "AQUA Flutter's supported pairs. Set SIDESHIFT_ALLOW_ALL_NETWORKS=1 to bypass. "
             "STRONGLY RECOMMEND passing external_refund_address (the deposit-side "
             "sender's address) so a stuck shift can refund automatically."
@@ -1064,8 +1066,15 @@ TOOL_SCHEMAS = {
 }
 
 
-def create_server() -> Server:
-    """Create and configure the MCP server."""
+def create_server(config: Config | None = None) -> Server:
+    """Create and configure the MCP server.
+
+    If `config` is None, loads (and merges shipped defaults into) the user
+    config from `~/.aqua/config.json`. Tests can pass an explicit `Config` to
+    inject `enabled_tools` without touching the filesystem.
+    """
+    if config is None:
+        config = load_config_with_merge(Storage())
     server = Server(
         "agentic-aqua",
         instructions="""You are managing Bitcoin and Liquid Network cryptocurrency wallets.
@@ -1144,7 +1153,7 @@ PIX → DEPIX (Brazilian Real on-ramp via Eulen):
 
 CHANGELLY (custodial USDt cross-chain swaps via AQUA's Ankara proxy):
 - Use changelly_send when the user wants to send USDt-Liquid OUT to USDt on
-  another chain (Ethereum, Tron, BSC, Solana, Polygon, TON).
+  another chain (Ethereum, Tron, BSC, Solana, Polygon).
 - Use changelly_receive when the user wants to receive USDt-Liquid IN from
   USDt on another chain. Returns a deposit address on the source chain.
 - ALWAYS call changelly_quote first for sends so the user can confirm the
@@ -1205,7 +1214,7 @@ SIDESHIFT (custodial cross-chain swaps):
 - TRUST MODEL: SideShift is custodial. They take the deposit and send from
   their hot wallet. This is different from SideSwap (atomic on Liquid) and
   Lightning (Boltz submarine, atomic). Communicate this trade-off to the user.
-- Memo networks (TON, BNB Beacon, Stellar, etc.) require a memo on either
+- Memo networks (BNB Beacon, Stellar, etc.) require a memo on either
   the deposit or settle side — pass settle_memo / refund_memo when prompted.
 
 WATCH-ONLY WALLETS:
@@ -1877,13 +1886,14 @@ Please:
 1. Verify the EULEN_API_TOKEN environment variable is set. If not, tell me to obtain one from https://depix.info/#partners and stop here.
 2. Ask me how much I want to deposit, IN REAIS (e.g. "R$50"). Convert to cents (R$50 → 5000 cents) before calling pix_receive. Be explicit about the unit so I do not get a 100× error.
 3. Mention the practical first-time limit on Eulen is around R$500; offer to use a smaller amount if mine is higher.
-4. Call pix_receive(amount_cents=…, wallet_name='{wallet_name}').
-5. Show me BOTH:
+4. BEFORE calling pix_receive, tell me Eulen will deduct a FLAT FEE of R$0,99 from the amount I pay (independent of the amount), so I will receive `amount − R$0,99` in DePix. Confirm the amount with me knowing this.
+5. Call pix_receive(amount_cents=…, wallet_name='{wallet_name}').
+6. Show me BOTH:
    - The `qr_copy_paste` string (EMV BR-Code) — I can paste this into my banking app's "Pix Copia e Cola" field.
    - The `qr_image_url` — I can open this on my phone and scan the QR with my bank app.
-   Explain I only need to do ONE of those, not both.
-6. After I confirm I have paid, call pix_status(swap_id=…) and report the status. Re-check on request until status="depix_sent" (DePix delivered) or a terminal failure.
-7. When delivered, show the `blockchain_txid` (Liquid txid) so I can verify on a block explorer.""",
+   Explain I only need to do ONE of those, not both. Also surface `net_amount_brl` so I see the exact DePix I will receive after the R$0,99 fee.
+7. After I confirm I have paid, call pix_status(swap_id=…) and report the status. Re-check on request until status="depix_sent" (DePix delivered) or a terminal failure. Status "approved" is an intermediate step (Pix received, DePix in flight) — not a failure.
+8. When delivered, show the `blockchain_txid` (Liquid txid) so I can verify on a block explorer.""",
                         ),
                     )
                 ]
@@ -1905,7 +1915,7 @@ on-chain — make sure I understand this trade-off.
 
 Please:
 1. Show my Liquid balance (lw_balance) so I can see how much USDt-Liquid I have
-2. Ask me which target USDt chain (ethereum, tron, bsc, solana, polygon, ton)
+2. Ask me which target USDt chain (ethereum, tron, bsc, solana, polygon)
 3. Ask me for:
    - The destination address on that chain
    - The amount of USDt-Liquid to send (decimal, e.g. "100")
@@ -1941,7 +1951,7 @@ Liquid address from their hot wallet. Trust model: trust the company.
 
 Please:
 1. Ask me which source USDt chain the external sender will pay from
-   (ethereum, tron, bsc, solana, polygon, ton)
+   (ethereum, tron, bsc, solana, polygon)
 2. STRONGLY recommend providing an external_refund_address — the source
    chain address the external sender controls. Without it, a stuck order
    requires manual web UI intervention. Ask for it.
@@ -2037,7 +2047,7 @@ Please:
    - The deposit address on the source chain (this is what the external
      sender pays to)
    - deposit_min and deposit_max
-   - deposit_memo IF PRESENT (the source chain requires a memo, e.g. TON,
+   - deposit_memo IF PRESENT (the source chain requires a memo, e.g.
      Stellar, BNB Beacon — the sender MUST include it)
    - Where the funds will arrive in my wallet
 6. Tell me to use sideshift_status with the shift_id to poll progress""",
@@ -2263,11 +2273,27 @@ If you have:
 
         raise ValueError(f"Unknown resource: {uri}")
 
+    _make_handlers(server, config)
+
+    return server
+
+
+def _make_handlers(server: Server, config: Config) -> None:
+    """Register MCP `list_tools` / `call_tool` handlers with `config` captured by closure.
+
+    Disabled tools (per `is_tool_enabled(name, config)`) are excluded from
+    `list_tools` and `call_tool` returns the existing `Unknown tool: <name>`
+    text — byte-identical to a genuinely unknown tool name, so disabled and
+    nonexistent tools are indistinguishable from the wire.
+    """
+
     @server.list_tools()
     async def list_tools() -> list[Tool]:
         """List available tools."""
         tools = []
         for name, schema in TOOL_SCHEMAS.items():
+            if not is_tool_enabled(name, config):
+                continue
             tools.append(
                 Tool(
                     name=name,
@@ -2280,7 +2306,7 @@ If you have:
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         """Execute a tool."""
-        if name not in TOOLS:
+        if name not in TOOLS or not is_tool_enabled(name, config):
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
         try:
@@ -2306,8 +2332,6 @@ If you have:
                     text=json.dumps(error_result, indent=2),
                 )
             ]
-
-    return server
 
 
 async def run_server():  # pragma: no cover

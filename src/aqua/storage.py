@@ -2,10 +2,11 @@
 
 import base64
 import json
+import logging
 import os
 import re
 import shutil
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
@@ -14,11 +15,26 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
+logger = logging.getLogger(__name__)
+
 SALT_LENGTH = 16
 
 
 DEFAULT_DIR = Path.home() / ".aqua"
 SWAP_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+
+# Hardcoded default password used to encrypt mnemonics at rest when the user
+# does not supply one. This is *obfuscation, not security* — it defeats
+# plaintext-seed scanners but offers no protection against an attacker with
+# source-code access. Treat as stable. If ever rotated, keep historical values
+# and try them in order in retrieve_mnemonic (the `default:N:` version prefix
+# enables this without format ambiguity).
+_DEFAULT_MNEMONIC_PASSWORD = "Delphinus entropiam novit sed semen suum numquam revelat"
+
+# Version embedded in the `default:N:` prefix. Bump this if the
+# _DEFAULT_MNEMONIC_PASSWORD ever rotates. Both encode and decode reference this
+# constant so they cannot desync.
+_DEFAULT_PWD_VERSION = 1
 
 
 @dataclass
@@ -54,12 +70,34 @@ class Config:
     default_wallet: str = "default"
     electrum_url: Optional[str] = None
     auto_sync: bool = True
+    enabled_tools: dict[str, bool] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
+        data = {**data}
+        raw = data.get("enabled_tools", {}) or {}
+        if not isinstance(raw, dict):
+            logger.warning(
+                "enabled_tools must be an object mapping tool name -> bool; "
+                "got %s. Treating as empty.",
+                type(raw).__name__,
+            )
+            raw = {}
+        coerced: dict[str, bool] = {}
+        for k, v in raw.items():
+            if isinstance(k, str) and isinstance(v, bool):
+                coerced[k] = v
+            else:
+                logger.warning(
+                    "Dropping invalid enabled_tools entry %r=%r "
+                    "(expected str -> bool).",
+                    k,
+                    v,
+                )
+        data["enabled_tools"] = coerced
         return cls(**data)
 
 
@@ -145,28 +183,109 @@ class Storage:
         return f.decrypt(encrypted_data).decode()
 
     def store_mnemonic(self, mnemonic: str, password: Optional[str] = None) -> str:
-        """Store mnemonic, encrypting only when a password is provided.
+        """Store mnemonic, encrypting with user password or default password.
 
         NOTE: ``password`` is used exclusively to encrypt the mnemonic on disk.
         It is NOT used as a BIP39 passphrase — the derived seed/keys depend
         only on the mnemonic itself, so descriptors stay portable across
         wallets that accept the same mnemonic (AQUA, Blockstream Green, etc.).
+
+        When no password is supplied, the mnemonic is still encrypted using a
+        hardcoded default password (``default:N:`` prefix). This is
+        obfuscation, not security — it defeats automated plaintext-seed
+        scanners but does not protect against an attacker with source access.
         """
         if password:
-            return self.encrypt_mnemonic(mnemonic, password)
-        return "plain:" + base64.b64encode(mnemonic.encode()).decode()
+            return "user:" + self.encrypt_mnemonic(mnemonic, password)
+        return (
+            f"default:{_DEFAULT_PWD_VERSION}:"
+            + self.encrypt_mnemonic(mnemonic, _DEFAULT_MNEMONIC_PASSWORD)
+        )
 
     def retrieve_mnemonic(self, stored: str, password: Optional[str] = None) -> str:
-        """Retrieve mnemonic stored by store_mnemonic."""
+        """Retrieve mnemonic stored by store_mnemonic.
+
+        Recognizes four prefix formats:
+          * ``default:N:<blob>`` — encrypted with the hardcoded default
+            password at version ``N``. ``password`` is ignored.
+          * ``user:<blob>`` — encrypted with a user-supplied password.
+          * ``plain:<blob>`` — legacy base64-only blob (no password).
+          * untagged — legacy raw encrypted blob from a user password.
+        """
+        if stored.startswith("default:"):
+            # Parse "default:<version>:<blob>"
+            rest = stored[len("default:") :]
+            try:
+                version_str, blob = rest.split(":", 1)
+                version = int(version_str)
+            except ValueError as e:
+                raise ValueError(
+                    f"Malformed default-encrypted mnemonic prefix: {stored[:32]!r}"
+                ) from e
+            if version != _DEFAULT_PWD_VERSION:
+                raise ValueError(
+                    f"Unsupported default encryption version: {version}"
+                )
+            return self.decrypt_mnemonic(blob, _DEFAULT_MNEMONIC_PASSWORD)
+        if stored.startswith("user:"):
+            if not password:
+                raise ValueError("Password required to decrypt mnemonic")
+            return self.decrypt_mnemonic(stored[len("user:") :], password)
         if stored.startswith("plain:"):
-            return base64.b64decode(stored[6:]).decode()
+            return base64.b64decode(stored[len("plain:") :]).decode()
+        # Untagged legacy blob: assume user-password-encrypted.
         if not password:
             raise ValueError("Password required to decrypt mnemonic")
         return self.decrypt_mnemonic(stored, password)
 
-    def is_mnemonic_encrypted(self, stored: str) -> bool:
-        """Check whether a stored mnemonic requires a password to decrypt."""
-        return not stored.startswith("plain:")
+    def requires_user_password(self, stored: str) -> bool:
+        """Return True if decrypting ``stored`` needs a user-supplied password.
+
+        Returns True only for ``user:`` and untagged legacy blobs.
+        Returns False for ``default:`` (any version) and ``plain:`` prefixes.
+        """
+        if stored.startswith("default:") or stored.startswith("plain:"):
+            return False
+        # "user:" prefix and untagged legacy blobs require a password.
+        return True
+
+    def read_and_migrate_mnemonic(
+        self, wallet: WalletData, password: Optional[str] = None
+    ) -> str:
+        """Decrypt the wallet's mnemonic and lazily migrate ``plain:`` blobs.
+
+        Accepts an already-loaded ``WalletData`` (no redundant disk read).
+        If the stored blob uses the legacy ``plain:`` prefix, re-encrypt it
+        with the default password and atomically write it back. Write-back
+        failures are logged but never raised — the returned plaintext is
+        always correct so signing continues to work even on a read-only
+        filesystem.
+        """
+        if not wallet.encrypted_mnemonic:
+            raise ValueError(f"Wallet '{wallet.name}' has no stored mnemonic")
+        plaintext = self.retrieve_mnemonic(wallet.encrypted_mnemonic, password)
+        if wallet.encrypted_mnemonic.startswith("plain:"):
+            new_blob = self.store_mnemonic(plaintext)
+            try:
+                # Persist first via a temporary copy. Only mutate the caller's
+                # WalletData on success so the in-memory object never diverges
+                # from disk on a write failure.
+                self.save_wallet(replace(wallet, encrypted_mnemonic=new_blob))
+                wallet.encrypted_mnemonic = new_blob
+                logger.info(
+                    "Migrated wallet '%s' from plain to default encryption",
+                    wallet.name,
+                )
+            except OSError as e:
+                # Housekeeping fault tolerance: the read succeeded; only the
+                # optional re-write failed. Signing must not break on a
+                # read-only filesystem.
+                logger.warning(
+                    "Migration write-back failed for wallet '%s': %s",
+                    wallet.name,
+                    e,
+                )
+        return plaintext
 
     # Config operations
 
