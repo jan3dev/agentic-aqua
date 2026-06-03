@@ -246,9 +246,9 @@ class LightningManager:
                 invoice_amount,
             )
             raise ValueError(
-                "Esta invoice ya fue enviada antes a Boltz y ya existe un swap remoto para ella. "
-                "No parece que el código la esté intentando pagar dos veces en esta misma ejecución; "
-                "el problema es que Boltz ya la conoce de un intento previo."
+                "This invoice was already submitted to Boltz before and a remote swap already exists for it. "
+                "It does not look like the code is trying to pay it twice in this same execution; "
+                "the issue is that Boltz already knows it from a previous attempt."
             ) from e
         expected_amount = swap_resp["expectedAmount"]
         logger.info(
