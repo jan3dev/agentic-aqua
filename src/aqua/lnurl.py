@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .boltz import decode_bolt11_amount_sats
+from .bolt11 import decode_bolt11_amount_sats
 
 # Email-format regex (matches AQUA Flutter lnurl_provider.dart:14-17).
 _LN_ADDRESS_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")

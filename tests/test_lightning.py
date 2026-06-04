@@ -452,6 +452,49 @@ class TestLightningManagerSend:
 
         assert send_called
 
+    @patch("aqua.lightning.generate_keypair")
+    @patch.object(
+        type(get_manager()),
+        "get_balance",
+        return_value=[
+            Balance(
+                asset_id="policy_asset",
+                asset_name="L-BTC",
+                ticker="L-BTC",
+                amount=100000,
+            )
+        ],
+    )
+    @patch("aqua.lightning.decode_bolt11_amount_sats")
+    @patch("aqua.lightning.BoltzClient")
+    @patch("aqua.wallet.WalletManager.send")
+    def test_pay_invoice_accepts_uppercase_bolt11(
+        self,
+        mock_send,
+        mock_boltz,
+        mock_decode,
+        mock_get_balance,
+        mock_keygen,
+        test_wallet,
+    ):
+        """Uppercase BOLT11 invoices are accepted and lowercased before reaching Boltz."""
+        mock_send.return_value = "lockup_txid_123"
+        mock_keygen.return_value = ("privkey", "pubkey")
+
+        manager = get_lightning_manager()
+
+        mock_boltz_client = MagicMock()
+        mock_boltz.return_value = mock_boltz_client
+        mock_boltz_client.get_submarine_pairs.return_value = MOCK_BOLTZ_SUBMARINE_PAIRS
+        mock_boltz_client.create_submarine_swap.return_value = MOCK_BOLTZ_SWAP_RESPONSE
+        mock_decode.return_value = 50000
+
+        swap = manager.pay_invoice(VALID_INVOICE_MAINNET.upper(), "default")
+
+        assert swap.swap_id == "boltz_swap_123"
+        called_invoice = mock_boltz_client.create_submarine_swap.call_args.args[0]
+        assert called_invoice == VALID_INVOICE_MAINNET
+
 
 class TestLightningManagerSendLNAddress:
     """Tests for Lightning Address routing in LightningManager.pay_invoice()."""

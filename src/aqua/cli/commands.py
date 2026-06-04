@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+
 import click
 
 from ..features import (
@@ -13,22 +15,17 @@ from ..storage import Config
 from ..tools import unified_balance
 from .output import run_tool
 
-# Snapshot of each subgroup's `.commands` dict the first time
-# `register_commands` is invoked. Click subgroups are module-level singletons
-# populated by `@group.command()` decorators at import time, so deleting
-# entries from `group.commands` mutates that singleton permanently. The
-# snapshot lets us restore each subgroup before applying the disabled-filter
-# on every subsequent call (tests rely on this for isolation).
-_ORIGINAL_GROUP_COMMANDS: dict[str, dict[str, click.Command]] = {}
-
 
 def register_commands(cli: click.Group, config: Config | None = None) -> None:
     """Register all subcommand groups and top-level commands on the root CLI group.
 
-    Re-runnable: clears `cli.commands` and restores each subgroup's `.commands`
-    from a one-time snapshot, then strips entries for any MCP tool disabled
-    in `config.enabled_tools`. Tests pass a fresh `Config` per case for
-    deterministic gating.
+    Re-runnable and side-effect-free: clears `cli.commands`, then for each
+    subgroup registers a shallow copy whose `.commands` omits any entry mapped
+    to an MCP tool disabled in `config.enabled_tools`. The module-level group
+    singletons (populated by `@group.command()` decorators at import time) are
+    never mutated, so repeated calls with different configs — including the
+    import-time call on the real `cli` — cannot leak gating state across each
+    other. Tests pass a fresh `Config` per case for deterministic gating.
     """
     if config is None:
         config = load_config_with_merge()
@@ -37,6 +34,7 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
     from .changelly import changelly
     from .lightning import lightning
     from .liquid import liquid
+    from .qr import qr
     from .serve import serve
     from .sideshift import sideshift
     from .sideswap import sideswap
@@ -53,28 +51,29 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
         ("changelly", changelly),
         ("sideshift", sideshift),
         ("sideswap", sideswap),
+        ("qr", qr),
     ]
 
-    # First call: snapshot every subgroup's `.commands` so subsequent calls
-    # can restore before filtering.
     for group_name, group in groups:
-        if group_name not in _ORIGINAL_GROUP_COMMANDS:
-            _ORIGINAL_GROUP_COMMANDS[group_name] = dict(group.commands)
-
-    for group_name, group in groups:
-        # Restore from snapshot, then strip disabled.
-        group.commands = dict(_ORIGINAL_GROUP_COMMANDS[group_name])
-        for cmd_name in list(group.commands):
-            mcp_name = CLI_COMMAND_TO_MCP_TOOL.get((group_name, cmd_name))
-            if mcp_name is not None and not is_tool_enabled(mcp_name, config):
-                del group.commands[cmd_name]
+        # Build the enabled-command subset WITHOUT mutating the shared singleton
+        # `group`: an entry is kept if it has no MCP mapping or its mapped tool
+        # is enabled. Register a shallow copy carrying the filtered dict.
+        enabled_commands = {
+            cmd_name: cmd
+            for cmd_name, cmd in group.commands.items()
+            if (mcp_name := CLI_COMMAND_TO_MCP_TOOL.get((group_name, cmd_name))) is None
+            or is_tool_enabled(mcp_name, config)
+        }
         # Skip the group entirely if every command in it was disabled —
         # otherwise an empty group label still appears in `aqua --help`.
-        if not group.commands:
+        if not enabled_commands:
             continue
-        cli.add_command(group)
+        registered = copy.copy(group)
+        registered.commands = enabled_commands
+        cli.add_command(registered)
 
     # Top-level commands. `serve` is CLI-only (no MCP twin) — always register.
+    # `qr` is gated as a group above (its `decode` subcommand maps to `qr_decode`).
     cli.add_command(serve)
 
     # `balance` is gated by `unified_balance`'s flag.

@@ -459,6 +459,19 @@ TOOL_SCHEMAS = {
             "required": ["swap_id"],
         },
     },
+    "lightning_decode": {
+        "description": "Decode a BOLT11 Lightning invoice without paying it. Returns amount_sats (null for zero-amount invoices), description/message, and expiry_seconds.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "invoice": {
+                    "type": "string",
+                    "description": "BOLT11 Lightning invoice string (lnbc... for mainnet, lntb... for testnet)",
+                },
+            },
+            "required": ["invoice"],
+        },
+    },
     "pix_receive": {
         "description": "Mint a Pix charge (Brazil) that pays out DePix (BRL stablecoin on Liquid) to the named wallet's next address. Returns the Pix Copia e Cola string and a hosted QR image URL — the user pays from their banking app. Amount is in BRL CENTS (100 = R$1.00). Eulen deducts a FLAT FEE of R$0,99 per operation (regardless of amount), so DePix received = amount_cents − 99. The response includes fee_cents, fee_brl, net_amount_cents and net_amount_brl so the user can see the expected net up-front. Requires EULEN_API_TOKEN env var.",
         "inputSchema": {
@@ -1035,6 +1048,19 @@ TOOL_SCHEMAS = {
                 "to_network": {"type": "string"},
             },
             "required": ["from_coin", "from_network", "to_coin", "to_network"],
+        },
+    },
+    "qr_decode": {
+        "description": "Decode a QR code from an image file and return the raw string content. Supports Bitcoin addresses, Liquid addresses, Lightning invoices (BOLT11), and Lightning addresses.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image_path": {
+                    "type": "string",
+                    "description": "Absolute path to the image file containing the QR code (PNG, JPG, WEBP supported)",
+                }
+            },
+            "required": ["image_path"],
         },
     },
 }

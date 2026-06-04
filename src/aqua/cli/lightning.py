@@ -3,6 +3,7 @@
 import click
 
 from ..tools import (
+    lightning_decode,
     lightning_receive,
     lightning_send,
     lightning_transaction_status,
@@ -110,3 +111,11 @@ def send(ctx, invoice, ln_address, amount_sats, wallet_name, password_stdin):
 def status(ctx, swap_id):
     """Check the status of a Lightning swap (send or receive)."""
     run_tool(ctx, lambda: lightning_transaction_status(swap_id))
+
+
+@lightning.command("decode")
+@click.option("--invoice", required=True, help="BOLT11 invoice string (lnbc.../lntb...).")
+@click.pass_obj
+def decode(ctx, invoice):
+    """Decode a BOLT11 invoice without paying it (shows amount, description, expiry)."""
+    run_tool(ctx, lambda: lightning_decode(invoice=invoice))

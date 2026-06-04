@@ -719,6 +719,8 @@ class TestToolRegistry:
             "lightning_receive",
             "lightning_send",
             "lightning_transaction_status",
+            "lightning_decode",
+            "qr_decode",
             "pix_receive",
             "pix_status",
             "delete_wallet",

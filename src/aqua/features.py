@@ -83,6 +83,7 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("lightning", "receive"): "lightning_receive",
     ("lightning", "send"): "lightning_send",
     ("lightning", "status"): "lightning_transaction_status",
+    ("lightning", "decode"): "lightning_decode",
 
     # changelly group (cli/changelly.py)
     ("changelly", "currencies"): "changelly_list_currencies",
@@ -111,6 +112,9 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("sideswap", "quote"): "sideswap_quote",
     ("sideswap", "swap"): "sideswap_execute_swap",
     ("sideswap", "swap-status"): "sideswap_swap_status",
+
+    # qr group (cli/qr.py)
+    ("qr", "decode"): "qr_decode",
 }
 
 

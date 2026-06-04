@@ -10,6 +10,8 @@ from typing import Any
 
 from .assets import MAINNET_ASSETS, TESTNET_ASSETS, resolve_asset_name
 from .bitcoin import BitcoinWalletManager
+from .bolt11 import decode_bolt11_fields
+from .qr import decode_qr
 from .wallet import WalletManager
 
 logger = logging.getLogger(__name__)
@@ -859,6 +861,19 @@ def lightning_transaction_status(swap_id: str) -> dict[str, Any]:
     """
     manager = get_lightning_manager()
     return manager.get_swap_status(swap_id)
+
+
+def lightning_decode(invoice: str) -> dict[str, Any]:
+    """Decode a BOLT11 Lightning invoice without paying it.
+
+    Returns the amount in satoshis, description/message, and expiry.
+    """
+    fields = decode_bolt11_fields(invoice)
+    return {
+        "amount_sats": fields["amount_sats"],
+        "description": fields["description"],
+        "expiry_seconds": fields["expiry"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1722,6 +1737,12 @@ def sideswap_swap_status(order_id: str) -> dict[str, Any]:
     return manager.status(order_id)
 
 
+def qr_decode(image_path: str) -> dict[str, Any]:
+    """Decode a QR code from an image file and return the raw string content."""
+    content = decode_qr(image_path)
+    return {"content": content}
+
+
 # Tool registry for MCP
 TOOLS = {
     "lw_generate_mnemonic": lw_generate_mnemonic,
@@ -1747,6 +1768,7 @@ TOOLS = {
     "lightning_receive": lightning_receive,
     "lightning_send": lightning_send,
     "lightning_transaction_status": lightning_transaction_status,
+    "lightning_decode": lightning_decode,
     "pix_receive": pix_receive,
     "pix_status": pix_status,
     "changelly_list_currencies": changelly_list_currencies,
@@ -1771,4 +1793,5 @@ TOOLS = {
     "sideswap_quote": sideswap_quote,
     "sideswap_execute_swap": sideswap_execute_swap,
     "sideswap_swap_status": sideswap_swap_status,
+    "qr_decode": qr_decode,
 }

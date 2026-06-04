@@ -1,10 +1,12 @@
 """Lightning abstraction layer for unified send/receive interface."""
 
+import logging
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Optional
 
 from .ankara import AnkaraClient
+from .bolt11 import decode_bolt11_amount_sats
 from .boltz import (
     MAX_SWAP_AMOUNT_SATS as BOLTZ_MAX_SATS,
 )
@@ -13,10 +15,12 @@ from .boltz import (
 )
 from .boltz import (
     BoltzClient,
-    decode_bolt11_amount_sats,
+    BoltzSwapAlreadyExistsError,
     generate_keypair,
 )
 from .lnurl import is_lightning_address, resolve_lightning_address
+
+logger = logging.getLogger(__name__)
 
 # Boltz API status string -> local lifecycle status (pending | processing | completed | failed)
 _BOLTZ_STATUS_MAP = {
@@ -176,6 +180,8 @@ class LightningManager:
                     f"({BOLTZ_MIN_SATS}-{BOLTZ_MAX_SATS} sats)"
                 )
             invoice = resolve_lightning_address(invoice, amount_sats)
+        else:
+            invoice = invoice.strip().lower()
 
         valid_prefixes = ("lnbc", "lntb")
         if not invoice or not any(invoice.startswith(p) for p in valid_prefixes):
@@ -216,17 +222,51 @@ class LightningManager:
                 f"Invoice amount {invoice_amount} sats exceeds maximum ({BOLTZ_MAX_SATS} sats)"
             )
         client = BoltzClient(network=network)
+        logger.debug(
+            "lightning pay_invoice start wallet=%s network=%s invoice_amount=%s amount_override=%s",
+            wallet_name,
+            network,
+            invoice_amount,
+            amount_sats,
+        )
         pairs = client.get_submarine_pairs()
         pair = pairs.get("L-BTC", {}).get("BTC")
+        logger.debug("Boltz pairs lookup network=%s pair_found=%s pair=%s", network, bool(pair), pair)
         if not pair:
             raise ValueError("L-BTC/BTC pair not available on Boltz")
 
         refund_privkey, refund_pubkey = generate_keypair()
-        swap_resp = client.create_submarine_swap(invoice, refund_pubkey)
+        logger.debug("Generated refund public key for Boltz swap wallet=%s", wallet_name)
+        try:
+            swap_resp = client.create_submarine_swap(invoice, refund_pubkey)
+        except BoltzSwapAlreadyExistsError as e:
+            logger.warning(
+                "Boltz reported duplicate invoice submission wallet=%s invoice_amount=%s",
+                wallet_name,
+                invoice_amount,
+            )
+            raise ValueError(
+                "This invoice was already submitted to Boltz before and a remote swap already exists for it. "
+                "It does not look like the code is trying to pay it twice in this same execution; "
+                "the issue is that Boltz already knows it from a previous attempt."
+            ) from e
         expected_amount = swap_resp["expectedAmount"]
+        logger.debug(
+            "Boltz swap created id=%s expected_amount=%s timeout_block_height=%s",
+            swap_resp.get("id"),
+            expected_amount,
+            swap_resp.get("timeoutBlockHeight"),
+        )
 
         balances = self.wallet_manager.get_balance(wallet_name)
         lbtc_balance = next((b.amount for b in balances if b.ticker == "L-BTC"), 0)
+        logger.debug(
+            "Wallet balance check wallet=%s lbtc_balance=%s expected_amount=%s invoice_amount=%s",
+            wallet_name,
+            lbtc_balance,
+            expected_amount,
+            invoice_amount,
+        )
         if lbtc_balance < expected_amount:
             raise ValueError(
                 f"Insufficient L-BTC balance: have {lbtc_balance} sats, "
@@ -249,9 +289,16 @@ class LightningManager:
         )
         self.storage.save_lightning_swap(swap)
 
+        logger.debug(
+            "Sending L-BTC lockup tx wallet=%s address=%s amount=%s",
+            wallet_name,
+            swap_resp.get("address"),
+            expected_amount,
+        )
         lockup_txid = self.wallet_manager.send(
             wallet_name, swap_resp["address"], expected_amount, password=password
         )
+        logger.debug("Lockup tx sent wallet=%s txid=%s", wallet_name, lockup_txid)
 
         swap.lockup_txid = lockup_txid
         swap.status = "processing"
