@@ -40,18 +40,7 @@ SIGNER_MNEMONIC=${SIGNER_MNEMONIC}
 
 ## Section A — Send USDt-Liquid → USDt-Polygon
 
-### 2. Resolve the Liquid USDt Asset ID
-
-```
-What is the asset_id of USDt on Liquid mainnet?
-```
-
-**Expected behavior:**
-- Invokes `lw_list_assets(network="mainnet")` and surfaces the USDt asset_id (we will reuse it as `<USDT_LIQUID_ID>`)
-
----
-
-### 3. Pair Info and Quote
+### 2. Pair Info and Quote
 
 ```
 Get the SideShift pair info and a fixed-rate quote to send ${SIDESHIFT_USDT_AMOUNT} USDt from Liquid to USDt on Polygon.
@@ -64,21 +53,20 @@ Get the SideShift pair info and a fixed-rate quote to send ${SIDESHIFT_USDT_AMOU
 
 ---
 
-### 4. Execute the Send
+### 3. Execute the Send
 
 ```
-Execute the SideShift send to ${SIDESHIFT_USDT_POLYGON_DEST} using the previous quote id and the Liquid USDt asset_id I just got.
+Execute the SideShift send to ${SIDESHIFT_USDT_POLYGON_DEST} using the previous quote id.
 ```
 
 **Expected behavior:**
-- Invokes `sideshift_send(deposit_coin="USDT", deposit_network="liquid", settle_coin="USDT", settle_network="polygon", settle_address="${SIDESHIFT_USDT_POLYGON_DEST}", deposit_amount="${SIDESHIFT_USDT_AMOUNT}", liquid_asset_id="<USDT_LIQUID_ID>", wallet_name="prompt_wallet_<DATETIME>", quote_id="<QUOTE_ID>")`
+- Invokes `sideshift_send(deposit_coin="USDT", deposit_network="liquid", settle_coin="USDT", settle_network="polygon", settle_address="${SIDESHIFT_USDT_POLYGON_DEST}", deposit_amount="${SIDESHIFT_USDT_AMOUNT}", wallet_name="prompt_wallet_<DATETIME>", quote_id="<QUOTE_ID>")` — **no `liquid_asset_id` needed**, auto-resolved from `deposit_coin`
 - Returns `shift_id`, `deposit_hash` (Liquid txid), `deposit_address`, `deposit_amount`, `settle_amount`, `rate`, `status`
 - Liquid `deposit_hash` is verifiable on `https://blockstream.info/liquid/tx/<txid>`
-- If the agent forgets `liquid_asset_id`, the call raises `ValueError` (issue #50). Re-invoke with the asset ID.
 
 ---
 
-### 5. Track Shift Status
+### 4. Track Shift Status
 
 ```
 Check the status of SideShift shift <SHIFT_ID>.
@@ -94,7 +82,7 @@ Check the status of SideShift shift <SHIFT_ID>.
 
 ## Section B — Receive USDt-Polygon → USDt-Liquid
 
-### 6. Create Receive Shift
+### 5. Create Receive Shift
 
 ```
 Create a SideShift to receive USDt-Liquid into my wallet from an external USDt-Polygon sender. Use ${EXTERNAL_USDT_POLYGON_REFUND} as the external refund address.
@@ -106,13 +94,13 @@ Create a SideShift to receive USDt-Liquid into my wallet from an external USDt-P
 
 ---
 
-### 7. (Manual) Send USDt-Polygon to the Deposit Address
+### 6. (Manual) Send USDt-Polygon to the Deposit Address
 
 The tester now sends a small amount of USDt-Polygon (within `deposit_min`/`deposit_max`) from an external wallet to the returned `deposit_address`. No MCP action required for this step.
 
 ---
 
-### 8. Confirm Receive Settled
+### 7. Confirm Receive Settled
 
 ```
 What is the status of shift <SHIFT_ID>?
@@ -126,6 +114,4 @@ What is the status of shift <SHIFT_ID>?
 
 ## Notes / Known Issues
 
-- **Issue #50**: `sideshift_send` does not auto-resolve `liquid_asset_id` for non-L-BTC Liquid assets. Step #4 documents the workaround.
-- **Issue #41** tracks this manual QA pass.
 - **Out of scope here**: L-BTC ↔ BTC mainchain (use SideSwap peg-in/peg-out) and any BTC ↔ USDt flows (also fall outside the curated SideShift scope for AQUA — the allowlist permits them but they are not the supported product path).

@@ -8,7 +8,7 @@ import urllib.request
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from .assets import MAINNET_ASSETS, TESTNET_ASSETS, resolve_asset_name
+from .assets import MAINNET_ASSETS, TESTNET_ASSETS, resolve_asset_name, resolve_liquid_asset_id
 from .bitcoin import BitcoinWalletManager
 from .bolt11 import decode_bolt11_fields
 from .qr import decode_qr
@@ -1249,9 +1249,11 @@ def sideshift_send(
         deposit_amount / settle_amount: provide exactly one, decimal strings
         wallet_name: local wallet to sign with
         password: mnemonic decryption password (if encrypted)
-        liquid_asset_id: required when deposit is a non-L-BTC Liquid asset
-            (e.g. USDt-Liquid: pass the asset id hex)
-        settle_memo / refund_memo: required for memo networks (BNB, etc.)
+        liquid_asset_id: optional hex asset id override. When omitted and
+            depositing a non-L-BTC Liquid asset, auto-resolved from
+            `deposit_coin` against the known Liquid asset registry
+            (USDt, DePix, JPYS, EURx, MEX). Pass to override the registry.
+        settle_memo / refund_memo: required for memo networks (TON, BNB, etc.)
         quote_id: optional fixed-rate quote id from a prior `sideshift_quote`
             call. Pass `preview["id"]` after the user confirms the preview to
             ensure the shift executes at the rate the user just saw. Without
@@ -1262,6 +1264,9 @@ def sideshift_send(
         shift_id, deposit_hash (txid we broadcast), deposit_address,
         deposit_amount, settle_amount, rate, status, expires_at
     """
+    resolved_asset_id = resolve_liquid_asset_id(
+        deposit_coin, deposit_network, explicit_id=liquid_asset_id,
+    )
     shift = get_sideshift_manager().send_shift(
         deposit_coin=deposit_coin,
         deposit_network=deposit_network,
@@ -1272,7 +1277,7 @@ def sideshift_send(
         settle_amount=settle_amount,
         wallet_name=wallet_name,
         password=password,
-        liquid_asset_id=liquid_asset_id,
+        liquid_asset_id=resolved_asset_id,
         settle_memo=settle_memo,
         refund_memo=refund_memo,
         quote_id=quote_id,

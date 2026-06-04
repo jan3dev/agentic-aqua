@@ -946,8 +946,11 @@ TOOL_SCHEMAS = {
             "ethereum/tron/bsc/solana/polygon/liquid, or BTC on bitcoin) — mirrors "
             "AQUA Flutter's supported pairs. Set SIDESHIFT_ALLOW_ALL_NETWORKS=1 to bypass. "
             "A refund address is set automatically (the wallet's own deposit-chain "
-            "address). For non-L-BTC Liquid assets (e.g. USDt-Liquid), pass liquid_asset_id. "
-            "ALWAYS call sideshift_quote first and confirm the price with the user."
+            "address). For non-L-BTC Liquid assets (e.g. USDt-Liquid), the Liquid "
+            "asset_id is auto-resolved from `deposit_coin` against the known asset "
+            "registry — no need to look it up first. Pass `liquid_asset_id` only to "
+            "override the registry. ALWAYS call sideshift_quote first and confirm the "
+            "price with the user."
         ),
         "inputSchema": {
             "type": "object",
@@ -967,7 +970,12 @@ TOOL_SCHEMAS = {
                 "password": {"type": "string", "description": "Password to decrypt mnemonic (if encrypted)"},
                 "liquid_asset_id": {
                     "type": "string",
-                    "description": "Hex asset id; required when sending a non-L-BTC Liquid asset",
+                    "description": (
+                        "Optional hex asset id. When omitted and depositing a non-L-BTC "
+                        "Liquid asset, it's auto-resolved from `deposit_coin` against the "
+                        "known Liquid asset registry (USDt, DePix, JPYS, EURx, MEX). Pass "
+                        "explicitly only to override the registry."
+                    ),
                 },
                 "settle_memo": {"type": "string", "description": "Required for memo networks (BNB, etc.)"},
                 "refund_memo": {"type": "string"},
@@ -2004,15 +2012,15 @@ Please:
    - Quote rate, expires in ~15 min
 8. Ask for explicit confirmation
 9. If wallet is password-encrypted, ask me for the password
-10. For non-L-BTC Liquid assets (USDt-Liquid, etc.), look up the asset_id
-    from lw_list_assets and pass liquid_asset_id when calling sideshift_send
-11. Call sideshift_send with the same parameters AND pass quote_id from the
+10. Call sideshift_send with the same parameters AND pass quote_id from the
     quote you just showed me so the shift executes at the rate I confirmed
-    (omit quote_id and a fresh quote is fetched, which may move). This
-    creates the shift and broadcasts the deposit from my wallet
-12. Show me shift_id + deposit_hash + the SideShift order URL
+    (omit quote_id and a fresh quote is fetched, which may move). For
+    non-L-BTC Liquid assets (USDt-Liquid, etc.) you do NOT need to pass
+    liquid_asset_id — sideshift_send auto-resolves it from deposit_coin.
+    This creates the shift and broadcasts the deposit from my wallet
+11. Show me shift_id + deposit_hash + the SideShift order URL
     (https://sideshift.ai/orders/<shift_id>)
-13. Tell me to use sideshift_status with the shift_id to track progress""",
+12. Tell me to use sideshift_status with the shift_id to track progress""",
                         ),
                     )
                 ]

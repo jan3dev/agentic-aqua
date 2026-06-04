@@ -1316,3 +1316,199 @@ class TestManagerStatus:
         assert "warning" in result
         # Status unchanged
         assert result["status"] == "waiting"
+
+    @patch("aqua.sideshift.urllib.request.urlopen")
+    def test_status_failed_broadcast_reported_as_terminal(
+        self, mock_urlopen, manager_setup
+    ):
+        # Regression: when send_shift sets shift.status = "failed" after a
+        # broadcast failure, status() must report the shift as terminal.
+        # "failed" is in _FINAL_STATUSES / _FAILED_STATUSES, so the helpers
+        # correctly return is_failed=True / is_final=True even when the
+        # remote refresh is unavailable and we fall back to the local status.
+        mgr, wm, _, storage = manager_setup
+
+        # Set up the two network calls: quote + create-shift
+        mock_urlopen.side_effect = [
+            _mock_response({"id": "q_fail", "depositAmount": "100",
+                            "settleAmount": "99.5", "rate": "0.995"}),
+            _mock_response({
+                "id": "shift_failed_broadcast",
+                "depositAddress": "lq1qdeposit",
+                "depositAmount": "100",
+                "depositCoin": "USDT",
+                "depositNetwork": "liquid",
+                "settleCoin": "USDT",
+                "settleNetwork": "tron",
+                "status": "waiting",
+            }),
+        ]
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("broadcast failed")
+
+        wm.send = boom
+
+        with pytest.raises(RuntimeError):
+            mgr.send_shift(
+                deposit_coin="usdt",
+                deposit_network="liquid",
+                settle_coin="usdt",
+                settle_network="tron",
+                settle_address="TXYZ",
+                deposit_amount="100",
+                wallet_name="default",
+                liquid_asset_id=USDT_LIQUID,
+            )
+
+        # The persisted shift has status="failed" — but status() will attempt to
+        # refresh from the remote.  We simulate the remote also being unavailable
+        # so it falls back to the local persisted status.
+        mock_urlopen.side_effect = urllib.error.URLError("remote unavailable")
+
+        result = mgr.status("shift_failed_broadcast")
+        # The remote refresh failed, so status() fell back to the local
+        # persisted status ("failed") and surfaced a warning.
+        assert "warning" in result
+        assert result["status"] == "failed", "shift should have status 'failed'"
+        # "failed" is terminal: a broadcast failure is reported as such by
+        # the helpers, so the caller can route the user to refund/retry.
+        assert result["is_failed"] is True
+        assert result["is_final"] is True
+        assert result["is_success"] is False
+
+
+# ---------------------------------------------------------------------------
+# Tools-layer (MCP entrypoint) tests for auto-resolution of liquid_asset_id
+# ---------------------------------------------------------------------------
+
+
+class TestToolsSideShiftSendAutoResolve:
+    """Verify the MCP tool layer auto-resolves liquid_asset_id from deposit_coin.
+
+    These tests target `aqua.tools.sideshift_send` directly (the function the
+    MCP server dispatches to), bypassing the manager fixture so we can isolate
+    the helper-resolution hop. Patches `get_sideshift_manager` so the test
+    doesn't touch real wallets or HTTP.
+    """
+
+    def _fake_manager(self):
+        """Build a manager mock whose send_shift records its kwargs and
+        returns a minimal SideShiftShift to satisfy `.to_dict()`."""
+        fake = MagicMock()
+        fake.send_shift.return_value = SideShiftShift(
+            shift_id="shift_test",
+            shift_type="fixed",
+            direction="send",
+            deposit_coin="USDT",
+            deposit_network="liquid",
+            settle_coin="USDT",
+            settle_network="tron",
+            settle_address="TXYZ",
+            deposit_address="lq1qdeposit",
+            refund_address="lq1qrefund",
+            wallet_name="default",
+            status="waiting",
+            created_at="2026-05-08T12:00:00+00:00",
+        )
+        return fake
+
+    @patch("aqua.tools.get_sideshift_manager")
+    def test_usdt_liquid_auto_resolves_asset_id(self, mock_get_mgr):
+        from aqua import tools
+        fake = self._fake_manager()
+        mock_get_mgr.return_value = fake
+
+        tools.sideshift_send(
+            deposit_coin="usdt",
+            deposit_network="liquid",
+            settle_coin="usdt",
+            settle_network="tron",
+            settle_address="TXYZ",
+            deposit_amount="12",
+        )
+
+        fake.send_shift.assert_called_once()
+        kwargs = fake.send_shift.call_args.kwargs
+        # The headline behavior: caller passed no liquid_asset_id, but the
+        # manager receives the USDt hex resolved from the ticker.
+        assert kwargs["liquid_asset_id"] == USDT_LIQUID
+
+    @patch("aqua.tools.get_sideshift_manager")
+    def test_explicit_liquid_asset_id_passes_through(self, mock_get_mgr):
+        from aqua import tools
+        fake = self._fake_manager()
+        mock_get_mgr.return_value = fake
+
+        custom = "deadbeef" * 8
+        tools.sideshift_send(
+            deposit_coin="usdt",
+            deposit_network="liquid",
+            settle_coin="usdt",
+            settle_network="tron",
+            settle_address="TXYZ",
+            deposit_amount="12",
+            liquid_asset_id=custom,
+        )
+        kwargs = fake.send_shift.call_args.kwargs
+        # Power-user override survives the helper.
+        assert kwargs["liquid_asset_id"] == custom
+
+    @patch("aqua.tools.get_sideshift_manager")
+    def test_btc_liquid_passes_none(self, mock_get_mgr):
+        """L-BTC depositing on Liquid: helper returns None so the wallet's
+        send path defaults to the policy asset."""
+        from aqua import tools
+        fake = self._fake_manager()
+        mock_get_mgr.return_value = fake
+
+        tools.sideshift_send(
+            deposit_coin="btc",
+            deposit_network="liquid",
+            settle_coin="usdt",
+            settle_network="tron",
+            settle_address="TXYZ",
+            deposit_amount="0.001",
+        )
+        kwargs = fake.send_shift.call_args.kwargs
+        assert kwargs["liquid_asset_id"] is None
+
+    @patch("aqua.tools.get_sideshift_manager")
+    def test_bitcoin_network_passes_none(self, mock_get_mgr):
+        """BTC mainchain: no asset id concept; helper short-circuits to None."""
+        from aqua import tools
+        fake = self._fake_manager()
+        mock_get_mgr.return_value = fake
+
+        tools.sideshift_send(
+            deposit_coin="btc",
+            deposit_network="bitcoin",
+            settle_coin="usdt",
+            settle_network="tron",
+            settle_address="TXYZ",
+            deposit_amount="0.001",
+        )
+        kwargs = fake.send_shift.call_args.kwargs
+        assert kwargs["liquid_asset_id"] is None
+
+    @patch("aqua.tools.get_sideshift_manager")
+    def test_unknown_liquid_ticker_raises_before_contacting_manager(
+        self, mock_get_mgr,
+    ):
+        """The helper must raise BEFORE we contact SideShift / sign — no
+        orphan custodial order, no half-broadcast deposit."""
+        from aqua import tools
+        fake = self._fake_manager()
+        mock_get_mgr.return_value = fake
+
+        with pytest.raises(ValueError, match="Unknown Liquid asset ticker"):
+            tools.sideshift_send(
+                deposit_coin="NOTAREAL",
+                deposit_network="liquid",
+                settle_coin="usdt",
+                settle_network="tron",
+                settle_address="TXYZ",
+                deposit_amount="12",
+            )
+        # The manager must not have been called at all.
+        fake.send_shift.assert_not_called()
