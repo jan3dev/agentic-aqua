@@ -9,8 +9,11 @@ import pytest
 
 from aqua.bitcoin import BitcoinWalletManager
 from aqua.storage import Storage, WalletData
+from aqua.qr import decode_qr
 from aqua.tools import (
+    _attach_deposit_qr,
     _manager,
+    btc_address,
     btc_export_descriptor,
     btc_import_descriptor,
     changelly_send,
@@ -269,6 +272,118 @@ class TestAddress:
         """Address request for non-existent wallet raises."""  # Significance: 4
         with pytest.raises(ValueError, match="not found"):
             lw_address(wallet_name="nope")
+
+
+# ---------------------------------------------------------------------------
+# Deposit-address QR codes (issue #69)  # Significance: 4
+# ---------------------------------------------------------------------------
+
+
+class TestDepositQr:
+    """_attach_deposit_qr is the shared seam wired into every receive tool."""
+
+    def test_attaches_path_that_decodes_back(self):
+        data = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+        result = _attach_deposit_qr({"deposit_address": data}, "deposit_address")
+
+        assert "qr_error" not in result
+        path = result["qr_code_path"]
+        assert Path(path).is_file()
+        assert decode_qr(path) == data
+
+    def test_qr_written_under_storage_qr_dir(self):
+        addr = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+        result = _attach_deposit_qr({"address": addr}, "address")
+        qr_dir = get_manager().storage.qr_dir
+        assert Path(result["qr_code_path"]).parent == qr_dir.resolve()
+
+    def test_encode_transform_changes_qr_payload_only(self):
+        """BOLT11 path: QR encodes the uppercase form; stored field stays as-is."""
+        invoice = "lnbc1000u1ptest123"
+        result = _attach_deposit_qr({"invoice": invoice}, "invoice", encode_transform=str.upper)
+
+        assert result["invoice"] == invoice  # stored value untouched
+        assert decode_qr(result["qr_code_path"]) == invoice.upper()
+
+    def test_missing_or_empty_key_is_noop(self):
+        assert _attach_deposit_qr({"other": "x"}, "address") == {"other": "x"}
+        assert _attach_deposit_qr({"address": ""}, "address") == {"address": ""}
+
+    def test_generation_failure_reports_qr_error_not_fake_success(self, monkeypatch):
+        """If QR generation fails, the address survives and qr_error is set."""
+        import aqua.tools as tools_module
+
+        def boom(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(tools_module, "generate_qr", boom)
+        result = _attach_deposit_qr({"address": "bc1qexample"}, "address")
+
+        assert result["address"] == "bc1qexample"
+        assert "qr_code_path" not in result
+        assert "disk full" in result["qr_error"]
+
+    def test_lw_address_includes_decodable_qr(self):
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="qr_lw")
+        result = lw_address(wallet_name="qr_lw")
+
+        assert decode_qr(result["qr_code_path"]) == result["address"]
+
+    def test_btc_address_includes_decodable_qr(self):
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="qr_btc")
+        result = btc_address(wallet_name="qr_btc")
+
+        assert decode_qr(result["qr_code_path"]) == result["address"]
+
+    @patch("aqua.tools.get_sideshift_manager")
+    def test_sideshift_memo_shift_adds_qr_warning(self, mock_get_mgr):
+        """Memo-based deposit chains: QR is address-only, so warn loudly."""
+        import aqua.tools as tools_module
+
+        shift = MagicMock()
+        shift.to_dict.return_value = {
+            "shift_id": "s1",
+            "deposit_address": "bnb1qexampledepositaddress",
+            "deposit_memo": "987654321",
+            "settle_address": "lq1qsettle",
+            "status": "waiting",
+        }
+        fake = MagicMock()
+        fake.receive_shift.return_value = shift
+        mock_get_mgr.return_value = fake
+
+        result = tools_module.sideshift_receive(
+            deposit_coin="usdt", deposit_network="bsc",
+            settle_coin="usdt", settle_network="liquid",
+        )
+
+        assert "qr_code_path" in result
+        assert "qr_warning" in result
+        assert "987654321" in result["qr_warning"]
+        assert "memo" in result["qr_warning"].lower()
+
+    @patch("aqua.tools.get_sideshift_manager")
+    def test_sideshift_without_memo_has_no_warning(self, mock_get_mgr):
+        import aqua.tools as tools_module
+
+        shift = MagicMock()
+        shift.to_dict.return_value = {
+            "shift_id": "s2",
+            "deposit_address": "bc1qexampledepositaddress",
+            "settle_address": "lq1qsettle",
+            "status": "waiting",
+        }
+        fake = MagicMock()
+        fake.receive_shift.return_value = shift
+        mock_get_mgr.return_value = fake
+
+        result = tools_module.sideshift_receive(
+            deposit_coin="btc", deposit_network="bitcoin",
+            settle_coin="usdt", settle_network="liquid",
+        )
+
+        assert "qr_code_path" in result
+        assert "qr_warning" not in result
 
 
 # ---------------------------------------------------------------------------

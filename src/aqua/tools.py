@@ -11,7 +11,7 @@ from typing import Any
 from .assets import MAINNET_ASSETS, TESTNET_ASSETS, resolve_asset_name, resolve_liquid_asset_id
 from .bitcoin import BitcoinWalletManager
 from .bolt11 import decode_bolt11_fields
-from .qr import decode_qr
+from .qr import decode_qr, generate_qr
 from .wallet import WalletManager
 
 logger = logging.getLogger(__name__)
@@ -135,6 +135,33 @@ def get_sideswap_swap_manager() -> "SideSwapSwapManager":
 
 
 # Tool implementations
+
+
+def _attach_deposit_qr(
+    result: dict[str, Any], data_key: str, *, encode_transform=None
+) -> dict[str, Any]:
+    """Generate a PNG QR for ``result[data_key]`` and attach its path.
+
+    Adds ``qr_code_path`` (absolute path to the saved PNG) so the agent can
+    display the QR to the user. QR rendering is auxiliary to the deposit flow:
+    if generation fails the deposit address/invoice is still valid, so the
+    error is reported as ``qr_error`` rather than failing the whole tool.
+
+    ``encode_transform`` optionally maps the stored value to the form encoded
+    into the QR (the stored field is left untouched). Used to uppercase BOLT11
+    invoices, which are case-insensitive: an uppercase payload lets the QR use
+    denser alphanumeric mode, producing a smaller, easier-to-scan code.
+    """
+    value = result.get(data_key)
+    if not value:
+        return result
+    try:
+        qr_dir = get_manager().storage.qr_dir
+        payload = encode_transform(value) if encode_transform else value
+        result["qr_code_path"] = generate_qr(payload, qr_dir)
+    except Exception as exc:  # noqa: BLE001 - auxiliary feature, report don't crash
+        result["qr_error"] = str(exc)
+    return result
 
 
 def lw_generate_mnemonic() -> dict[str, Any]:
@@ -274,10 +301,11 @@ def lw_address(
     Returns:
         address: The Liquid address
         index: Address index
+        qr_code_path: Path to a PNG QR of the address (or qr_error on failure)
     """
     manager = get_manager()
     addr = manager.get_address(wallet_name, index)
-    return addr.to_dict()
+    return _attach_deposit_qr(addr.to_dict(), "address")
 
 
 def lw_transactions(
@@ -526,10 +554,11 @@ def btc_address(
     Returns:
         address: The Bitcoin address
         index: Address index
+        qr_code_path: Path to a PNG QR of the address (or qr_error on failure)
     """
     btc = get_btc_manager()
     addr = btc.get_address(wallet_name, index)
-    return addr.to_dict()
+    return _attach_deposit_qr(addr.to_dict(), "address")
 
 
 def btc_transactions(
@@ -782,7 +811,8 @@ def lightning_receive(
         password: Password to decrypt mnemonic (if encrypted at rest)
 
     Returns:
-        swap_id, invoice, amount, wallet_name, message
+        swap_id, invoice, amount, wallet_name, message, qr_code_path
+        (qr_code_path is a PNG QR of the invoice, or qr_error on failure)
     """
     manager = get_lightning_manager()
     swap = manager.create_receive_invoice(amount, wallet_name, password)
@@ -791,17 +821,21 @@ def lightning_receive(
     all_wallets = get_manager().storage.list_wallets()
     wallet_note = f" in wallet '{wallet_name}'" if len(all_wallets) > 1 else ""
 
-    return {
-        "swap_id": swap.swap_id,
-        "invoice": swap.invoice,
-        "amount": amount,
-        "wallet_name": wallet_name,
-        "message": (
-            f"Pay this Lightning invoice to receive {amount} satoshis of L-BTC{wallet_note}. "
-            f"Usually takes 1–2 minutes to confirm on Liquid after Lightning payment confirms. "
-            f"You can ask the agent to check status with swap_id: {swap.swap_id}"
-        ),
-    }
+    return _attach_deposit_qr(
+        {
+            "swap_id": swap.swap_id,
+            "invoice": swap.invoice,
+            "amount": amount,
+            "wallet_name": wallet_name,
+            "message": (
+                f"Pay this Lightning invoice to receive {amount} satoshis of L-BTC{wallet_note}. "
+                f"Usually takes 1–2 minutes to confirm on Liquid after Lightning payment confirms. "
+                f"You can ask the agent to check status with swap_id: {swap.swap_id}"
+            ),
+        },
+        "invoice",
+        encode_transform=str.upper,
+    )
 
 
 def lightning_send(
@@ -1095,7 +1129,8 @@ def changelly_receive(
             Mutually exclusive with amount_from.
 
     Returns:
-        order_id, deposit_address, settle_address, amount_from, status, track_url
+        order_id, deposit_address, settle_address, amount_from, status, track_url,
+        qr_code_path (PNG QR of deposit_address, or qr_error on failure)
     """
     if (amount_from is None) == (amount_to is None):
         raise ValueError("Provide exactly one of amount_from or amount_to")
@@ -1110,7 +1145,7 @@ def changelly_receive(
         amount_from=amount_from,
         amount_to=amount_to,
     )
-    return swap.to_dict()
+    return _attach_deposit_qr(swap.to_dict(), "deposit_address")
 
 
 def changelly_status(order_id: str) -> dict[str, Any]:
@@ -1320,7 +1355,8 @@ def sideshift_receive(
 
     Returns:
         shift_id, deposit_address, deposit_min, deposit_max, deposit_memo
-        (if applicable), settle_address, status, expires_at
+        (if applicable), settle_address, status, expires_at, qr_code_path
+        (qr_code_path is a PNG QR of deposit_address, or qr_error on failure)
     """
     shift = get_sideshift_manager().receive_shift(
         deposit_coin=deposit_coin,
@@ -1332,7 +1368,18 @@ def sideshift_receive(
         external_refund_memo=external_refund_memo,
         settle_memo=settle_memo,
     )
-    return shift.to_dict()
+    result = _attach_deposit_qr(shift.to_dict(), "deposit_address")
+    # Memo-based chains (e.g. BNB) require a deposit memo/tag alongside the
+    # address. The QR encodes ONLY the address, so scanning it would silently
+    # drop the memo — sending without it can permanently lose funds. Flag it.
+    if result.get("deposit_memo") and "qr_code_path" in result:
+        result["qr_warning"] = (
+            "QR encodes the deposit address only. This network also requires a "
+            f"deposit memo ({result['deposit_memo']}) that the QR does NOT include — "
+            "it must be entered manually when sending. Sending without the memo can "
+            "cause permanent loss of funds."
+        )
+    return result
 
 
 def sideshift_status(shift_id: str) -> dict[str, Any]:
