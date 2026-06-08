@@ -1,6 +1,6 @@
 # Agentic AQUA
 
-MCP server and CLI for managing **Bitcoin** and **Liquid Network** wallets through AI assistants like Claude. One seed backs both networks (unified wallet). Agentic AQUA can also can operate on the Lightning Network.
+MCP server and CLI for managing **Bitcoin** and **Liquid Network** wallets through AI assistants like Claude. One seed backs both networks (unified wallet). Agentic AQUA can also operate on the Lightning Network.
 
 ## Features
 
@@ -202,7 +202,7 @@ Output defaults to a human-readable table on the terminal and JSON when piped. F
 
 ### Loading seeds safely
 
-Avoid pasting seeds into the chat with your agent. Because it will persists in logs and will be sent to the AI provider agent transcripts may persist them. The recommended workflow is to use this command that hide the text input:
+Avoid pasting seeds into the chat with your agent. Because it will persist in logs and will be sent to the AI provider, agent transcripts may persist them. The recommended workflow is to use this command that hides the text input:
 
 ```bash
 aqua wallet import-mnemonic --mnemonic-stdin --wallet-name defaultx --network mainnet --password-stdin
