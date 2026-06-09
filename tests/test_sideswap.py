@@ -1149,9 +1149,43 @@ class TestVerifyPsetBalances:
             )
 
     def test_reverse_short_lbtc_recv_rejected(self):
-        with pytest.raises(PsetVerificationError, match="delivers 99000"):
+        # Shortfall well beyond fee_tolerance_sats (default 1000) must reject.
+        # SideSwap's mkt::* dealer quotes gross-of-fee on the L-BTC side, so a
+        # small dip is tolerated (separate test below), but a hostile server
+        # that delivers ~10% less than quoted is rejected.
+        with pytest.raises(PsetVerificationError, match="less than the agreed"):
             verify_pset_balances(
-                {USDT: -9_500_000, L_BTC: 99_000},
+                {USDT: -9_500_000, L_BTC: 90_000},
+                send_asset=USDT,
+                send_amount=9_500_000,
+                recv_asset=L_BTC,
+                recv_amount=100_000,
+                fee_asset=L_BTC,
+            )
+
+    def test_reverse_lbtc_recv_within_fee_tolerance_passes(self):
+        # When recv_asset == fee_asset, the dealer's quote is gross of the
+        # on-chain fee (plus any SideSwap service fee on the same asset), so a
+        # shortfall up to fee_tolerance_sats is legitimate. This is the path
+        # exercised in real mkt::* USDt→L-BTC swaps; observed haircuts of
+        # ~100 sats correspond to network_fee + service_fee.
+        verify_pset_balances(
+            {USDT: -9_500_000, L_BTC: 99_000},
+            send_asset=USDT,
+            send_amount=9_500_000,
+            recv_asset=L_BTC,
+            recv_amount=100_000,
+            fee_tolerance_sats=1_000,
+            fee_asset=L_BTC,
+        )
+
+    def test_reverse_lbtc_recv_above_quoted_rejected(self):
+        # Receiving MORE than quoted is never legitimate — a confused or
+        # hostile server. The recv-side tolerance is one-directional (allows
+        # shortfall up to fee, never overage).
+        with pytest.raises(PsetVerificationError, match="more than the agreed"):
+            verify_pset_balances(
+                {USDT: -9_500_000, L_BTC: 100_500},
                 send_asset=USDT,
                 send_amount=9_500_000,
                 recv_asset=L_BTC,
@@ -1359,8 +1393,8 @@ class TestSelectSwapUtxos:
 
 
 class _FakeWollet:
-    """Stand-in for `lwk.Wollet`. The manager only calls .utxos(), .address(),
-    and .pset_details(pset)."""
+    """Stand-in for `lwk.Wollet`. The manager calls .utxos(), .address(),
+    .pset_details(pset), .add_details(pset), and .finalize(pset)."""
 
     def __init__(self, utxos: list, balances: dict[str, int]):
         self._utxos = utxos
@@ -1377,6 +1411,16 @@ class _FakeWollet:
 
     def pset_details(self, _pset):
         return _FakePsetDetails(self._balances)
+
+    def add_details(self, pset):
+        # Real LWK enriches the PSET with wallet UTXO/descriptor info.
+        # Tests use canned balances from pset_details, so we just pass through.
+        return pset
+
+    def finalize(self, pset):
+        # Real LWK converts partial sigs to final_script_witness. Tests use
+        # a no-op signer + canned balances, so just pass through.
+        return pset
 
 
 class _FakeAddrResult:
@@ -1483,8 +1527,15 @@ def _patch_swap_layers():
             self.b64 = b64
 
     import lwk
+    from aqua import sideswap as sideswap_mod
 
     stack.enter_context(patch.object(lwk, "Pset", _FakePset))
+    # The wally-based unblind helper needs a real PSET to parse — short-circuit
+    # it in tests; the _FakeWollet supplies the canned balances dict that the
+    # tests actually assert against.
+    stack.enter_context(
+        patch.object(sideswap_mod, "unblind_dealer_outputs", lambda *a, **kw: {})
+    )
     return stack
 
 
@@ -1915,11 +1966,13 @@ class TestSwapManagerReverseExecute:
     def test_reverse_aborts_on_short_lbtc_delivery(self, swap_manager_setup):
         mgr, _, fake_wollet, fake_signer, _ = swap_manager_setup
         fake_wollet._utxos = [_FakeUtxo("aa" * 32, 0, USDT, 50_000_000)]
-        fake_wollet._balances = {USDT: -9_500_000, L_BTC: 99_000}
+        # 10k sat shortfall is far beyond the 1000-sat default fee_tolerance,
+        # so the dealer is short-delivering and the swap must abort.
+        fake_wollet._balances = {USDT: -9_500_000, L_BTC: 90_000}
         _setup_mkt_responses_reverse()
 
         with _patch_swap_layers():
-            with pytest.raises(PsetVerificationError, match="delivers 99000"):
+            with pytest.raises(PsetVerificationError, match="less than the agreed"):
                 mgr.execute_swap(
                     asset_id=USDT,
                     send_amount=9_500_000,
