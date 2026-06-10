@@ -118,7 +118,10 @@ TOOL_SCHEMAS = {
         },
     },
     "lw_address": {
-        "description": "Generate a receive address",
+        "description": (
+            "Generate a receive address. Also returns qr_code_path: a PNG QR of the "
+            "address — display it to the user so they can scan it."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -270,7 +273,10 @@ TOOL_SCHEMAS = {
         },
     },
     "btc_address": {
-        "description": "Generate a Bitcoin receive address (bc1...)",
+        "description": (
+            "Generate a Bitcoin receive address (bc1...). Also returns qr_code_path: a "
+            "PNG QR of the address — display it to the user so they can scan it."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -399,7 +405,7 @@ TOOL_SCHEMAS = {
         },
     },
     "lightning_receive": {
-        "description": "Generate a Lightning invoice to receive L-BTC into a Liquid wallet (~1-2 min after payment). Limits: 100 – 25,000,000 Sats.",
+        "description": "Generate a Lightning invoice to receive L-BTC into a Liquid wallet (~1-2 min after payment). Limits: 100 – 25,000,000 Sats. Also returns qr_code_path: a PNG QR of the invoice — display it to the user so they can scan it.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -572,7 +578,8 @@ TOOL_SCHEMAS = {
             "Receive USDt-Liquid via a Changelly variable-rate swap. Returns a "
             "deposit address on the source chain — the external sender pays to it. "
             "Settles to the wallet's Liquid address as USDt-Liquid. STRONGLY RECOMMEND "
-            "passing external_refund_address."
+            "passing external_refund_address. Also returns qr_code_path: a PNG QR of "
+            "the deposit address — display it to the user so they can scan it."
         ),
         "inputSchema": {
             "type": "object",
@@ -1004,7 +1011,9 @@ TOOL_SCHEMAS = {
             "ethereum/tron/bsc/solana/polygon/liquid, or BTC on bitcoin) — mirrors "
             "AQUA Flutter's supported pairs. Set SIDESHIFT_ALLOW_ALL_NETWORKS=1 to bypass. "
             "STRONGLY RECOMMEND passing external_refund_address (the deposit-side "
-            "sender's address) so a stuck shift can refund automatically."
+            "sender's address) so a stuck shift can refund automatically. Also returns "
+            "qr_code_path: a PNG QR of the deposit address — display it to the user so "
+            "they can scan it."
         ),
         "inputSchema": {
             "type": "object",
@@ -1137,6 +1146,20 @@ PASSWORD HANDLING (encryption at rest):
 - IMPORTANT: the password is NOT a BIP39 passphrase. It does not alter the
   derived keys. The seed alone fully restores the same descriptors on Liquid
   and Bitcoin in any BIP39-compliant wallet.
+
+QR CODES (deposit addresses & invoices):
+- The receive tools — btc_address, lw_address, lightning_receive, changelly_receive,
+  sideshift_receive — return a `qr_code_path`: an absolute path to a PNG QR image of
+  the address/invoice saved on disk.
+- ALWAYS surface this to the user so they can scan instead of copy-paste: display the
+  image inline if your client renders local image paths, otherwise tell the user the
+  file path where the QR was saved.
+- If a result has `qr_error` instead of `qr_code_path`, QR generation failed but the
+  address/invoice is still valid — show the text and mention the QR was unavailable.
+- MEMO WARNING: some deposits (e.g. memo/tag-based chains via sideshift_receive)
+  return a `deposit_memo` and a `qr_warning`. The QR encodes ONLY the address, never
+  the memo. Always surface the memo as text and warn the user it must be entered
+  manually — scanning the QR alone omits it and can cause permanent loss of funds.
 
 LIGHTNING:
 - Use lightning_receive to generate an invoice for receiving L-BTC from Lightning

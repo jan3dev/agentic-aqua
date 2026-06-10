@@ -33,6 +33,7 @@ dependencies = [
     "websockets>=12.0",
     "pillow>=10.0",
     "zxing-cpp>=2.2",
+    "qrcode[pil]>=7.0",
 ]
 
 [project.optional-dependencies]
@@ -42,7 +43,6 @@ dev = [
     "black>=24.0.0",
     "ruff>=0.2.0",
     "pytest-cov>=7.0.0",
-    "qrcode[pil]>=7.0",
 ]
 
 [project.scripts]

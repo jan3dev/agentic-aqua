@@ -124,6 +124,7 @@ class Storage:
         self.sideshift_shifts_dir = self.base_dir / "sideshift_shifts"
         self.sideswap_pegs_dir = self.base_dir / "sideswap_pegs"
         self.sideswap_swaps_dir = self.base_dir / "sideswap_swaps"
+        self.qr_dir = self.base_dir / "qr"
         self.config_path = self.base_dir / "config.json"
         self._ensure_dirs()
 
@@ -151,6 +152,8 @@ class Storage:
         os.chmod(self.sideswap_pegs_dir, 0o700)
         self.sideswap_swaps_dir.mkdir(exist_ok=True, mode=0o700)
         os.chmod(self.sideswap_swaps_dir, 0o700)
+        self.qr_dir.mkdir(exist_ok=True, mode=0o700)
+        os.chmod(self.qr_dir, 0o700)
 
     def _derive_key(self, password: str, salt: bytes) -> bytes:
         """Derive encryption key from password."""
