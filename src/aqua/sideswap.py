@@ -54,12 +54,12 @@ import asyncio
 import json
 import logging
 import threading
-import urllib.error
-import urllib.request
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any, Optional
 
+import lwk
+import wallycore as wally
 import websockets
 
 logger = logging.getLogger(__name__)
@@ -328,7 +328,9 @@ def verify_pset_balances(
     # never legitimate and could indicate a confused server.
     recv_delta = balances.get(recv_asset, 0)
     if recv_asset == fee_asset:
-        min_recv_delta = recv_amount - fee_tolerance_sats
+        # Clamp at zero — a fee tolerance bigger than the receive amount
+        # would otherwise let the dealer deliver 0 sats and still pass.
+        min_recv_delta = max(0, recv_amount - fee_tolerance_sats)
     else:
         min_recv_delta = recv_amount
     if recv_delta < min_recv_delta:
@@ -414,8 +416,6 @@ def unblind_dealer_outputs(
     """
     if not receive_ephemeral_sk and not change_ephemeral_sk:
         return
-
-    import wallycore as wally
 
     # Decode addresses up front so we can match by scriptPubKey bytes.
     def _addr_spk_and_bpk(addr: Optional[str]) -> tuple[Optional[bytes], Optional[bytes]]:
@@ -512,10 +512,6 @@ def unblind_dealer_outputs(
                 f"rangeproof message decodes to a different value than the "
                 f"on-chain value commitment opens to (script {spk.hex()})"
             )
-
-        # All commitment checks passed — this output is cryptographically
-        # consistent with the dealer's claim. No return value: the security
-        # contract is the side-effect of NOT raising.
 
 
 # ---------------------------------------------------------------------------
@@ -1747,22 +1743,9 @@ class SideSwapSwapManager:
                     self.storage.save_sideswap_swap(swap)
 
                     signer = self.wallet_manager._signers[wallet_name]
-                    import lwk
-
                     pset = lwk.Pset(pset_b64)
-                    # Enrich with wallet UTXO/descriptor details so the signer
-                    # recognises our input(s) and attaches signatures. SideSwap
-                    # PSETs ship sparse input descriptors; without enrichment the
-                    # signer no-ops and the server rejects with "missing
-                    # signature for <outpoint>".
                     pset = wollet.add_details(pset)
                     signed = signer.sign(pset)
-                    # LWK's Signer.sign adds partial signatures; SideSwap's
-                    # server requires the taker's input(s) to be FULLY
-                    # finalized (final_script_witness populated). The wallet
-                    # finalizer converts partial sigs into final witness data,
-                    # leaving the dealer's still-unsigned inputs alone — they
-                    # get finalized server-side.
                     signed = wollet.finalize(signed)
                     signed_b64 = str(signed)
                     swap.status = "signed"

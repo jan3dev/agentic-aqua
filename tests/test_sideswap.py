@@ -6,13 +6,16 @@ recommendation logic, and the PSET balance verifier are tested directly.
 """
 
 import asyncio
+import os
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import lwk
 import pytest
+import wallycore as wally
 
 from aqua.sideswap import (
     PEG_RECOMMENDATION_THRESHOLD_SATS,
@@ -1230,6 +1233,20 @@ class TestVerifyPsetBalances:
                 fee_tolerance_sats=-1,
             )
 
+    def test_fee_tolerance_larger_than_recv_amount_clamped_at_zero(self):
+        with pytest.raises(PsetVerificationError, match="less than the agreed"):
+            verify_pset_balances(
+                # L_BTC: -1 — the swap sends 1 sat of L-BTC away from the
+                # user, instead of delivering it. Pre-clamp this passed.
+                {USDT: -9_500_000, L_BTC: -1},
+                send_asset=USDT,
+                send_amount=9_500_000,
+                recv_asset=L_BTC,
+                recv_amount=500,
+                fee_tolerance_sats=1_000,
+                fee_asset=L_BTC,
+            )
+
 
 # ---------------------------------------------------------------------------
 # SideSwapSwap dataclass + storage round-trip
@@ -1404,10 +1421,13 @@ class _FakeWollet:
     def utxos(self):
         return self._utxos
 
-    def address(self, _index):
-        idx = self._addr_idx
-        self._addr_idx += 1
-        return _FakeAddrResult(f"lq1qaddr{idx}", idx)
+    def address(self, index):
+        if index is None:
+            idx = self._addr_idx
+            self._addr_idx += 1
+        else:
+            idx = index
+        return _FakeAddrResult(f"lq1qaddr{idx:04d}", idx)
 
     def pset_details(self, _pset):
         return _FakePsetDetails(self._balances)
@@ -1526,15 +1546,12 @@ def _patch_swap_layers():
         def __init__(self, b64):
             self.b64 = b64
 
-    import lwk
-    from aqua import sideswap as sideswap_mod
-
     stack.enter_context(patch.object(lwk, "Pset", _FakePset))
     # The wally-based unblind helper needs a real PSET to parse — short-circuit
     # it in tests; the _FakeWollet supplies the canned balances dict that the
     # tests actually assert against.
     stack.enter_context(
-        patch.object(sideswap_mod, "unblind_dealer_outputs", lambda *a, **kw: {})
+        patch("aqua.sideswap.unblind_dealer_outputs", lambda *a, **kw: {})
     )
     return stack
 
@@ -2041,4 +2058,202 @@ class TestSwapManagerReverseExecute:
                     send_amount=100_000,
                     wallet_name="default",
                     send_bitcoins=False,
+                )
+
+
+# ---------------------------------------------------------------------------
+# unblind_dealer_outputs — real wally crypto, mocked PSET parser
+# ---------------------------------------------------------------------------
+#
+# Every SwapManager test patches out `unblind_dealer_outputs`, so the
+# rangeproof / commitment verification path is never exercised by those tests.
+# The tests below feed the function a synthetic-but-cryptographically-valid
+# output triple (asset_commit, value_commit, rangeproof) built with libwally,
+# patching only the PSBT-parsing + address-decoding wrappers. The
+# `asset_unblind_with_nonce`, `asset_generator_from_bytes`,
+# `asset_value_commitment` and `ecdh_nonce_hash` calls run real, so a
+# regression in any of the verifier's checks will surface here.
+
+
+class TestUnblindDealerOutputs:
+    @staticmethod
+    def _synth_blinded_output(asset_id_hex: str, value: int):
+        """Build a self-consistent (asset_commit, value_commit, rangeproof)
+        for a single dealer-paid output, plus the matching ephemeral_sk and
+        recv-address blinding pubkey + scriptPubKey. All randomness is fresh
+        per call so individual tests stay independent."""
+
+        asset_id = bytes.fromhex(asset_id_hex)
+        abf = os.urandom(32)
+        vbf = os.urandom(32)
+        # P2WPKH-shaped spk — content doesn't matter, only that the function's
+        # equality match on spk bytes lines up with the patched recv_spk.
+        spk = bytes.fromhex("0014" + "11" * 20)
+
+        # Dealer's ephemeral keypair; recv address's blinding keypair.
+        eph_sk = os.urandom(32)
+        addr_bsk = os.urandom(32)
+        addr_bpk = wally.ec_public_key_from_private_key(addr_bsk)
+
+        gen = wally.asset_generator_from_bytes(asset_id, abf)
+        value_commit = wally.asset_value_commitment(value, vbf, gen)
+        nonce = wally.ecdh_nonce_hash(addr_bpk, eph_sk)
+        rangeproof = wally.asset_rangeproof_with_nonce(
+            value, nonce, asset_id, abf, vbf, value_commit, spk, gen, 1, 0, 36,
+        )
+        return {
+            "asset_commit": bytes(gen),
+            "value_commit": bytes(value_commit),
+            "rangeproof": bytes(rangeproof),
+            "spk": spk,
+            "eph_sk_hex": eph_sk.hex(),
+            "addr_bpk": bytes(addr_bpk),
+        }
+
+    @staticmethod
+    def _patch_pset_parser(out):
+        """Patch the PSBT-parsing + address-decoding wrappers so the function
+        sees a single output described by `out`. Crypto verifiers stay real."""
+        from contextlib import ExitStack
+
+        import lwk
+        import wallycore as wally
+
+        # `_addr_spk_and_bpk` needs lwk.Address(...).script_pubkey() to return
+        # the spk hex, and wally.confidential_addr_segwit_to_ec_public_key to
+        # return the blinding pubkey for the recv_addr we pass in.
+        class _FakeAddr:
+            def __init__(self, _s):
+                pass
+
+            def script_pubkey(self):
+                return out["spk"].hex()
+
+        stack = ExitStack()
+        stack.enter_context(patch.object(lwk, "Address", _FakeAddr))
+        stack.enter_context(
+            patch.object(
+                wally,
+                "confidential_addr_segwit_to_ec_public_key",
+                lambda _addr, _fam: out["addr_bpk"],
+            )
+        )
+        # Opaque PSBT handle — only used as a key for our patched getters.
+        psbt_handle = object()
+        stack.enter_context(
+            patch.object(wally, "psbt_from_base64", lambda _b64: psbt_handle)
+        )
+        stack.enter_context(patch.object(wally, "psbt_get_num_outputs", lambda _p: 1))
+        stack.enter_context(
+            patch.object(wally, "psbt_get_output_script", lambda _p, _i: out["spk"])
+        )
+        stack.enter_context(
+            patch.object(
+                wally,
+                "psbt_get_output_value_commitment",
+                lambda _p, _i: out["value_commit"],
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                wally,
+                "psbt_get_output_asset_commitment",
+                lambda _p, _i: out["asset_commit"],
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                wally,
+                "psbt_get_output_value_rangeproof",
+                lambda _p, _i: out["rangeproof"],
+            )
+        )
+        return stack
+
+    def test_no_ephemeral_keys_is_noop(self):
+        """Peg / legacy-orderbook flows pass no ephemeral keys; the verifier
+        should short-circuit before touching wally at all."""
+        from aqua.sideswap import unblind_dealer_outputs
+
+        # If anything tries to parse the (deliberately bogus) b64, wally would
+        # raise — reaching the assert means the early-return path fired.
+        unblind_dealer_outputs(
+            "not-a-real-pset",
+            recv_addr="lq1qnotreal",
+            change_addr=None,
+            receive_ephemeral_sk=None,
+            change_ephemeral_sk=None,
+        )
+
+    def test_honest_pset_passes(self):
+        from aqua.sideswap import unblind_dealer_outputs
+
+        out = self._synth_blinded_output(L_BTC, value=100_000)
+        with self._patch_pset_parser(out):
+            unblind_dealer_outputs(
+                "<patched-b64>",
+                recv_addr="lq1qhonest",
+                change_addr=None,
+                receive_ephemeral_sk=out["eph_sk_hex"],
+                change_ephemeral_sk=None,
+            )
+
+    def test_tampered_value_commitment_raises(self):
+        """Flipping a byte in the value commitment must trip the verifier —
+        either at `asset_unblind_with_nonce` (rangeproof bound to original
+        commit) or at the post-unblind value-commitment comparison."""
+        from aqua.sideswap import unblind_dealer_outputs
+
+        out = self._synth_blinded_output(L_BTC, value=100_000)
+        tampered = bytearray(out["value_commit"])
+        tampered[-1] ^= 0x01
+        out["value_commit"] = bytes(tampered)
+        with self._patch_pset_parser(out):
+            with pytest.raises(PsetVerificationError):
+                unblind_dealer_outputs(
+                    "<patched-b64>",
+                    recv_addr="lq1qhonest",
+                    change_addr=None,
+                    receive_ephemeral_sk=out["eph_sk_hex"],
+                    change_ephemeral_sk=None,
+                )
+
+    def test_tampered_rangeproof_raises(self):
+        from aqua.sideswap import unblind_dealer_outputs
+
+        out = self._synth_blinded_output(L_BTC, value=100_000)
+        tampered = bytearray(out["rangeproof"])
+        # Flip a byte in the middle of the proof payload, not the header,
+        # so the corruption survives whatever length/version sanity checks
+        # libwally performs before the actual crypto.
+        tampered[len(tampered) // 2] ^= 0x55
+        out["rangeproof"] = bytes(tampered)
+        with self._patch_pset_parser(out):
+            with pytest.raises(PsetVerificationError):
+                unblind_dealer_outputs(
+                    "<patched-b64>",
+                    recv_addr="lq1qhonest",
+                    change_addr=None,
+                    receive_ephemeral_sk=out["eph_sk_hex"],
+                    change_ephemeral_sk=None,
+                )
+
+    def test_wrong_ephemeral_sk_raises(self):
+        """If the dealer ships an ephemeral_sk that doesn't match the one used
+        to build the rangeproof, ECDH yields a different nonce and the unblind
+        step fails — must surface as PsetVerificationError, not silently pass."""
+        from aqua.sideswap import unblind_dealer_outputs
+
+        out = self._synth_blinded_output(L_BTC, value=100_000)
+        import os
+
+        out["eph_sk_hex"] = os.urandom(32).hex()
+        with self._patch_pset_parser(out):
+            with pytest.raises(PsetVerificationError):
+                unblind_dealer_outputs(
+                    "<patched-b64>",
+                    recv_addr="lq1qhonest",
+                    change_addr=None,
+                    receive_ephemeral_sk=out["eph_sk_hex"],
+                    change_ephemeral_sk=None,
                 )

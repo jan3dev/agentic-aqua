@@ -17,6 +17,7 @@ dependencies = [
     { name = "mcp" },
     { name = "pillow" },
     { name = "python-dotenv" },
+    { name = "qrcode", extra = ["pil"] },
     { name = "wallycore" },
     { name = "websockets" },
     { name = "zxing-cpp" },
