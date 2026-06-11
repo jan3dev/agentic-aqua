@@ -54,12 +54,12 @@ import asyncio
 import json
 import logging
 import threading
-import urllib.error
-import urllib.request
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any, Optional
 
+import lwk
+import wallycore as wally
 import websockets
 
 logger = logging.getLogger(__name__)
@@ -276,9 +276,14 @@ def verify_pset_balances(
 
     Verification rules (any failure raises `PsetVerificationError`):
 
-    1. The wallet must gain at least `recv_amount` of `recv_asset`. Strict
-       equality is required — the server should not deliver a different amount
-       than what it quoted.
+    1. The wallet's gain of `recv_asset` must land in
+       `[recv_amount - fee_tolerance_sats, recv_amount]` when
+       `recv_asset == fee_asset` (the dealer's quote is gross of the
+       on-chain network fee, and may also be gross of a service fee on the
+       same asset, so a small shortfall is legitimate). Otherwise the gain
+       must be **exactly** `recv_amount`. Receiving MORE than `recv_amount`
+       is always rejected — never legitimate and would indicate a confused
+       or hostile server.
     2. The wallet must lose **at most** `send_amount + fee_tolerance_sats` of
        `send_asset`. We allow a small overage to cover the network fee when it
        comes from the same asset (which is typical for L-BTC sends, since the
@@ -313,12 +318,31 @@ def verify_pset_balances(
         )
     fee_asset = fee_asset or send_asset
 
-    # Rule 1: receive amount is exactly what was agreed
+    # Rule 1: receive amount matches what was agreed, modulo the on-chain
+    # fee on the recv side. When recv_asset == fee_asset, the dealer's
+    # quote_amount is gross of the network fee (and may also be gross of
+    # the dealer's own service fee, which lands on the same asset), so the
+    # taker actually receives slightly less. We mirror the send-side
+    # tolerance: recv_delta must land in [recv_amount - fee_tolerance_sats,
+    # recv_amount]. Receiving MORE than agreed is still rejected — that's
+    # never legitimate and could indicate a confused server.
     recv_delta = balances.get(recv_asset, 0)
-    if recv_delta != recv_amount:
+    if recv_asset == fee_asset:
+        # Clamp at zero — a fee tolerance bigger than the receive amount
+        # would otherwise let the dealer deliver 0 sats and still pass.
+        min_recv_delta = max(0, recv_amount - fee_tolerance_sats)
+    else:
+        min_recv_delta = recv_amount
+    if recv_delta < min_recv_delta:
         raise PsetVerificationError(
             f"PSET delivers {recv_delta} sats of recv_asset {recv_asset[:8]}…, "
-            f"expected exactly {recv_amount} sats"
+            f"less than the agreed {recv_amount} "
+            f"(tolerance {recv_amount - min_recv_delta})"
+        )
+    if recv_delta > recv_amount:
+        raise PsetVerificationError(
+            f"PSET delivers {recv_delta} sats of recv_asset {recv_asset[:8]}…, "
+            f"more than the agreed {recv_amount}; refusing to sign"
         )
 
     # Rule 2: send amount is within tolerance
@@ -348,6 +372,145 @@ def verify_pset_balances(
         if delta != 0:
             raise PsetVerificationError(
                 f"PSET unexpectedly moves asset {asset[:8]}… by {delta} sats; refusing to sign"
+            )
+
+
+def unblind_dealer_outputs(
+    pset_b64: str,
+    *,
+    recv_addr: Optional[str],
+    change_addr: Optional[str],
+    receive_ephemeral_sk: Optional[str],
+    change_ephemeral_sk: Optional[str],
+    addr_family: str = "lq",
+) -> None:
+    """Cryptographically verify dealer-paid outputs against the on-chain commitments.
+
+    SideSwap's `mkt::*` dealer pays the taker via outputs blinded with
+    ephemeral secrets it ships out-of-band in the `get_quote` response.
+    Wally rewinds each dealer-paid output's rangeproof and re-derives the
+    asset generator + Pedersen commitment from the unblinded
+    (asset, abf, value, vbf) — if the commitments don't match the on-chain
+    ones, a malicious dealer is trying to deliver a different (asset, value)
+    than what the PSET's explicit fields claim. `PsetVerificationError` is
+    raised on any mismatch.
+
+    This function exists purely for that security side-effect — its caller
+    relies on `wollet.pset_details(pset).balance()` (after `add_details`) as
+    the source of truth for the balances dict. Wally's job is to ensure
+    LWK's explicit-value reading reflects the cryptographic reality.
+
+    Implementation mirrors `sideswap_common::pset::swap_amount::get_swap_amount`
+    in Rust: for each PSET output whose scriptPubKey matches our recv/change
+    address, derive the CT shared secret via ECDH(ephemeral_sk,
+    address_blinding_pk), then rewind the rangeproof and verify the
+    recomputed commitments.
+
+    Done in pure Python via `wallycore` (libwally). LWK's Python `TxOut.unblind`
+    expects the receiver's blinding privkey and runs `ECDH(sk, output_nonce_pk)`;
+    SideSwap's protocol needs `ECDH(dealer_ephemeral_sk, recv_addr_blinding_pk)`,
+    which only libwally exposes at this layer.
+
+    No-op when no ephemeral keys are supplied (peg flows / legacy orderbook
+    flows that don't use ephemeral blinding).
+    """
+    if not receive_ephemeral_sk and not change_ephemeral_sk:
+        return
+
+    # Decode addresses up front so we can match by scriptPubKey bytes.
+    def _addr_spk_and_bpk(addr: Optional[str]) -> tuple[Optional[bytes], Optional[bytes]]:
+        if not addr:
+            return None, None
+        import lwk
+        spk_hex = str(lwk.Address(addr).script_pubkey())
+        spk = bytes.fromhex(spk_hex)
+        bpk = wally.confidential_addr_segwit_to_ec_public_key(addr, addr_family)
+        return spk, bpk
+
+    recv_spk, recv_bpk = _addr_spk_and_bpk(recv_addr)
+    change_spk, change_bpk = _addr_spk_and_bpk(change_addr)
+
+    psbt = wally.psbt_from_base64(pset_b64)
+    num_outputs = wally.psbt_get_num_outputs(psbt)
+
+    for i in range(num_outputs):
+        try:
+            spk = wally.psbt_get_output_script(psbt, i)
+        except Exception:
+            spk = b""
+
+        # Pick the right (ephemeral_sk, blinding_pk) pair for this output.
+        # recv_addr and change_addr may collapse to the same string (the
+        # wollet.address(None) gap-limit cursor doesn't advance between
+        # calls) — that's harmless because we just try receive first.
+        if recv_spk is not None and spk == recv_spk and receive_ephemeral_sk:
+            sk_hex, bpk = receive_ephemeral_sk, recv_bpk
+        elif change_spk is not None and spk == change_spk and change_ephemeral_sk:
+            sk_hex, bpk = change_ephemeral_sk, change_bpk
+        else:
+            continue
+
+        ephemeral_sk = bytes.fromhex(sk_hex)
+        try:
+            value_commit = wally.psbt_get_output_value_commitment(psbt, i)
+            asset_commit = wally.psbt_get_output_asset_commitment(psbt, i)
+            rangeproof = wally.psbt_get_output_value_rangeproof(psbt, i)
+        except Exception as e:
+            raise PsetVerificationError(
+                f"PSET output {i} missing commitment/rangeproof "
+                f"(spk={spk.hex()}): {e!r}"
+            ) from e
+
+        try:
+            # ECDH shared secret: SHA256 of the ECDH point. Liquid CT uses
+            # this 32-byte hash directly as the rangeproof nonce.
+            nonce_hash = wally.ecdh_nonce_hash(bpk, ephemeral_sk)
+            # asset_unblind_with_nonce signature (wallycore Python wrapper):
+            #   (nonce_hash, proof, commitment, extra, generator)
+            #     -> (value, asset_bytes, abf_bytes, vbf_bytes)
+            # The Python wrapper allocates the 3 output buffers internally
+            # and prepends the C return (= the recovered uint64 value) as
+            # the first tuple element. extra commitment data is the
+            # scriptPubKey (matches the reference:
+            # `output.script_pubkey.as_bytes()`).
+            value_out, asset_buf, abf_buf, vbf_buf = wally.asset_unblind_with_nonce(
+                nonce_hash, rangeproof, value_commit, spk, asset_commit,
+            )
+            # Coerce bytearray outputs to bytes for downstream wally calls
+            # that are strict about argument types via SWIG.
+            asset_out = bytes(asset_buf)
+            abf_out = bytes(abf_buf)
+            vbf_out = bytes(vbf_buf)
+        except Exception as e:
+            raise PsetVerificationError(
+                f"failed to unblind dealer output {i} at script {spk.hex()}: {e!r}"
+            ) from e
+
+        # Recompute the asset generator and value commitment from the
+        # unblinded (asset, abf, value, vbf) and check they match the
+        # on-chain commitments. asset_unblind_with_nonce alone proves the
+        # rangeproof is valid for the *commitment* but does not prove the
+        # encrypted message (which carries the claimed asset_id + abf)
+        # matches it. A malicious dealer could put a different asset in
+        # the message than the one the commitment actually opens to;
+        # without this check we'd believe the message. Matches the
+        # `unexpected asset/value commitment` checks in the SideSwap
+        # reference (sideswap_common::pset::swap_amount).
+        expected_generator = wally.asset_generator_from_bytes(asset_out, abf_out)
+        if expected_generator != asset_commit:
+            raise PsetVerificationError(
+                f"PSET output {i} asset commitment mismatch: dealer's "
+                f"rangeproof message decodes to a different asset than the "
+                f"on-chain asset commitment opens to (script {spk.hex()})"
+            )
+        expected_value_commitment = wally.asset_value_commitment(
+            value_out, vbf_out, expected_generator,
+        )
+        if expected_value_commitment != value_commit:
+            raise PsetVerificationError(
+                f"PSET output {i} value commitment mismatch: dealer's "
+                f"rangeproof message decodes to a different value than the "
+                f"on-chain value commitment opens to (script {spk.hex()})"
             )
 
 
@@ -1438,8 +1601,14 @@ class SideSwapSwapManager:
         # start_quotes (not as a follow-up call).
         wollet = self.wallet_manager._get_wollet(wallet_name)
         inputs = select_swap_utxos(wollet.utxos(), send_asset, send_amount)
-        recv_addr = str(wollet.address(None).address())
-        change_addr = str(wollet.address(None).address())
+        # `wollet.address(None)` returns the next-unused index but doesn't
+        # consume it, so calling it twice returns the same address. The
+        # dealer needs a distinct change scriptPubKey on the reverse-direction
+        # path (L-BTC → asset has a taker change output), so we pin the
+        # change to the index right after the receive.
+        recv_result = wollet.address(None)
+        recv_addr = str(recv_result.address())
+        change_addr = str(wollet.address(recv_result.index() + 1).address())
 
         # SideSwap binds quote_id to the WebSocket session that issued
         # start_quotes / get_quote — submitting taker_sign on a fresh
@@ -1477,6 +1646,10 @@ class SideSwapSwapManager:
                 # Accept the quote and request the half-built PSET on the same
                 # session so the server recognises us as the original taker.
                 get_quote_resp = await client.mkt_get_quote(int(quote_data["quote_id"]))
+                # The dealer ships ephemeral blinding secrets alongside the PSET so
+                # the taker can unblind the outputs paid to its addresses.
+                receive_ephemeral_sk = get_quote_resp.get("receive_ephemeral_sk")
+                change_ephemeral_sk = get_quote_resp.get("change_ephemeral_sk")
                 try:
                     await client.mkt_stop_quotes()
                 except Exception:
@@ -1561,15 +1734,19 @@ class SideSwapSwapManager:
                         recv_amount=recv_amount,
                         fee_tolerance_sats=fee_tolerance_sats,
                         fee_asset=policy_asset,
+                        receive_ephemeral_sk=receive_ephemeral_sk,
+                        change_ephemeral_sk=change_ephemeral_sk,
+                        recv_addr=recv_addr,
+                        change_addr=change_addr,
                     )
                     swap.status = "verified"
                     self.storage.save_sideswap_swap(swap)
 
                     signer = self.wallet_manager._signers[wallet_name]
-                    import lwk
-
                     pset = lwk.Pset(pset_b64)
+                    pset = wollet.add_details(pset)
                     signed = signer.sign(pset)
+                    signed = wollet.finalize(signed)
                     signed_b64 = str(signed)
                     swap.status = "signed"
                     self.storage.save_sideswap_swap(swap)
@@ -1610,15 +1787,46 @@ class SideSwapSwapManager:
         recv_amount: int,
         fee_tolerance_sats: int,
         fee_asset: Optional[str] = None,
+        receive_ephemeral_sk: Optional[str] = None,
+        change_ephemeral_sk: Optional[str] = None,
+        recv_addr: Optional[str] = None,
+        change_addr: Optional[str] = None,
     ) -> None:
         """Run the PSET balance check via LWK and raise on mismatch."""
         import lwk
 
         pset = lwk.Pset(pset_b64)
+        # Enrich the PSET with wallet UTXO/descriptor details so pset_details()
+        # can attribute the inputs we're spending to our wallet. SideSwap's
+        # PSETs ship sparse input descriptors; without this LWK sees neither
+        # the inputs nor the outputs as ours and returns an empty balances
+        # dict, forcing us to reconstruct it manually. add_details() is the
+        # supported way to backfill that context.
+        pset = wollet.add_details(pset)
         details = wollet.pset_details(pset)
         balances_dict_raw = details.balance().balances()
         # LWK returns AssetId objects; normalise to hex strings keyed by asset id.
         balances: dict[str, int] = {str(asset): int(amount) for asset, amount in balances_dict_raw.items()}
+
+        # Cryptographically verify each dealer-paid output: the wally helper
+        # rewinds the rangeproof using `receive_ephemeral_sk`, then recomputes
+        # the asset generator + Pedersen commitment from the unblinded
+        # (asset, abf, value, vbf) and asserts they match the on-chain
+        # commitments. This is the defense against a malicious dealer who
+        # puts honest explicit values in the PSET fields but commits to
+        # different values on-chain. LWK's `pset_details` (above) reads the
+        # explicit fields without verifying them — we rely on this wally
+        # check to ensure those fields are truthful. The helper raises
+        # PsetVerificationError on any mismatch; tests stub it out via
+        # `_patch_swap_layers`.
+        unblind_dealer_outputs(
+            pset_b64,
+            recv_addr=recv_addr,
+            change_addr=change_addr,
+            receive_ephemeral_sk=receive_ephemeral_sk,
+            change_ephemeral_sk=change_ephemeral_sk,
+        )
+
         verify_pset_balances(
             balances,
             send_asset=send_asset,
