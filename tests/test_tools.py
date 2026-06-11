@@ -863,6 +863,18 @@ class TestToolRegistry:
             "sideswap_quote",
             "sideswap_execute_swap",
             "sideswap_swap_status",
+            "wapupay_login",
+            "wapupay_verify",
+            "wapupay_logout",
+            "wapupay_session",
+            "wapupay_exchange_rates",
+            "wapupay_quote",
+            "wapupay_create_order",
+            "wapupay_fund_order",
+            "wapupay_order_status",
+            "wapupay_transactions",
+            "wapupay_transaction",
+            "wapupay_spending_limit",
         }
         assert set(TOOLS.keys()) == expected
 

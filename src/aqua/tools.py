@@ -36,6 +36,7 @@ _changelly_manager: "ChangellyManager | None" = None
 _sideshift_manager: "SideShiftManager | None" = None
 _sideswap_peg_manager: "SideSwapPegManager | None" = None
 _sideswap_swap_manager: "SideSwapSwapManager | None" = None
+_wapupay_manager: "WapuPayManager | None" = None
 
 
 def get_manager() -> WalletManager:
@@ -132,6 +133,19 @@ def get_sideswap_swap_manager() -> "SideSwapSwapManager":
             wallet_manager=get_manager(),
         )
     return _sideswap_swap_manager
+
+
+def get_wapupay_manager() -> "WapuPayManager":
+    """Get or create the WapuPay manager (shares storage + wallet manager)."""
+    global _wapupay_manager
+    if _wapupay_manager is None:
+        from .wapupay import WapuPayManager
+
+        _wapupay_manager = WapuPayManager(
+            storage=get_manager().storage,
+            wallet_manager=get_manager(),
+        )
+    return _wapupay_manager
 
 
 # Tool implementations
@@ -1164,6 +1178,188 @@ def changelly_status(order_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# WapuPay (Argentine direct-fiat payments via JAN3's AQUA Ankara proxy)
+# ---------------------------------------------------------------------------
+
+
+def wapupay_login(email: str, language: str = "en") -> dict[str, Any]:
+    """Start WapuPay login: JAN3's Ankara backend emails a one-time code (OTP).
+
+    WapuPay direct payments are accessed through the AQUA Ankara backend. The
+    user authenticates with their email; Ankara sends a 6-digit OTP to that
+    address. Follow up with `wapupay_verify` passing the code the user received.
+
+    Args:
+        email: the user's email address.
+        language: OTP email language (en/es/pt). Default: en.
+
+    Returns:
+        email, message, next_step (and otp_code only on non-prod Ankara).
+    """
+    return get_wapupay_manager().login(email, language=language)
+
+
+def wapupay_verify(email: str, otp_code: str) -> dict[str, Any]:
+    """Verify the OTP emailed by `wapupay_login` and store the WapuPay session.
+
+    On success the AQUA↔Ankara JWT session is persisted locally (encrypted at
+    rest by file permissions) so subsequent WapuPay calls don't re-prompt.
+
+    Args:
+        email: the same email used in `wapupay_login`.
+        otp_code: the 6-digit code from the email.
+
+    Returns:
+        email, logged_in, message.
+    """
+    return get_wapupay_manager().verify(email, otp_code)
+
+
+def wapupay_logout() -> dict[str, Any]:
+    """Forget the local WapuPay session (does not revoke the token server-side)."""
+    return get_wapupay_manager().logout()
+
+
+def wapupay_session() -> dict[str, Any]:
+    """Report whether a WapuPay session is active (no secrets returned)."""
+    return get_wapupay_manager().session_status()
+
+
+def wapupay_exchange_rates() -> dict[str, Any]:
+    """Get WapuPay's current exchange rates (e.g. USDT/ARS). Requires login."""
+    return get_wapupay_manager().exchange_rates()
+
+
+def wapupay_quote(
+    amount_ars: str,
+    type: str = "fiat_transfer",
+    alias: str | None = None,
+) -> dict[str, Any]:
+    """Preview the USDT cost, fee, and rate for an ARS payment (no order created).
+
+    Call this BEFORE `wapupay_create_order` to confirm the price with the user.
+    If you pass the recipient `alias`, the response's `valid_cbu_alias` tells you
+    whether the bank alias/CBU/CVU is valid before you commit to an order.
+
+    Args:
+        amount_ars: amount to pay in Argentine pesos (decimal string, e.g. "10000").
+        type: "fiat_transfer" (standard) or "fast_fiat_transfer" (instant, higher fee).
+        alias: recipient bank alias / CBU / CVU (optional; enables alias validation).
+
+    Returns:
+        usdt_amount, fee, total_amount, exchange_rate, valid_cbu_alias.
+    """
+    return get_wapupay_manager().quote(amount_ars, type, alias=alias)
+
+
+def wapupay_create_order(
+    amount_ars: str,
+    alias: str,
+    type: str = "fiat_transfer",
+    receiver_name: str | None = None,
+    refund_address: str | None = None,
+    external_reference: str | None = None,
+    wallet_name: str = "default",
+) -> dict[str, Any]:
+    """Create a WapuPay direct-fiat order and get a Liquid USDT funding address.
+
+    Creates the payment tentative (freezing the quote) and immediately issues
+    funding instructions. The order is persisted before funding, so if funding
+    fails you get the order back with `funded=False` and can retry via
+    `wapupay_fund_order` — no silent failure.
+
+    The result includes `address_destination` (a Liquid address), `asset_id`
+    (USDT on Liquid), `funding_amount_usdt` / `funding_amount_sat`, and
+    `funding_expires_at`. Pay it with `lw_send_asset` (amount in sats,
+    asset_id from the response); WapuPay then settles `amount_ars` ARS to the
+    bank account. This tool never broadcasts a payment itself.
+
+    Args:
+        amount_ars: amount to pay in Argentine pesos (decimal string, e.g. "10000").
+        alias: recipient bank alias / CBU / CVU.
+        type: "fiat_transfer" or "fast_fiat_transfer".
+        receiver_name: recipient name (optional).
+        refund_address: Liquid address for a refund if funding cannot execute (optional).
+        external_reference: a client reference string (optional).
+        wallet_name: wallet you intend to fund from (recorded for tracking).
+
+    Returns:
+        The order record incl. tentative_id, status, address_destination,
+        asset_id, funding_amount_usdt/sat, funding_expires_at, funded,
+        pay_instructions, and qr_code_path (QR of the funding address).
+    """
+    result = get_wapupay_manager().create_order(
+        amount_ars=amount_ars,
+        alias=alias,
+        transfer_type=type,
+        receiver_name=receiver_name,
+        refund_address=refund_address,
+        external_reference=external_reference,
+        wallet_name=wallet_name,
+    )
+    return _attach_deposit_qr(result, "address_destination")
+
+
+def wapupay_fund_order(tentative_id: str) -> dict[str, Any]:
+    """Issue (or re-issue) Liquid USDT funding instructions for an existing order.
+
+    Use this to recover an order created without funding, or to re-fetch the
+    funding address before it expires.
+
+    Args:
+        tentative_id: the order id from `wapupay_create_order`.
+
+    Returns:
+        Order record with address_destination, asset_id, funding amounts,
+        funded, pay_instructions, and qr_code_path.
+    """
+    result = get_wapupay_manager().fund_order(tentative_id)
+    return _attach_deposit_qr(result, "address_destination")
+
+
+def wapupay_order_status(tentative_id: str) -> dict[str, Any]:
+    """Check a WapuPay direct-fiat order's status (re-read from WapuPay).
+
+    Returns is_final / is_success / is_failed booleans. Status machine:
+    CREATED → FUNDING_ISSUED → EXECUTED (success). Terminals: EXPIRED,
+    SETTLED_TO_BALANCE (USDT credited to WapuPay balance, payout not made),
+    FAILED.
+
+    Treat `is_final and not is_success` as NEEDS ATTENTION — SETTLED_TO_BALANCE
+    is final but neither success nor failed (the user funded but the ARS payout
+    didn't happen), so don't rely on is_failed alone to decide something went wrong.
+
+    Args:
+        tentative_id: the order id from `wapupay_create_order`.
+    """
+    return get_wapupay_manager().order_status(tentative_id)
+
+
+def wapupay_transactions() -> dict[str, Any]:
+    """List the user's WapuPay transactions (scoped to their sub-user)."""
+    result = get_wapupay_manager().transactions()
+    return result if isinstance(result, dict) else {"transactions": result}
+
+
+def wapupay_transaction(id: str) -> dict[str, Any]:
+    """Get a single WapuPay transaction by id (UUID or numeric).
+
+    Args:
+        id: WapuPay transaction id (uuid or numeric).
+    """
+    return get_wapupay_manager().transaction(id)
+
+
+def wapupay_spending_limit() -> dict[str, Any]:
+    """Get the user's monthly WapuPay spending limit (USDT), based on KYC tier.
+
+    Passes WapuPay's response through unchanged (typically the KYC tier plus the
+    monthly limit and amount used, in USDT — exact field names per WapuPay).
+    """
+    return get_wapupay_manager().spending_limit()
+
+
+# ---------------------------------------------------------------------------
 # SideShift (custodial cross-chain swaps via sideshift.ai)
 # ---------------------------------------------------------------------------
 
@@ -1845,5 +2041,17 @@ TOOLS = {
     "sideswap_quote": sideswap_quote,
     "sideswap_execute_swap": sideswap_execute_swap,
     "sideswap_swap_status": sideswap_swap_status,
+    "wapupay_login": wapupay_login,
+    "wapupay_verify": wapupay_verify,
+    "wapupay_logout": wapupay_logout,
+    "wapupay_session": wapupay_session,
+    "wapupay_exchange_rates": wapupay_exchange_rates,
+    "wapupay_quote": wapupay_quote,
+    "wapupay_create_order": wapupay_create_order,
+    "wapupay_fund_order": wapupay_fund_order,
+    "wapupay_order_status": wapupay_order_status,
+    "wapupay_transactions": wapupay_transactions,
+    "wapupay_transaction": wapupay_transaction,
+    "wapupay_spending_limit": wapupay_spending_limit,
     "qr_decode": qr_decode,
 }

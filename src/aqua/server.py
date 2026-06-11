@@ -1067,6 +1067,149 @@ TOOL_SCHEMAS = {
             "required": ["from_coin", "from_network", "to_coin", "to_network"],
         },
     },
+    "wapupay_login": {
+        "description": (
+            "Start WapuPay login: JAN3's AQUA Ankara backend emails a 6-digit "
+            "OTP to the user's address. Follow up with wapupay_verify. WapuPay "
+            "lets the user pay an Argentine bank account in ARS, funded with USDT "
+            "on Liquid."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "description": "User's email address"},
+                "language": {
+                    "type": "string",
+                    "enum": ["en", "es", "pt"],
+                    "default": "en",
+                    "description": "OTP email language",
+                },
+            },
+            "required": ["email"],
+        },
+    },
+    "wapupay_verify": {
+        "description": (
+            "Verify the OTP emailed by wapupay_login and store the WapuPay "
+            "session locally. Ask the user for the 6-digit code from their email."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "description": "Same email used in wapupay_login"},
+                "otp_code": {"type": "string", "description": "6-digit code from the email"},
+            },
+            "required": ["email", "otp_code"],
+        },
+    },
+    "wapupay_logout": {
+        "description": "Forget the local WapuPay session (does not revoke the token server-side).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "wapupay_session": {
+        "description": "Report whether a WapuPay session is active (no secrets returned).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "wapupay_exchange_rates": {
+        "description": "Get WapuPay's current exchange rates (e.g. USDT/ARS). Requires being logged in.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "wapupay_quote": {
+        "description": (
+            "Preview the USDT cost, fee, and exchange rate for an ARS payment "
+            "without creating an order. Call BEFORE wapupay_create_order to "
+            "confirm the price. Pass alias to validate the bank alias/CBU/CVU "
+            "(see valid_cbu_alias in the response)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "amount_ars": {"type": "string", "description": "Amount in Argentine pesos (decimal string, e.g. '10000')"},
+                "type": {
+                    "type": "string",
+                    "enum": ["fiat_transfer", "fast_fiat_transfer"],
+                    "default": "fiat_transfer",
+                    "description": "Standard or instant (higher fee) transfer",
+                },
+                "alias": {"type": "string", "description": "Recipient bank alias / CBU / CVU (optional; enables validation)"},
+            },
+            "required": ["amount_ars"],
+        },
+    },
+    "wapupay_create_order": {
+        "description": (
+            "Create a WapuPay direct-fiat order and get a Liquid USDT funding "
+            "address. Creates the tentative (freezing the quote) and issues "
+            "funding instructions. Returns address_destination (Liquid), asset_id "
+            "(USDT), funding_amount_usdt/sat, funding_expires_at and a QR. Pay it "
+            "with lw_send_asset (amount in sats); WapuPay then settles ARS to the "
+            "bank account. Does NOT broadcast the payment itself — confirm the "
+            "quote with the user first via wapupay_quote."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "amount_ars": {"type": "string", "description": "Amount in Argentine pesos (decimal string, e.g. '10000')"},
+                "alias": {"type": "string", "description": "Recipient bank alias / CBU / CVU"},
+                "type": {
+                    "type": "string",
+                    "enum": ["fiat_transfer", "fast_fiat_transfer"],
+                    "default": "fiat_transfer",
+                },
+                "receiver_name": {"type": "string", "description": "Recipient name (optional)"},
+                "refund_address": {"type": "string", "description": "Liquid refund address if funding cannot execute (optional)"},
+                "external_reference": {"type": "string", "description": "Client reference string (optional)"},
+                "wallet_name": {"type": "string", "default": "default", "description": "Wallet you intend to fund from (recorded for tracking)"},
+            },
+            "required": ["amount_ars", "alias"],
+        },
+    },
+    "wapupay_fund_order": {
+        "description": (
+            "Issue (or re-issue) Liquid USDT funding instructions for an existing "
+            "order. Use to recover an order created without funding, or to refresh "
+            "the funding address before it expires. Returns the funding address + QR."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tentative_id": {"type": "string", "description": "Order id from wapupay_create_order"},
+            },
+            "required": ["tentative_id"],
+        },
+    },
+    "wapupay_order_status": {
+        "description": (
+            "Check a WapuPay direct-fiat order's status (re-read from WapuPay). "
+            "Returns is_final / is_success / is_failed. States: CREATED → "
+            "FUNDING_ISSUED → EXECUTED. Terminals: EXPIRED, SETTLED_TO_BALANCE, FAILED."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tentative_id": {"type": "string", "description": "Order id from wapupay_create_order"},
+            },
+            "required": ["tentative_id"],
+        },
+    },
+    "wapupay_transactions": {
+        "description": "List the user's WapuPay transactions (scoped to their sub-user).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "wapupay_transaction": {
+        "description": "Get a single WapuPay transaction by id (UUID or numeric).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "WapuPay transaction id (uuid or numeric)"},
+            },
+            "required": ["id"],
+        },
+    },
+    "wapupay_spending_limit": {
+        "description": "Get the user's monthly WapuPay spending limit (USDT), based on KYC tier.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
     "qr_decode": {
         "description": "Decode a QR code from an image file and return the raw string content. Supports Bitcoin addresses, Liquid addresses, Lightning invoices (BOLT11), and Lightning addresses.",
         "inputSchema": {

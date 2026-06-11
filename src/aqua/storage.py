@@ -124,6 +124,9 @@ class Storage:
         self.sideshift_shifts_dir = self.base_dir / "sideshift_shifts"
         self.sideswap_pegs_dir = self.base_dir / "sideswap_pegs"
         self.sideswap_swaps_dir = self.base_dir / "sideswap_swaps"
+        self.wapupay_dir = self.base_dir / "wapupay"
+        self.wapupay_orders_dir = self.wapupay_dir / "orders"
+        self.wapupay_session_path = self.wapupay_dir / "session.json"
         self.qr_dir = self.base_dir / "qr"
         self.config_path = self.base_dir / "config.json"
         self._ensure_dirs()
@@ -152,6 +155,10 @@ class Storage:
         os.chmod(self.sideswap_pegs_dir, 0o700)
         self.sideswap_swaps_dir.mkdir(exist_ok=True, mode=0o700)
         os.chmod(self.sideswap_swaps_dir, 0o700)
+        self.wapupay_dir.mkdir(exist_ok=True, mode=0o700)
+        os.chmod(self.wapupay_dir, 0o700)
+        self.wapupay_orders_dir.mkdir(exist_ok=True, mode=0o700)
+        os.chmod(self.wapupay_orders_dir, 0o700)
         self.qr_dir.mkdir(exist_ok=True, mode=0o700)
         os.chmod(self.qr_dir, 0o700)
 
@@ -657,6 +664,61 @@ class Storage:
                 except OSError:
                     pass
         return removed
+
+    # WapuPay operations
+
+    def save_wapupay_session(self, session) -> None:
+        """Persist the WapuPay (Ankara JWT) session. File is 0o600 — holds a
+        money-authorizing bearer token."""
+        self._atomic_write_json(self.wapupay_session_path, session.to_dict())
+
+    def load_wapupay_session(self):
+        """Load the WapuPay session. Returns WapuPaySession or None."""
+        from .wapupay import WapuPaySession
+
+        if not self.wapupay_session_path.exists():
+            return None
+        with open(self.wapupay_session_path) as f:
+            return WapuPaySession.from_dict(json.load(f))
+
+    def delete_wapupay_session(self) -> None:
+        """Remove the persisted WapuPay session (idempotent)."""
+        try:
+            self.wapupay_session_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def _wapupay_order_path(self, tentative_id: str) -> Path:
+        """Get path to a WapuPay order file, validating the ID against traversal."""
+        if not SWAP_ID_PATTERN.fullmatch(tentative_id):
+            raise ValueError(
+                f"Invalid WapuPay tentative ID '{tentative_id}'. "
+                "Use only letters, numbers, hyphens and underscores (max 128 chars)."
+            )
+        return self.wapupay_orders_dir / f"{tentative_id}.json"
+
+    def save_wapupay_order(self, order) -> None:
+        """Save a WapuPay order record for recovery (contains bank PII; 0o600)."""
+        path = self._wapupay_order_path(order.tentative_id)
+        self._atomic_write_json(path, order.to_dict())
+
+    def load_wapupay_order(self, tentative_id: str):
+        """Load a WapuPay order record. Returns WapuPayOrder or None."""
+        from .wapupay import WapuPayOrder
+
+        path = self._wapupay_order_path(tentative_id)
+        if not path.exists():
+            return None
+        with open(path) as f:
+            return WapuPayOrder.from_dict(json.load(f))
+
+    def list_wapupay_orders(self) -> list[str]:
+        """List all WapuPay order (tentative) IDs."""
+        return [
+            p.stem
+            for p in self.wapupay_orders_dir.glob("*.json")
+            if SWAP_ID_PATTERN.fullmatch(p.stem)
+        ]
 
     # Cache operations
 

@@ -18,6 +18,7 @@ rendered to terminal/JSON instead of MCP responses.
 | `lightning.py` | `aqua lightning` | Receive (Ankara), send (Boltz), status. |
 | `sideshift.py` | `aqua sideshift` | Cross-chain quote, send, receive, status. |
 | `changelly.py` | `aqua changelly` | USDt cross-chain quote, send, receive, status. |
+| `wapupay.py` | `aqua wapupay` | Argentine direct-fiat: login/verify (email OTP), quote, create-order (→ Liquid USDT address), fund-order, order-status, transactions, spending-limit. |
 | `serve.py` | `aqua serve` | Run the MCP stdio server from the CLI. |
 | `output.py` | helper | JSON / pretty rendering. Pretty mode uses `click.echo`; JSON dumps via `json.dumps(..., indent=2)`. |
 | `password.py` | helper | Secret resolution chain. See below. |

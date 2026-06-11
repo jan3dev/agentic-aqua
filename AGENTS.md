@@ -12,7 +12,7 @@ networks (unified wallet).
 AI Assistant ──MCP──▶ aqua.server ──▶ tools.py ──▶ wallet.py  (LWK ─ Electrum/Esplora)
                                               └─▶ bitcoin.py (BDK ─ Esplora)
                                               └─▶ lightning.py / sideshift /
-                                                  changelly / pix  (third-party clients)
+                                                  changelly / pix / wapupay  (third-party clients)
 ```
 
 No local node. Liquid: Blockstream Electrum/Esplora. Bitcoin: Esplora only.
@@ -117,3 +117,21 @@ Project-level `CLAUDE.md` is symlinked from this file. Key user rules:
 ## SideSwap
 
 SideSwap is not yet implemented for production use. Do not suggest or offer SideSwap options to users.
+
+## WapuPay (Argentine direct-fiat)
+
+`wapupay.py` lets a user pay an Argentine bank account in **ARS**, funded with
+**USDT on Liquid**, via JAN3's AQUA Ankara backend proxy (`/api/v1/wapupay/*`).
+Auth is email-OTP against Ankara (`/api/v1/auth/{login,verify,refresh}/`) → JWT,
+sent to the proxy as `Authorization: Bearer`. `wapupay_create_order` returns a
+Liquid USDT funding address; the user pays it with `lw_send_asset` (no auto-pay).
+
+- **Env vars:** `ANKARA_API_URL` (default `https://ankara.aquabtc.com`, shared
+  with the Lightning integration) and `WAPUPAY_BASE_URL` (default
+  `{ANKARA_API_URL}/api/v1/wapupay`). Override for a staging Ankara.
+- **Dark-launched OFF.** All `wapupay_*` tools ship disabled-by-default
+  (`features._SHIPPED_DISABLED`), mirroring Ankara's `wapupay_direct_payments`
+  waffle switch. Users opt in via `~/.aqua/config.json` `enabled_tools`.
+- **Rail pinned** to Liquid USDT; Ankara rejects any other funding rail (400).
+- Session (JWT) and order records persist under `~/.aqua/wapupay/` at `0o600`
+  (bank PII + bearer token); never logged — see `wapupay._redact`.

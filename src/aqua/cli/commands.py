@@ -39,6 +39,7 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
     from .sideshift import sideshift
     from .sideswap import sideswap
     from .wallet import wallet
+    from .wapupay import wapupay
 
     # Reset root.
     cli.commands.clear()
@@ -51,6 +52,7 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
         ("changelly", changelly),
         ("sideshift", sideshift),
         ("sideswap", sideswap),
+        ("wapupay", wapupay),
         ("qr", qr),
     ]
 
