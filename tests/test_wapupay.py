@@ -29,13 +29,16 @@ from aqua.wapupay import (
     AUTH_BASE_URL,
     FUNDING_METHOD_USDT,
     FUNDING_NETWORK_LIQUID,
+    WAPUPAY_ACCOUNT_PATH,
     WAPUPAY_BASE_URL,
+    WapuPayApiKey,
     WapuPayClient,
     WapuPayManager,
     WapuPayOrder,
     WapuPaySession,
     _ars_for_wire,
     _extract_error_message,
+    _mask,
     _normalize_ars_amount,
     _redact,
     order_is_failed,
@@ -100,6 +103,9 @@ class FakeClient:
 
     def verify(self, email, otp_code):
         return self._yield("verify", email, otp_code)
+
+    def provision_wapupay_account(self, access_token):
+        return self._yield("provision_wapupay_account", access_token)
 
     # WapuPay direct API. exchange_rates is public (no key); the rest carry the
     # X-API-Key — recorded as the last call arg so tests can assert it.
@@ -776,3 +782,234 @@ def test_tool_create_order_attaches_qr(monkeypatch, storage):  # Sig:4
     out = tools.wapupay_create_order(amount_ars="10000", alias="al.cbu")
     assert out["address_destination"] == "lq1qqfunding0address"
     assert "qr_code_path" in out or "qr_error" in out
+
+
+# ---------------------------------------------------------------------------
+# wapupay_provision_account — provision a WapuPay API key via the AQUA backend
+# ---------------------------------------------------------------------------
+
+
+def test_provision_client_sends_bearer_not_api_key():  # Sig:5
+    # The provisioning call hits the AQUA backend with the AQUA JWT, so it sends
+    # Authorization: Bearer and NEVER an X-API-Key (that's WapuPay-only).
+    client = WapuPayClient(aqua_backend_url="http://localhost:8000")
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["req"] = req
+        return _mock_resp({"token": "provisioned-key"})
+
+    with patch("aqua.wapupay.urllib.request.urlopen", side_effect=fake_urlopen):
+        out = client.provision_wapupay_account("jwt.access.token")
+    assert out == {"token": "provisioned-key"}
+    req = captured["req"]
+    # Trailing slash preserved (DRF APPEND_SLASH would 301 a slashless POST).
+    assert req.full_url == "http://localhost:8000/api/v1/wapupay/account/"
+    assert req.get_method() == "POST"
+    assert req.get_header("Authorization") == "Bearer jwt.access.token"
+    assert req.get_header("X-api-key") is None
+    assert req.data is None  # bodyless POST
+
+
+def test_provision_client_default_backend_is_ankara():
+    # AQUA_BACKEND_API_URL defaults to ANKARA_API_URL (same backend).
+    from aqua.wapupay import ANKARA_API_URL
+
+    client = WapuPayClient()
+    assert client.aqua_backend_url == ANKARA_API_URL.rstrip("/")
+    assert WAPUPAY_ACCOUNT_PATH == "/api/v1/wapupay/account/"
+
+
+def test_provision_client_401_points_at_relogin():  # Sig:5
+    client = WapuPayClient(aqua_backend_url="http://h")
+    with patch(
+        "aqua.wapupay.urllib.request.urlopen",
+        side_effect=_http_error(401, '{"detail": "Authentication credentials were not provided."}'),
+    ):
+        with pytest.raises(ValueError) as ei:
+            client.provision_wapupay_account("expired")
+    msg = str(ei.value)
+    assert "aqua_login" in msg
+    # DRF noise is replaced, not appended.
+    assert "credentials were not provided" not in msg
+
+
+def test_provision_client_403_points_at_feature_flag():  # Sig:5
+    client = WapuPayClient(aqua_backend_url="http://h")
+    with patch(
+        "aqua.wapupay.urllib.request.urlopen",
+        side_effect=_http_error(403, '{"detail": "forbidden"}'),
+    ):
+        with pytest.raises(ValueError) as ei:
+            client.provision_wapupay_account("jwt")
+    assert "wapupay_b2b" in str(ei.value)
+
+
+def test_provision_client_502_points_at_upstream():  # Sig:5
+    client = WapuPayClient(aqua_backend_url="http://h")
+    with patch(
+        "aqua.wapupay.urllib.request.urlopen",
+        side_effect=_http_error(502, "<html>bad gateway</html>"),
+    ):
+        with pytest.raises(ValueError) as ei:
+            client.provision_wapupay_account("jwt")
+    assert "upstream" in str(ei.value).lower()
+
+
+def test_provision_client_other_error_includes_detail():  # Sig:4
+    client = WapuPayClient(aqua_backend_url="http://h")
+    with patch(
+        "aqua.wapupay.urllib.request.urlopen",
+        side_effect=_http_error(400, '{"error": "bad request shape"}'),
+    ):
+        with pytest.raises(ValueError) as ei:
+            client.provision_wapupay_account("jwt")
+    msg = str(ei.value)
+    assert "AQUA backend" in msg and "bad request shape" in msg
+
+
+def test_provision_client_unreachable():  # Sig:4
+    client = WapuPayClient(aqua_backend_url="http://h")
+    with patch(
+        "aqua.wapupay.urllib.request.urlopen",
+        side_effect=urllib.error.URLError("conn refused"),
+    ):
+        with pytest.raises(ValueError) as ei:
+            client.provision_wapupay_account("jwt")
+    assert "unreachable" in str(ei.value).lower()
+
+
+def test_provision_manager_success_stores_and_masks(monkeypatch, storage):  # Sig:5
+    # rotate=True so the no-op short-circuit doesn't trigger on the dummy env key.
+    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
+    logged_in(storage, access="aqua.jwt.access")
+    fake = FakeClient({"provision_wapupay_account": {"token": "WapuKey_2UJgLDyuY8"}})
+    m = make_manager(storage, fake)
+    out = m.provision_account(rotate=True)
+
+    assert out["provisioned"] is True and out["rotated"] is True
+    # Raw key never returned; only a masked preview (first 4 + … + last 4).
+    assert out["key_preview"] == _mask("WapuKey_2UJgLDyuY8") == "Wapu…yuY8"
+    assert "WapuKey_2UJgLDyuY8" not in json.dumps(out)
+    # The provisioning call carried the stored AQUA access token.
+    assert fake.calls == [("provision_wapupay_account", ("aqua.jwt.access",))]
+    # Persisted at the api-key path and now resolvable by _require_api_key.
+    stored = storage.load_wapupay_api_key()
+    assert stored is not None and stored.token == "WapuKey_2UJgLDyuY8"
+    assert m._require_api_key() == "WapuKey_2UJgLDyuY8"
+
+
+def test_provision_first_time_has_no_rotation_warning(monkeypatch, storage):  # Sig:4
+    # First-time provision (rotate=False, nothing configured) calls the backend
+    # but didn't invalidate any key the user was using — so NO rotation warning.
+    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
+    logged_in(storage)
+    fake = FakeClient({"provision_wapupay_account": {"token": "fresh-first-key"}})
+    m = make_manager(storage, fake)
+    out = m.provision_account()  # rotate=False, no key yet -> hits backend
+    assert out["provisioned"] is True and out["rotated"] is False
+    assert "warning" not in out
+    assert fake.calls == [("provision_wapupay_account", ("acc.tok",))]
+
+
+def test_provision_manager_requires_login(monkeypatch, storage):  # Sig:5
+    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
+    m = make_manager(storage, FakeClient())
+    with pytest.raises(ValueError) as ei:
+        m.provision_account(rotate=True)
+    assert "aqua_login" in str(ei.value).lower() or "logged in" in str(ei.value).lower()
+    assert m._client.calls == []  # never reached the backend
+
+
+def test_provision_manager_missing_token_raises(monkeypatch, storage):  # Sig:5
+    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
+    logged_in(storage)
+    fake = FakeClient({"provision_wapupay_account": {"not_token": "x"}})
+    m = make_manager(storage, fake)
+    with pytest.raises(ValueError) as ei:
+        m.provision_account(rotate=True)
+    assert "token" in str(ei.value).lower()
+    assert storage.load_wapupay_api_key() is None  # nothing persisted on failure
+
+
+def test_provision_noop_when_env_key_set(monkeypatch, storage):  # Sig:5
+    # Default (rotate=False): env key present -> no-op, NO backend call.
+    monkeypatch.setenv("WAPUPAY_API_KEY", "env-set-key")
+    logged_in(storage)
+    fake = FakeClient({"provision_wapupay_account": {"token": "should-not-be-used"}})
+    m = make_manager(storage, fake)
+    out = m.provision_account()
+    assert out["already_configured"] is True and out["source"] == "env"
+    assert fake.calls == []
+    assert storage.load_wapupay_api_key() is None  # didn't overwrite/persist
+    assert "env-set-key" not in json.dumps(out)  # masked
+
+
+def test_provision_noop_when_stored_key_exists(monkeypatch, storage):  # Sig:5
+    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
+    storage.save_wapupay_api_key(WapuPayApiKey(token="already-stored", created_at="t0"))
+    logged_in(storage)
+    fake = FakeClient({"provision_wapupay_account": {"token": "new-key"}})
+    m = make_manager(storage, fake)
+    out = m.provision_account()
+    assert out["already_configured"] is True and out["source"] == "stored"
+    assert fake.calls == []
+    # Existing key untouched.
+    assert storage.load_wapupay_api_key().token == "already-stored"
+
+
+def test_provision_rotate_overwrites_stored(monkeypatch, storage):  # Sig:5
+    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
+    storage.save_wapupay_api_key(WapuPayApiKey(token="old-key", created_at="t0"))
+    logged_in(storage)
+    fake = FakeClient({"provision_wapupay_account": {"token": "rotated-key"}})
+    m = make_manager(storage, fake)
+    out = m.provision_account(rotate=True)
+    assert out["provisioned"] is True
+    assert storage.load_wapupay_api_key().token == "rotated-key"
+    assert "rotated" in out["warning"].lower()
+
+
+def test_require_api_key_env_wins_over_stored(monkeypatch, storage):  # Sig:5
+    monkeypatch.setenv("WAPUPAY_API_KEY", "env-key")
+    storage.save_wapupay_api_key(WapuPayApiKey(token="stored-key", created_at="t0"))
+    m = make_manager(storage, FakeClient())
+    assert m._require_api_key() == "env-key"
+
+
+def test_require_api_key_falls_back_to_stored(monkeypatch, storage):  # Sig:5
+    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
+    storage.save_wapupay_api_key(WapuPayApiKey(token="stored-key", created_at="t0"))
+    m = make_manager(storage, FakeClient())
+    assert m._require_api_key() == "stored-key"
+
+
+def test_require_api_key_missing_mentions_provision(monkeypatch, storage):  # Sig:4
+    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
+    m = make_manager(storage, FakeClient())
+    with pytest.raises(ValueError) as ei:
+        m._require_api_key()
+    assert "wapupay_provision_account" in str(ei.value)
+
+
+def test_token_field_is_redacted():  # Sig:5
+    out = _redact({"token": "supersecret", "email": "a@b.com"})
+    assert out["token"] == "***"
+    assert out["email"] == "a@b.com"
+
+
+def test_mask_short_and_long():  # Sig:3
+    assert _mask("") == ""
+    assert _mask("short8ch") == "***"  # <= 8 chars
+    assert _mask("abcdEFGHijkl") == "abcd…ijkl"
+
+
+def test_logout_keeps_api_key(monkeypatch, storage):  # Sig:5
+    # The API key is decoupled from the AQUA login session: logout must not delete it.
+    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
+    logged_in(storage)
+    storage.save_wapupay_api_key(WapuPayApiKey(token="keep-me", created_at="t0"))
+    m = make_manager(storage, FakeClient())
+    m.logout()
+    assert storage.load_wapupay_session() is None
+    assert storage.load_wapupay_api_key().token == "keep-me"

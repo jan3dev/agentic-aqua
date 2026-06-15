@@ -49,6 +49,7 @@ _SHIPPED_DISABLED: frozenset[str] = frozenset({
     "wapupay_transactions",
     "wapupay_transaction",
     "wapupay_spending_limit",
+    "wapupay_provision_account",
 })
 
 assert _SHIPPED_DISABLED <= TOOLS.keys(), (
@@ -144,6 +145,7 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("wapupay", "transactions"): "wapupay_transactions",
     ("wapupay", "transaction"): "wapupay_transaction",
     ("wapupay", "spending-limit"): "wapupay_spending_limit",
+    ("wapupay", "provision-account"): "wapupay_provision_account",
 
     # qr group (cli/qr.py)
     ("qr", "decode"): "qr_decode",

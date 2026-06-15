@@ -127,6 +127,7 @@ class Storage:
         self.wapupay_dir = self.base_dir / "wapupay"
         self.wapupay_orders_dir = self.wapupay_dir / "orders"
         self.wapupay_session_path = self.wapupay_dir / "session.json"
+        self.wapupay_api_key_path = self.wapupay_dir / "api_key.json"
         self.qr_dir = self.base_dir / "qr"
         self.config_path = self.base_dir / "config.json"
         self._ensure_dirs()
@@ -682,9 +683,35 @@ class Storage:
             return WapuPaySession.from_dict(json.load(f))
 
     def delete_wapupay_session(self) -> None:
-        """Remove the persisted WapuPay session (idempotent)."""
+        """Remove the persisted WapuPay session (idempotent).
+
+        Does NOT touch the WapuPay API key (``api_key.json``): the key is
+        decoupled from the AQUA login session — it is used directly against
+        WapuPay — so logging out must not invalidate it locally.
+        """
         try:
             self.wapupay_session_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def save_wapupay_api_key(self, api_key) -> None:
+        """Persist the provisioned WapuPay API key. File is 0o600 — it authorizes
+        WapuPay business calls directly."""
+        self._atomic_write_json(self.wapupay_api_key_path, api_key.to_dict())
+
+    def load_wapupay_api_key(self):
+        """Load the persisted WapuPay API key. Returns WapuPayApiKey or None."""
+        from .wapupay import WapuPayApiKey
+
+        if not self.wapupay_api_key_path.exists():
+            return None
+        with open(self.wapupay_api_key_path) as f:
+            return WapuPayApiKey.from_dict(json.load(f))
+
+    def delete_wapupay_api_key(self) -> None:
+        """Remove the persisted WapuPay API key (idempotent)."""
+        try:
+            self.wapupay_api_key_path.unlink()
         except FileNotFoundError:
             pass
 

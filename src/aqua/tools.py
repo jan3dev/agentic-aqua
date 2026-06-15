@@ -1359,6 +1359,34 @@ def wapupay_spending_limit() -> dict[str, Any]:
     return get_wapupay_manager().spending_limit()
 
 
+def wapupay_provision_account(rotate: bool = False) -> dict[str, Any]:
+    """Provision a WapuPay API key via your AQUA account, so the WapuPay tools work.
+
+    Use this when the user wants to use WapuPay but has no WapuPay API key set.
+    It calls the AQUA backend (authorized with the AQUA login session) to create
+    the user's WapuPay sub-user and obtain their API key, then stores the key
+    locally (0o600) so every other `wapupay_*` tool can use it automatically.
+    The raw key is never returned — only a masked preview.
+
+    Requires a prior AQUA login: call `aqua_login` then `aqua_verify` first.
+
+    Non-rotating by default: if a key is already configured (env var or stored)
+    this is a no-op that reports `already_configured` WITHOUT calling the backend.
+    Only set `rotate=True` to deliberately replace the key — that invalidates the
+    previous one immediately with no grace period, so never retry with
+    `rotate=True` just because a call seemed to fail.
+
+    Args:
+        rotate: force-provision a fresh key, invalidating any previous one.
+
+    Returns:
+        On first provision: provisioned=True, key_preview, created_at, message,
+        warning. When already configured (rotate=False): already_configured=True,
+        source ("env"|"stored"), key_preview, message.
+    """
+    return get_wapupay_manager().provision_account(rotate=rotate)
+
+
 # ---------------------------------------------------------------------------
 # SideShift (custodial cross-chain swaps via sideshift.ai)
 # ---------------------------------------------------------------------------
@@ -2053,5 +2081,6 @@ TOOLS = {
     "wapupay_transactions": wapupay_transactions,
     "wapupay_transaction": wapupay_transaction,
     "wapupay_spending_limit": wapupay_spending_limit,
+    "wapupay_provision_account": wapupay_provision_account,
     "qr_decode": qr_decode,
 }

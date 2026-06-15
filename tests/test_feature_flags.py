@@ -224,6 +224,7 @@ def test_sideswap_and_pix_disabled_by_default():
         "wapupay_exchange_rates", "wapupay_quote", "wapupay_create_order",
         "wapupay_fund_order", "wapupay_order_status", "wapupay_transactions",
         "wapupay_transaction", "wapupay_spending_limit",
+        "wapupay_provision_account",
     }
     for name in expected_disabled:
         assert SHIPPED_DEFAULTS_ENABLED_TOOLS[name] is False, name

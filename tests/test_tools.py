@@ -875,6 +875,7 @@ class TestToolRegistry:
             "wapupay_transactions",
             "wapupay_transaction",
             "wapupay_spending_limit",
+            "wapupay_provision_account",
         }
         assert set(TOOLS.keys()) == expected
 

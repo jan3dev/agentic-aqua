@@ -2023,6 +2023,15 @@ class _FakeWapuPayManager:
             "funded": True,
         }
 
+    def provision_account(self, rotate=False):
+        self.calls.append(("provision_account", {"rotate": rotate}))
+        return {
+            "provisioned": True,
+            "rotated": rotate,
+            "key_preview": "Wapu…uY8e",
+            "message": "WapuPay API key provisioned and stored locally.",
+        }
+
 
 @pytest.fixture
 def wapupay_cli():
@@ -2149,3 +2158,36 @@ class TestWapuPayCli:
         )
         assert result.exit_code == 0
         assert json.loads(result.output)["valid_cbu_alias"] is True
+
+    def test_provision_account_default_no_rotate(self, runner, wapupay_cli):
+        result = runner.invoke(
+            cli, ["--format", "json", "wapupay", "provision-account"]
+        )
+        assert result.exit_code == 0
+        assert json.loads(result.output)["provisioned"] is True
+        assert wapupay_cli.calls[-1] == ("provision_account", {"rotate": False})
+
+    def test_provision_account_rotate_requires_confirm(self, runner, wapupay_cli):
+        # --rotate without --yes prompts; declining aborts without calling the tool.
+        result = runner.invoke(
+            cli, ["wapupay", "provision-account", "--rotate"], input="n\n"
+        )
+        assert result.exit_code != 0  # aborted
+        assert not any(c[0] == "provision_account" for c in wapupay_cli.calls)
+
+    def test_provision_account_rotate_yes_skips_confirm(self, runner, wapupay_cli):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "wapupay", "provision-account", "--rotate", "--yes"],
+        )
+        assert result.exit_code == 0
+        assert wapupay_cli.calls[-1] == ("provision_account", {"rotate": True})
+
+    def test_provision_account_hidden_by_default(self):
+        """provision-account is dark-launched OFF, like the rest of the surface."""
+        from aqua.cli.commands import register_commands
+        from aqua.features import SHIPPED_DEFAULTS_ENABLED_TOOLS
+        from aqua.storage import Config
+
+        register_commands(cli, Config(enabled_tools=dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)))
+        assert "wapupay" not in cli.commands

@@ -129,22 +129,39 @@ WapuPay rejects a request bearing both `X-API-Key` and `Authorization: Bearer`
 with `lw_send_asset` (no auto-pay). `wapupay_exchange_rates` is **public** (no key).
 
 Two independent auth surfaces:
-- **WapuPay API key** — `WAPUPAY_API_KEY`, read lazily per business call
-  (`WapuPayManager._require_api_key`); missing/invalid → a clear `ValueError`
-  (a WapuPay 401 means the key is wrong, not a session issue).
+- **WapuPay API key** — resolved lazily per business call
+  (`WapuPayManager._require_api_key`): `WAPUPAY_API_KEY` env var first, then the
+  key provisioned via `wapupay_provision_account` and persisted to
+  `~/.aqua/wapupay/api_key.json` (env wins). Neither set → a clear `ValueError`
+  pointing at both. A WapuPay 401 means the key is wrong, not a session issue.
 - **AQUA account login** — `aqua_login`/`aqua_verify`/`aqua_logout`/`aqua_session`
   (CLI `aqua auth …`) are an *AQUA-account* email-OTP against Ankara
   (`/api/v1/auth/{login,verify}/` → JWT). This session is **decoupled** from the
-  WapuPay business calls (they need the API key, not a login).
+  WapuPay business calls (they need the API key, not a login). `aqua_logout`
+  forgets the session but does **not** delete the provisioned API key.
+
+- **Provisioning a key** — `wapupay_provision_account` (CLI
+  `aqua wapupay provision-account`) is for the user who has no `WAPUPAY_API_KEY`.
+  It calls the AQUA backend `POST /api/v1/wapupay/account/` with the AQUA JWT
+  (`Authorization: Bearer`, **no** `X-API-Key` — this hits AQUA/Ankara, not
+  WapuPay), gets back `{"token": ...}`, and stores it locally so every
+  `wapupay_*` tool works. **Requires a prior `aqua_login`.** The raw key is never
+  returned (masked preview only). **Non-rotating by default**: a no-op if a key
+  is already configured — `rotate=True` forces a fresh key, invalidating the
+  previous one with no grace period (so never retry with `rotate=True` on a
+  transient failure).
 
 - **Env vars:** `WAPUPAY_BASE_URL` (default `https://be-prod.wapu.app`; override
-  for staging, e.g. `https://be-stage.wapu.app`), `WAPUPAY_API_KEY` (required for
-  business calls), and `ANKARA_API_URL` (default `https://ankara.aquabtc.com`,
-  shared with Lightning; used by the `aqua_*` login only).
-- **Dark-launched OFF.** All 12 `aqua_*` / `wapupay_*` tools ship
+  for staging, e.g. `https://be-stage.wapu.app`), `WAPUPAY_API_KEY` (used for
+  business calls if set), `ANKARA_API_URL` (default `https://ankara.aquabtc.com`,
+  shared with Lightning; used by the `aqua_*` login), and `AQUA_BACKEND_API_URL`
+  (host for the provisioning endpoint; defaults to `ANKARA_API_URL` — staging
+  `https://test.aquabtc.com`, prod `https://ankara.aquabtc.com`, same backend).
+- **Dark-launched OFF.** All 13 `aqua_*` / `wapupay_*` tools ship
   disabled-by-default (`features._SHIPPED_DISABLED`); opt in via
-  `~/.aqua/config.json` `enabled_tools` (and set `WAPUPAY_API_KEY`).
+  `~/.aqua/config.json` `enabled_tools` (business calls also need a key — env or
+  provisioned).
 - **Rail pinned** to Liquid USDT; WapuPay rejects any other funding rail (400).
-- AQUA session (JWT) and order records persist under `~/.aqua/wapupay/` at `0o600`;
-  bank PII + tokens + API key are never logged (see `wapupay._redact` /
-  `_SENSITIVE_LOG_FIELDS`).
+- AQUA session (JWT), the provisioned API key, and order records persist under
+  `~/.aqua/wapupay/` at `0o600`; bank PII + tokens + API key are never logged
+  (see `wapupay._redact` / `_SENSITIVE_LOG_FIELDS`, which includes `token`).

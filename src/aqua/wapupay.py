@@ -64,6 +64,14 @@ ANKARA_API_URL = os.environ.get("ANKARA_API_URL", "https://ankara.aquabtc.com").
     "/"
 )
 AUTH_BASE_URL = f"{ANKARA_API_URL}/api/v1/auth"
+# AQUA/Ankara backend host for the WapuPay sub-user provisioning endpoint
+# (POST /api/v1/wapupay/account/). Same backend that issues the AQUA JWT, so it
+# defaults to ANKARA_API_URL — set AQUA_BACKEND_API_URL only to point provisioning
+# at a different host (staging https://test.aquabtc.com, prod ankara.aquabtc.com).
+AQUA_BACKEND_API_URL = os.environ.get("AQUA_BACKEND_API_URL", ANKARA_API_URL).rstrip("/")
+# Provisioning endpoint path. Keep the trailing slash: Ankara is DRF and
+# APPEND_SLASH would 301 a slashless POST and drop the body.
+WAPUPAY_ACCOUNT_PATH = "/api/v1/wapupay/account/"
 
 # WapuPay API key, read lazily per call (see WapuPayManager._require_api_key) so
 # tests can monkeypatch it and a missing key surfaces a clear error — mirrors
@@ -97,6 +105,7 @@ _SENSITIVE_LOG_FIELDS = frozenset(
         "authorization",
         "x-api-key",
         "api_key",
+        "token",
     }
 )
 
@@ -150,6 +159,20 @@ def _scrub_text(s: str) -> str:
     s = re.sub(r"[\w.+-]+@[\w-]+\.[\w.-]+", "<redacted-email>", s)
     s = re.sub(r"\d{11,}", "<redacted>", s)
     return s
+
+
+def _mask(secret: str) -> str:
+    """Mask a secret for display: keep the first/last few chars, hide the middle.
+
+    The raw key must never appear in tool output or logs; this gives the user
+    enough to confirm which key is configured without revealing it. Short
+    strings collapse to ``***`` so we never leak a meaningful fraction.
+    """
+    if not secret:
+        return ""
+    if len(secret) <= 8:
+        return "***"
+    return f"{secret[:4]}…{secret[-4:]}"
 
 
 def _extract_error_message(body: str) -> str:
@@ -268,6 +291,26 @@ class WapuPaySession:
 
 
 @dataclass
+class WapuPayApiKey:
+    """Locally-persisted WapuPay API key provisioned via the AQUA backend.
+
+    Stored 0o600 — it authorizes WapuPay business calls directly and is never
+    logged (``token`` is in ``_SENSITIVE_LOG_FIELDS``). Decoupled from the AQUA
+    login session: logging out does NOT delete it."""
+
+    token: str
+    created_at: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "WapuPayApiKey":
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+
+@dataclass
 class WapuPayOrder:
     """Lightweight local record of a WapuPay direct-fiat order.
 
@@ -378,9 +421,11 @@ class WapuPayClient:
         self,
         base_url: Optional[str] = None,
         auth_base_url: Optional[str] = None,
+        aqua_backend_url: Optional[str] = None,
     ) -> None:
         self.base_url = (base_url or WAPUPAY_BASE_URL).rstrip("/")
         self.auth_base_url = (auth_base_url or AUTH_BASE_URL).rstrip("/")
+        self.aqua_backend_url = (aqua_backend_url or AQUA_BACKEND_API_URL).rstrip("/")
 
     @staticmethod
     def _api_key_headers(api_key: str) -> dict[str, str]:
@@ -461,6 +506,70 @@ class WapuPayClient:
             f"{self.auth_base_url}/verify/",
             json_body={"email": email, "otp_code": otp_code},
         ) or {}
+
+    def provision_wapupay_account(self, access_token: str) -> dict:
+        """POST /api/v1/wapupay/account/ — provision a WapuPay sub-user & return its key.
+
+        This hits the AQUA/Ankara backend (NOT WapuPay directly), authenticated
+        with the AQUA JWT — so it sends ``Authorization: Bearer`` and never an
+        ``X-API-Key``. The backend returns ``{"token": "<wapupay api key>"}`` and
+        rotates the key on every successful call. Self-contained (does not reuse
+        the WapuPay-flavoured ``_api_request`` seam) so the error messages and
+        Bearer auth are correct for the AQUA backend; all network I/O still goes
+        through ``urllib.request.urlopen`` (the single patch point in tests).
+
+        Raises:
+            ValueError: on any non-2xx (401 = bad/expired AQUA JWT, 403 =
+                wapupay_b2b feature off, 502 = WapuPay upstream), a non-JSON
+                body, or an unreachable host. No fake-success fallback.
+        """
+        url = f"{self.aqua_backend_url}{WAPUPAY_ACCOUNT_PATH}"
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+            "Authorization": f"Bearer {access_token}",
+        }
+        req = urllib.request.Request(url, data=None, method="POST", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
+                raw = resp.read().decode()
+                if not raw.strip():
+                    return {}
+                try:
+                    return json.loads(raw)
+                except json.JSONDecodeError as e:
+                    raise ValueError(
+                        f"AQUA backend returned a non-JSON response ({resp.status} POST)"
+                    ) from e
+        except urllib.error.HTTPError as e:
+            # Code-specific, actionable messages. For 401 we replace (not append)
+            # the upstream DRF detail — "credentials were not provided" is noise.
+            if e.code == 401:
+                raise ValueError(
+                    "AQUA session invalid or expired — run aqua_login / aqua_verify again."
+                ) from e
+            if e.code == 403:
+                raise ValueError(
+                    "WapuPay B2B is not enabled for your AQUA account "
+                    "(feature 'wapupay_b2b'; contact AQUA ops)."
+                ) from e
+            if e.code == 502:
+                raise ValueError(
+                    "WapuPay upstream error while provisioning your account — "
+                    "try again shortly."
+                ) from e
+            body = ""
+            try:
+                body = e.read().decode()
+            except Exception:
+                pass
+            detail = _extract_error_message(body)
+            msg = f"AQUA backend request failed ({e.code} POST)"
+            if detail:
+                msg += f": {detail}"
+            raise ValueError(msg) from e
+        except urllib.error.URLError as e:
+            raise ValueError(f"AQUA backend unreachable (POST): {e.reason}") from e
 
     # -- WapuPay direct API --------------------------------------------------
 
@@ -604,22 +713,108 @@ class WapuPayManager:
             "created_at": session.created_at,
         }
 
-    def _require_api_key(self) -> str:
-        """Return WapuPay's API key from the environment, or raise.
+    def provision_account(self, rotate: bool = False) -> dict:
+        """Provision a WapuPay API key via the AQUA backend and store it locally.
 
-        Read lazily on every business call (so a key rotation takes effect
-        without a restart and tests can monkeypatch it). WapuPay business
-        endpoints are authorized by this key, not by the AQUA login session; a
-        401 from WapuPay means the key is missing or invalid. No silent
-        fallback (CLAUDE.md "No lies rules").
+        Requires a prior AQUA login (``aqua_login`` → ``aqua_verify``): the call
+        is authorized with that JWT. The returned key is persisted to
+        ``~/.aqua/wapupay/api_key.json`` (0o600) so every ``wapupay_*`` business
+        tool can use it without an env var — the raw key is never returned.
+
+        Non-rotating by default: if a key is already configured (env var or
+        stored), this is a no-op that reports the source — it does NOT call the
+        backend, because re-provisioning rotates the key with no grace period and
+        an unintended retry must never invalidate a working credential. Pass
+        ``rotate=True`` to force a fresh key (invalidating the previous one).
+        """
+        if not rotate:
+            env_key = os.environ.get(WAPUPAY_API_KEY_ENV)
+            if env_key:
+                return {
+                    "already_configured": True,
+                    "source": "env",
+                    "key_preview": _mask(env_key),
+                    "message": (
+                        f"A WapuPay API key is already set via {WAPUPAY_API_KEY_ENV} "
+                        "(env takes precedence). Pass rotate=True to provision a new "
+                        "one — note this invalidates the previous key immediately."
+                    ),
+                }
+            stored = self.storage.load_wapupay_api_key()
+            if stored and stored.token:
+                return {
+                    "already_configured": True,
+                    "source": "stored",
+                    "key_preview": _mask(stored.token),
+                    "created_at": stored.created_at,
+                    "message": (
+                        "A WapuPay API key is already provisioned and stored. Pass "
+                        "rotate=True to replace it — note this invalidates the "
+                        "previous key immediately."
+                    ),
+                }
+
+        session = self.storage.load_wapupay_session()
+        if not session or not session.access:
+            raise ValueError(
+                "Not logged in to your AQUA account. Run aqua_login then aqua_verify "
+                "before provisioning a WapuPay API key."
+            )
+        resp = self.client.provision_wapupay_account(session.access)
+        token = (resp or {}).get("token")
+        if not token or not str(token).strip():
+            raise ValueError(
+                "AQUA backend did not return a WapuPay API key (token missing)."
+            )
+        token = str(token).strip()
+        record = WapuPayApiKey(token=token, created_at=datetime.now(UTC).isoformat())
+        self.storage.save_wapupay_api_key(record)
+        result = {
+            "provisioned": True,
+            "rotated": bool(rotate),
+            "source": "stored",
+            "key_preview": _mask(token),
+            "created_at": record.created_at,
+            "message": (
+                "WapuPay API key provisioned and stored locally — all WapuPay tools "
+                "are now ready."
+            ),
+        }
+        # Only warn about rotation when the user explicitly rotated: a first-time
+        # provision (rotate=False, no key was configured) didn't invalidate any key
+        # the user was using, so a "this rotated your key" warning would mislead.
+        if rotate:
+            result["warning"] = (
+                "This rotated your WapuPay API key; any previously issued key is now "
+                "invalid."
+            )
+        return result
+
+    def _require_api_key(self) -> str:
+        """Return WapuPay's API key, or raise.
+
+        Resolution order, read lazily on every business call (so a key change
+        takes effect without a restart and tests can monkeypatch it):
+
+        1. ``WAPUPAY_API_KEY`` env var — explicit config wins.
+        2. The key provisioned via ``wapupay_provision_account`` and persisted
+           under ``~/.aqua/wapupay/api_key.json``.
+
+        WapuPay business endpoints are authorized by this key, not by the AQUA
+        login session; a 401 from WapuPay means the key is missing or invalid.
+        No silent fallback (CLAUDE.md "No lies rules").
         """
         key = os.environ.get(WAPUPAY_API_KEY_ENV)
-        if not key:
-            raise ValueError(
-                f"WapuPay API key not configured. Set {WAPUPAY_API_KEY_ENV} in your "
-                "environment to use WapuPay direct-fiat payments."
-            )
-        return key
+        if key:
+            return key
+        record = self.storage.load_wapupay_api_key()
+        if record and record.token:
+            return record.token
+        raise ValueError(
+            f"WapuPay API key not configured. Set {WAPUPAY_API_KEY_ENV} in your "
+            "environment, or run wapupay_provision_account (after aqua_login) to "
+            "provision and store one."
+        )
 
     # -- Read-only -----------------------------------------------------------
 
