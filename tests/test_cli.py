@@ -2055,28 +2055,66 @@ def wapupay_cli():
         register_commands(cli, Config(enabled_tools=dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)))
 
 
-class TestWapuPayCli:
-    def test_group_hidden_by_default(self, runner):
-        """Dark-launch: the group is absent until tools are enabled."""
-        result = runner.invoke(cli, ["--help"])
-        assert "wapupay" not in result.output
+@pytest.fixture
+def auth_cli():
+    """Re-register the CLI with the AQUA auth tools enabled + a fake manager.
 
-    def test_login(self, runner, wapupay_cli):
+    The `aqua_*` auth tools ship disabled-by-default (alongside the rest of the
+    WapuPay surface), so the `auth` group is absent from the import-time
+    registration; enable it for the test, then restore the default registration.
+    The `aqua_login`/`aqua_verify` tools route through `tools._wapupay_manager`,
+    so the same `_FakeWapuPayManager` stand-in records the calls.
+    """
+    import aqua.tools as tools_module
+    from aqua.cli.commands import register_commands
+    from aqua.features import SHIPPED_DEFAULTS_ENABLED_TOOLS
+    from aqua.storage import Config
+
+    enabled = dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)
+    for k in enabled:
+        if k.startswith("aqua_"):
+            enabled[k] = True
+    register_commands(cli, Config(enabled_tools=enabled))
+
+    fake = _FakeWapuPayManager()
+    saved = tools_module._wapupay_manager
+    tools_module._wapupay_manager = fake
+    try:
+        yield fake
+    finally:
+        tools_module._wapupay_manager = saved
+        register_commands(cli, Config(enabled_tools=dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)))
+
+
+class TestWapuPayCli:
+    def test_groups_hidden_by_default(self):
+        """Dark-launch: both the `wapupay` and `auth` groups are absent until
+        their tools are enabled. Asserted against the command registry (not the
+        help text) — "auth" is a substring of unrelated words."""
+        from aqua.cli.commands import register_commands
+        from aqua.features import SHIPPED_DEFAULTS_ENABLED_TOOLS
+        from aqua.storage import Config
+
+        register_commands(cli, Config(enabled_tools=dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)))
+        assert "wapupay" not in cli.commands
+        assert "auth" not in cli.commands
+
+    def test_login(self, runner, auth_cli):
         result = runner.invoke(
-            cli, ["--format", "json", "wapupay", "login", "--email", "u@e.com"]
+            cli, ["--format", "json", "auth", "login", "--email", "u@e.com"]
         )
         assert result.exit_code == 0
         assert json.loads(result.output)["message"] == "OTP sent"
-        assert wapupay_cli.calls[-1] == ("login", {"email": "u@e.com", "language": "en"})
+        assert auth_cli.calls[-1] == ("login", {"email": "u@e.com", "language": "en"})
 
-    def test_verify_reads_otp_arg(self, runner, wapupay_cli):
+    def test_verify_reads_otp_arg(self, runner, auth_cli):
         result = runner.invoke(
             cli,
-            ["--format", "json", "wapupay", "verify", "--email", "u@e.com", "--otp-code", "123456"],
+            ["--format", "json", "auth", "verify", "--email", "u@e.com", "--otp-code", "123456"],
         )
         assert result.exit_code == 0
         assert json.loads(result.output)["logged_in"] is True
-        assert wapupay_cli.calls[-1][1]["otp_code"] == "123456"
+        assert auth_cli.calls[-1][1]["otp_code"] == "123456"
 
     def test_create_order_with_yes_skips_confirm(self, runner, wapupay_cli):
         result = runner.invoke(

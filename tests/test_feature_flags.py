@@ -220,7 +220,7 @@ def test_sideswap_and_pix_disabled_by_default():
         "sideswap_peg_quote", "sideswap_peg_in", "sideswap_peg_out",
         "sideswap_peg_status", "sideswap_list_assets", "sideswap_quote",
         "sideswap_execute_swap", "sideswap_swap_status",
-        "wapupay_login", "wapupay_verify", "wapupay_logout", "wapupay_session",
+        "aqua_login", "aqua_verify", "aqua_logout", "aqua_session",
         "wapupay_exchange_rates", "wapupay_quote", "wapupay_create_order",
         "wapupay_fund_order", "wapupay_order_status", "wapupay_transactions",
         "wapupay_transaction", "wapupay_spending_limit",

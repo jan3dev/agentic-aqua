@@ -1,25 +1,25 @@
-"""WapuPay direct-fiat payments via JAN3's AQUA Ankara backend proxy.
+"""WapuPay direct-fiat payments (Argentine ARS payouts funded with Liquid USDT).
 
-A WapuPay **direct-fiat** order lets an AQUA user pay an Argentine bank account
+A WapuPay **direct-fiat** order lets a user pay an Argentine bank account
 (by alias / CBU / CVU) in **ARS**, funding the payout with **USDT on Liquid**.
-Everything is routed through the Ankara backend's thin catch-all proxy at
-``{ANKARA}/api/v1/wapupay/<subpath>`` — never WapuPay directly. Ankara
-authenticates the AQUA user (JWT), injects the business ``X-API-Key`` and the
-per-user ``X-Wapu-User-Id`` sub-user, and pins the funding rail to Liquid USDT.
+WapuPay's API is called **directly** (``https://be-prod.wapu.app`` by default;
+override with ``WAPUPAY_BASE_URL`` for staging, e.g. ``be-stage.wapu.app``).
+Each business call carries WapuPay's own ``X-API-Key`` (read lazily from the
+``WAPUPAY_API_KEY`` env var); the funding rail is pinned to Liquid USDT.
 WapuPay is the source of truth; we keep only a lightweight local order record
 for CLI / MCP recovery and tracking.
 
-Auth (Ankara email-OTP → JWT):
+Two independent auth surfaces (see CLAUDE.md):
 
-    1. ``POST {ANKARA}/api/v1/auth/login/``  {email, language}  → OTP emailed.
-    2. ``POST {ANKARA}/api/v1/auth/verify/`` {email, otp_code} → {access, refresh}.
-    3. ``POST {ANKARA}/api/v1/auth/refresh/`` {refresh}         → {access}.
-
-The Ankara wapupay view is ``IsAuthenticated`` and accepts the access token as
-an ``Authorization: Bearer`` header (primary) or the ``access_token`` cookie
-(fallback). We use the Bearer header — isolated in ``WapuPayClient._auth_headers``
-so the cookie form is a one-line swap. Every subpath (even ``exchange_rates``)
-requires a valid AQUA session; on a 401 we refresh once and retry.
+    * **WapuPay API key** — every order/transaction call sends ``X-API-Key``.
+      WapuPay treats ``X-API-Key`` and ``Authorization: Bearer`` as mutually
+      exclusive (sending both → 400), so business calls send **only** the key
+      and never a Bearer token. ``exchange_rates`` is a public endpoint and
+      sends no auth header at all.
+    * **AQUA account login** — ``login``/``verify`` are an *AQUA-account*
+      email-OTP against Ankara (``{ANKARA}/api/v1/auth/{login,verify}/`` → JWT),
+      surfaced as the ``aqua_*`` tools. This session is **decoupled** from the
+      WapuPay business calls above (they need ``WAPUPAY_API_KEY``, not a login).
 
 Direct-fiat flow (the "order"):
 
@@ -44,7 +44,7 @@ import urllib.request
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -53,16 +53,22 @@ logger = logging.getLogger(__name__)
 # Endpoint configuration
 # ---------------------------------------------------------------------------
 
-# Reuse the same Ankara host as the Lightning integration. Override for staging
-# / local development with ANKARA_API_URL (e.g. a be-stage Ankara instance).
+# WapuPay's own API host — called directly (no Ankara proxy). Override for
+# staging / local development with WAPUPAY_BASE_URL (e.g. be-stage.wapu.app).
+WAPUPAY_BASE_URL = os.environ.get(
+    "WAPUPAY_BASE_URL", "https://be-prod.wapu.app"
+).rstrip("/")
+# AQUA-account login (the `aqua_*` tools) still authenticates against Ankara —
+# the same host as the Lightning integration. Override with ANKARA_API_URL.
 ANKARA_API_URL = os.environ.get("ANKARA_API_URL", "https://ankara.aquabtc.com").rstrip(
     "/"
 )
-# The wapupay proxy base and the auth base both live under the same Ankara host.
-WAPUPAY_BASE_URL = os.environ.get(
-    "WAPUPAY_BASE_URL", f"{ANKARA_API_URL}/api/v1/wapupay"
-).rstrip("/")
 AUTH_BASE_URL = f"{ANKARA_API_URL}/api/v1/auth"
+
+# WapuPay API key, read lazily per call (see WapuPayManager._require_api_key) so
+# tests can monkeypatch it and a missing key surfaces a clear error — mirrors
+# pix.py's EULEN_API_TOKEN_ENV.
+WAPUPAY_API_KEY_ENV = "WAPUPAY_API_KEY"
 
 USER_AGENT = "agentic-aqua"
 HTTP_TIMEOUT_SECONDS = 30.0
@@ -80,9 +86,18 @@ CURRENCY_TAKEN_USDT = "USDT"
 TRANSFER_TYPES = ("fiat_transfer", "fast_fiat_transfer")
 
 # Bank-PII / secret fields that must never reach the logs (mirrors Ankara's
-# WAPUPAY_SENSITIVE_FIELDS plus the bearer token).
+# WAPUPAY_SENSITIVE_FIELDS plus the WapuPay API key and the AQUA-login token).
 _SENSITIVE_LOG_FIELDS = frozenset(
-    {"alias", "receiver_name", "refund_address", "access", "refresh", "authorization"}
+    {
+        "alias",
+        "receiver_name",
+        "refund_address",
+        "access",
+        "refresh",
+        "authorization",
+        "x-api-key",
+        "api_key",
+    }
 )
 
 # Tentative status groupings.
@@ -101,20 +116,6 @@ def order_is_success(status: str) -> bool:
 
 def order_is_failed(status: str) -> bool:
     return (status or "").upper() in _FAILED_STATUSES
-
-
-# ---------------------------------------------------------------------------
-# Errors
-# ---------------------------------------------------------------------------
-
-
-class WapuPayAuthError(Exception):
-    """Ankara rejected our AQUA JWT (HTTP 401).
-
-    Internal control-flow signal: the manager catches it to refresh the token
-    and retry once. It never escapes the manager — a persistent auth failure is
-    re-raised as a plain ``ValueError`` telling the user to log in again.
-    """
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +194,10 @@ def _normalize_ars_amount(amount_ars: str | int | float | Decimal) -> Decimal:
         d = Decimal(str(amount_ars))
     except (InvalidOperation, ValueError) as e:
         raise ValueError(f"Invalid amount_ars: {amount_ars!r}") from e
+    # Reject NaN / ±Infinity BEFORE the comparison below (a money validator must
+    # never accept a non-finite amount, and `NaN <= 0` would raise InvalidOperation).
+    if not d.is_finite():
+        raise ValueError(f"amount_ars must be a finite number, got {amount_ars!r}")
     if d <= 0:
         raise ValueError("amount_ars must be positive")
     if d != d.to_integral_value():
@@ -311,6 +316,10 @@ class WapuPayOrder:
         Only overwrites fields present in the response, so a status poll that
         omits funding fields doesn't wipe a previously-issued funding address.
         """
+        if not isinstance(resp, dict):
+            raise ValueError(
+                f"WapuPay returned an unexpected (non-object) response: {type(resp).__name__}"
+            )
         mapping = {
             "status": "status",
             "funding_currency": "funding_currency",
@@ -342,6 +351,11 @@ class WapuPayOrder:
             self.funding_amount_sat is None or (usdt_in_resp and not sat_in_resp)
         ):
             self.funding_amount_sat = usdt_to_sats(self.funding_amount_usdt)
+        # Integer-satoshis invariant: if WapuPay sent funding_amount_sat as a
+        # float (against its own integer spec), coerce so callers / lw_send_asset
+        # never receive a float amount.
+        if isinstance(self.funding_amount_sat, float):
+            self.funding_amount_sat = int(self.funding_amount_sat)
 
 
 # ---------------------------------------------------------------------------
@@ -350,13 +364,14 @@ class WapuPayOrder:
 
 
 class WapuPayClient:
-    """HTTP client for AQUA's Ankara-proxied WapuPay surface + Ankara auth.
+    """HTTP client for WapuPay's direct API + AQUA-account (Ankara) auth.
 
     All network I/O funnels through the single ``_api_request`` seam so tests
-    patch one method (see ``tests/AGENTS.md``). Upstream errors are surfaced as
-    ``ValueError`` with a human message; a 401 raises ``WapuPayAuthError`` so the
-    manager can refresh + retry. No fallback fake-success values (CLAUDE.md
-    "No lies rules").
+    patch one method (see ``tests/AGENTS.md``). Business calls send WapuPay's
+    ``X-API-Key`` (never a Bearer token — the two are mutually exclusive).
+    Upstream errors are surfaced as ``ValueError`` with a human message (a 401
+    means the API key is missing/invalid); no fallback fake-success values
+    (CLAUDE.md "No lies rules").
     """
 
     def __init__(
@@ -368,14 +383,13 @@ class WapuPayClient:
         self.auth_base_url = (auth_base_url or AUTH_BASE_URL).rstrip("/")
 
     @staticmethod
-    def _auth_headers(access: str) -> dict[str, str]:
-        """Build the AQUA-session auth header.
+    def _api_key_headers(api_key: str) -> dict[str, str]:
+        """Build WapuPay's API-key auth header.
 
-        Ankara's CookieJWTAuthentication accepts either form; we use the Bearer
-        header. To fall back to the cookie form, return
-        ``{"Cookie": f"access_token={access}"}`` here instead — single swap.
+        WapuPay rejects a request that carries both ``X-API-Key`` and a Bearer
+        token, so this is the *only* auth header business calls ever send.
         """
-        return {"Authorization": f"Bearer {access}"}
+        return {"X-API-Key": api_key}
 
     def _api_request(
         self,
@@ -383,35 +397,43 @@ class WapuPayClient:
         url: str,
         *,
         json_body: Optional[dict] = None,
-        access: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> Any:
         """Perform one HTTP request and return parsed JSON (or ``{}`` if empty).
 
+        Sends ``X-API-Key`` when ``api_key`` is given (never an ``Authorization``
+        header — WapuPay forbids carrying both).
+
         Raises:
-            WapuPayAuthError: on HTTP 401 (expired/invalid AQUA token).
-            ValueError: on any other non-2xx, or if Ankara is unreachable.
+            ValueError: on any non-2xx (a 401 means the API key is missing or
+                invalid), a non-JSON body, or if the host is unreachable.
         """
         data = json.dumps(json_body).encode() if json_body is not None else None
         headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
         if data is not None:
             headers["Content-Type"] = "application/json"
-        if access:
-            headers.update(self._auth_headers(access))
+        if api_key:
+            headers.update(self._api_key_headers(api_key))
 
         req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
                 raw = resp.read().decode()
-                return json.loads(raw) if raw.strip() else {}
+                if not raw.strip():
+                    return {}
+                try:
+                    return json.loads(raw)
+                except json.JSONDecodeError as e:
+                    raise ValueError(
+                        f"WapuPay returned a non-JSON response "
+                        f"({resp.status} {method})"
+                    ) from e
         except urllib.error.HTTPError as e:
             body = ""
             try:
                 body = e.read().decode()
             except Exception:
                 pass
-            if e.code == 401:
-                # Our AQUA token is stale — let the manager refresh + retry.
-                raise WapuPayAuthError("AQUA session not accepted (401)") from e
             detail = _extract_error_message(body)
             msg = f"WapuPay request failed ({e.code} {method})"
             if detail:
@@ -440,71 +462,63 @@ class WapuPayClient:
             json_body={"email": email, "otp_code": otp_code},
         ) or {}
 
-    def refresh(self, refresh_token: str) -> dict:
-        """POST /auth/refresh/ — rotate the access token. Returns ``{access}``."""
-        return self._api_request(
-            "POST",
-            f"{self.auth_base_url}/refresh/",
-            json_body={"refresh": refresh_token},
-        ) or {}
-
-    # -- WapuPay proxy (delegated through Ankara) ----------------------------
+    # -- WapuPay direct API --------------------------------------------------
 
     def _proxy(
         self,
         method: str,
         subpath: str,
-        access: str,
         *,
+        api_key: Optional[str] = None,
         json_body: Optional[dict] = None,
         query: Optional[dict] = None,
     ) -> Any:
         url = f"{self.base_url}/{subpath.lstrip('/')}"
         if query:
             url = f"{url}?{urllib.parse.urlencode(query)}"
-        return self._api_request(method, url, json_body=json_body, access=access)
+        return self._api_request(method, url, json_body=json_body, api_key=api_key)
 
-    def exchange_rates(self, access: str) -> dict:
-        """GET exchange_rates — current rate pairs (still requires an AQUA session)."""
-        return self._proxy("GET", "exchange_rates", access) or {}
+    def exchange_rates(self) -> dict:
+        """GET exchange_rates — current rate pairs (public; no API key)."""
+        return self._proxy("GET", "exchange_rates") or {}
 
-    def tentative_amount(self, access: str, body: dict) -> dict:
-        """POST transactions/tentative-amount — cost preview (currencies forced by Ankara)."""
+    def tentative_amount(self, body: dict, *, api_key: str) -> dict:
+        """POST transactions/tentative-amount — cost preview (currencies forced server-side)."""
         return self._proxy(
-            "POST", "transactions/tentative-amount", access, json_body=body
+            "POST", "transactions/tentative-amount", api_key=api_key, json_body=body
         ) or {}
 
-    def create_tentative(self, access: str, body: dict) -> dict:
+    def create_tentative(self, body: dict, *, api_key: str) -> dict:
         """POST transactions/direct-fiat/tentatives — create + freeze the quote."""
         return self._proxy(
-            "POST", "transactions/direct-fiat/tentatives", access, json_body=body
+            "POST", "transactions/direct-fiat/tentatives", api_key=api_key, json_body=body
         ) or {}
 
-    def issue_funding(self, access: str, tentative_id: str) -> dict:
+    def issue_funding(self, tentative_id: str, *, api_key: str) -> dict:
         """POST …/tentatives/{uuid}/funding — issue Liquid USDT funding instructions."""
         return self._proxy(
             "POST",
             f"transactions/direct-fiat/tentatives/{tentative_id}/funding",
-            access,
+            api_key=api_key,
         ) or {}
 
-    def get_tentative(self, access: str, tentative_id: str) -> dict:
+    def get_tentative(self, tentative_id: str, *, api_key: str) -> dict:
         """GET …/tentatives/{uuid} — tentative status."""
         return self._proxy(
-            "GET", f"transactions/direct-fiat/tentatives/{tentative_id}", access
+            "GET", f"transactions/direct-fiat/tentatives/{tentative_id}", api_key=api_key
         ) or {}
 
-    def my_transactions(self, access: str) -> Any:
-        """GET transactions/my_transactions — list scoped to the sub-user."""
-        return self._proxy("GET", "transactions/my_transactions", access) or {}
+    def my_transactions(self, *, api_key: str) -> Any:
+        """GET transactions/my_transactions — list scoped to the WapuPay account/key."""
+        return self._proxy("GET", "transactions/my_transactions", api_key=api_key) or {}
 
-    def get_transaction(self, access: str, tx_id: str) -> dict:
+    def get_transaction(self, tx_id: str, *, api_key: str) -> dict:
         """GET transactions/{id} — a single transaction (uuid or numeric)."""
-        return self._proxy("GET", f"transactions/{tx_id}", access) or {}
+        return self._proxy("GET", f"transactions/{tx_id}", api_key=api_key) or {}
 
-    def spending_limit(self, access: str) -> dict:
+    def spending_limit(self, *, api_key: str) -> dict:
         """GET users/spending_limit — monthly KYC limit (USDT)."""
-        return self._proxy("GET", "users/spending_limit", access) or {}
+        return self._proxy("GET", "users/spending_limit", api_key=api_key) or {}
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +556,7 @@ class WapuPayManager:
             "message": resp.get(
                 "message", "An OTP code has been sent to your email."
             ),
-            "next_step": "Call wapupay_verify with the OTP code from your email.",
+            "next_step": "Call aqua_verify with the OTP code from your email.",
         }
         # Non-prod Ankara (EMAIL_BASED_OTP off) returns the code inline.
         if resp.get("otp_code"):
@@ -570,17 +584,17 @@ class WapuPayManager:
         return {
             "email": email,
             "logged_in": True,
-            "message": "Logged in to WapuPay via JAN3 Ankara.",
+            "message": "Logged in to your AQUA account via JAN3 Ankara.",
         }
 
     def logout(self) -> dict:
-        """Forget the local session (does not revoke the token server-side)."""
+        """Forget the local AQUA session (does not revoke the token server-side)."""
         existed = self.storage.load_wapupay_session() is not None
         self.storage.delete_wapupay_session()
         return {"logged_out": existed}
 
     def session_status(self) -> dict:
-        """Report whether a local WapuPay session exists (no secrets returned)."""
+        """Report whether a local AQUA session exists (no secrets returned)."""
         session = self.storage.load_wapupay_session()
         if not session:
             return {"logged_in": False}
@@ -590,54 +604,36 @@ class WapuPayManager:
             "created_at": session.created_at,
         }
 
-    def _with_auth(self, fn: Callable[[str], Any]) -> Any:
-        """Run ``fn(access)`` with a valid session, refreshing once on a 401."""
-        session = self.storage.load_wapupay_session()
-        if not session:
+    def _require_api_key(self) -> str:
+        """Return WapuPay's API key from the environment, or raise.
+
+        Read lazily on every business call (so a key rotation takes effect
+        without a restart and tests can monkeypatch it). WapuPay business
+        endpoints are authorized by this key, not by the AQUA login session; a
+        401 from WapuPay means the key is missing or invalid. No silent
+        fallback (CLAUDE.md "No lies rules").
+        """
+        key = os.environ.get(WAPUPAY_API_KEY_ENV)
+        if not key:
             raise ValueError(
-                "Not logged in to WapuPay. Run `aqua wapupay login` (or wapupay_login) first."
+                f"WapuPay API key not configured. Set {WAPUPAY_API_KEY_ENV} in your "
+                "environment to use WapuPay direct-fiat payments."
             )
-        try:
-            return fn(session.access)
-        except WapuPayAuthError:
-            pass  # fall through to refresh + retry
-
-        try:
-            refreshed = self.client.refresh(session.refresh)
-        except Exception as e:
-            self.storage.delete_wapupay_session()
-            raise ValueError(
-                "WapuPay session expired and could not be refreshed. Please log in again."
-            ) from e
-
-        access = refreshed.get("access")
-        if not access:
-            self.storage.delete_wapupay_session()
-            raise ValueError(
-                "WapuPay token refresh returned no access token. Please log in again."
-            )
-        session.access = access
-        self.storage.save_wapupay_session(session)
-
-        try:
-            return fn(access)
-        except WapuPayAuthError as e:
-            self.storage.delete_wapupay_session()
-            raise ValueError(
-                "WapuPay session expired. Please log in again."
-            ) from e
+        return key
 
     # -- Read-only -----------------------------------------------------------
 
     def exchange_rates(self) -> dict:
-        return self._with_auth(lambda a: self.client.exchange_rates(a))
+        # Public endpoint — no API key required.
+        return self.client.exchange_rates()
 
     def quote(self, amount_ars, transfer_type: str, alias: Optional[str] = None) -> dict:
         """Preview the USDT cost / fee / rate for a hypothetical ARS payment.
 
         Surfaces ``valid_cbu_alias`` so a bad alias/CBU is caught before any
-        order is created. Currencies are forced to ARS/USDT by Ankara.
+        order is created. Currencies are forced to ARS/USDT server-side.
         """
+        key = self._require_api_key()
         self._validate_type(transfer_type)
         d = _normalize_ars_amount(amount_ars)
         body: dict[str, Any] = {
@@ -648,18 +644,19 @@ class WapuPayManager:
         }
         if alias and alias.strip():
             body["alias"] = alias.strip()
-        return self._with_auth(lambda a: self.client.tentative_amount(a, body))
+        return self.client.tentative_amount(body, api_key=key)
 
     def transactions(self) -> Any:
-        return self._with_auth(lambda a: self.client.my_transactions(a))
+        return self.client.my_transactions(api_key=self._require_api_key())
 
     def transaction(self, tx_id: str) -> dict:
         if not tx_id or not str(tx_id).strip():
             raise ValueError("transaction id is required")
-        return self._with_auth(lambda a: self.client.get_transaction(a, str(tx_id).strip()))
+        key = self._require_api_key()
+        return self.client.get_transaction(str(tx_id).strip(), api_key=key)
 
     def spending_limit(self) -> dict:
-        return self._with_auth(lambda a: self.client.spending_limit(a))
+        return self.client.spending_limit(api_key=self._require_api_key())
 
     # -- Order lifecycle -----------------------------------------------------
 
@@ -687,6 +684,9 @@ class WapuPayManager:
         ``funding_expires_at``. The caller pays it with ``lw_send_asset`` — this
         method never broadcasts.
         """
+        # Read the API key up front — before any network call or persistence —
+        # so a missing key fails fast and never leaves a half-created order.
+        key = self._require_api_key()
         self._validate_type(transfer_type)
         if not alias or not alias.strip():
             raise ValueError("alias (recipient bank alias / CBU / CVU) is required")
@@ -706,7 +706,11 @@ class WapuPayManager:
         if external_reference and external_reference.strip():
             body["external_reference"] = external_reference.strip()
 
-        created = self._with_auth(lambda a: self.client.create_tentative(a, body))
+        created = self.client.create_tentative(body, api_key=key)
+        if not isinstance(created, dict):
+            raise ValueError(
+                f"WapuPay returned an unexpected create response: {type(created).__name__}"
+            )
         tentative_id = created.get("tentative_id")
         if not tentative_id:
             raise ValueError(
@@ -730,26 +734,16 @@ class WapuPayManager:
         self.storage.save_wapupay_order(order)
 
         try:
-            funding = self._with_auth(lambda a: self.client.issue_funding(a, tentative_id))
+            funding = self.client.issue_funding(tentative_id, api_key=key)
         except Exception as e:
             order.last_error = f"Funding not issued: {e}"
             self.storage.save_wapupay_order(order)
             result = order.to_dict()
             result["funded"] = False
-            # If the failure purged the session (persistent 401 / failed refresh),
-            # an immediate fund_order would just fail with "not logged in" — tell
-            # the user to re-authenticate first.
-            if self.storage.load_wapupay_session() is None:
-                result["next_step"] = (
-                    "Order created, but the WapuPay session expired before funding. "
-                    "Log in again (wapupay_login then wapupay_verify), then call "
-                    f"wapupay_fund_order with tentative_id={tentative_id}."
-                )
-            else:
-                result["next_step"] = (
-                    "Order created but funding was not issued. Call wapupay_fund_order "
-                    f"with tentative_id={tentative_id} to get the Liquid address."
-                )
+            result["next_step"] = (
+                "Order created but funding was not issued. Call wapupay_fund_order "
+                f"with tentative_id={tentative_id} to get the Liquid address."
+            )
             return result
 
         order.apply_tentative(funding)
@@ -761,7 +755,7 @@ class WapuPayManager:
         """Issue (or re-issue) funding instructions for an existing order."""
         # Validate the id BEFORE it reaches URL construction / the network.
         tentative_id = _validate_tentative_id(tentative_id)
-        funding = self._with_auth(lambda a: self.client.issue_funding(a, tentative_id))
+        funding = self.client.issue_funding(tentative_id, api_key=self._require_api_key())
 
         order = self.storage.load_wapupay_order(tentative_id)
         if order is None:
@@ -782,11 +776,14 @@ class WapuPayManager:
     def order_status(self, tentative_id: str) -> dict:
         """Re-read the tentative from WapuPay and persist it (source of truth)."""
         tentative_id = _validate_tentative_id(tentative_id)
+        # A missing API key is a config error — surface it directly rather than
+        # masking it as a transient "could not refresh status" warning below.
+        key = self._require_api_key()
 
         order = self.storage.load_wapupay_order(tentative_id)
         warning = None
         try:
-            latest = self._with_auth(lambda a: self.client.get_tentative(a, tentative_id))
+            latest = self.client.get_tentative(tentative_id, api_key=key)
             if order is None:
                 order = WapuPayOrder(
                     tentative_id=tentative_id,

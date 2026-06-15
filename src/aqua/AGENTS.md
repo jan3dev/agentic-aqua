@@ -22,7 +22,7 @@ Python package implementing the MCP server, wallet engines, and third-party swap
 | `pix.py` | Brazilian Pix on-ramp via Eulen REST API. | `PixManager` |
 | `changelly.py` | Custodial USDt cross-chain swaps via AQUA's Ankara proxy. Curated allowlist (mirrors AQUA Flutter). | `ChangellyClient`, `ChangellyManager` |
 | `sideshift.py` | Custodial cross-chain swaps via SideShift.ai. Curated allowlist mirrors AQUA Flutter; affiliate ID `PVmPh4Mp3`. | `SideShiftClient`, `SideShiftManager` |
-| `wapupay.py` | WapuPay Argentine direct-fiat payments via the Ankara proxy. Email-OTP auth (JWT) + create-order returns a Liquid USDT funding address. Rail pinned USDT/LIQUID. Dark-launched (disabled-by-default). | `WapuPayClient`, `WapuPayManager`, `WapuPaySession`, `WapuPayOrder` |
+| `wapupay.py` | WapuPay Argentine direct-fiat payments, called **directly** with `X-API-Key` (`WAPUPAY_API_KEY`); never both key + Bearer. `exchange_rates` is public. create-order returns a Liquid USDT funding address. Rail pinned USDT/LIQUID. The `aqua_*` tools are a decoupled AQUA-account email-OTP login (JWT) against Ankara. Dark-launched (disabled-by-default). | `WapuPayClient`, `WapuPayManager`, `WapuPaySession`, `WapuPayOrder` |
 | `banner.py` | CLI ASCII banner rendering. | `render_banner` |
 | `cli/` | Click CLI mirroring MCP tools (see `cli/AGENTS.md`). | — |
 | `static/` | MCP resource markdown (quickstart, networks, security). Loaded by `server.py` via `aqua://docs/*`. | — |

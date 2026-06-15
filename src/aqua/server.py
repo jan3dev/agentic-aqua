@@ -1067,17 +1067,15 @@ TOOL_SCHEMAS = {
             "required": ["from_coin", "from_network", "to_coin", "to_network"],
         },
     },
-    "wapupay_login": {
+    "aqua_login": {
         "description": (
-            "Start WapuPay login: JAN3's AQUA Ankara backend emails a 6-digit "
-            "OTP to the user's address. Follow up with wapupay_verify. WapuPay "
-            "lets the user pay an Argentine bank account in ARS, funded with USDT "
-            "on Liquid."
+            "Start AQUA account login: JAN3's Ankara backend emails a 6-digit "
+            "OTP to the user's address. Follow up with aqua_verify."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "email": {"type": "string", "description": "User's email address"},
+                "email": {"type": "string", "description": "User's AQUA account email address"},
                 "language": {
                     "type": "string",
                     "enum": ["en", "es", "pt"],
@@ -1088,30 +1086,30 @@ TOOL_SCHEMAS = {
             "required": ["email"],
         },
     },
-    "wapupay_verify": {
+    "aqua_verify": {
         "description": (
-            "Verify the OTP emailed by wapupay_login and store the WapuPay "
-            "session locally. Ask the user for the 6-digit code from their email."
+            "Verify the OTP emailed by aqua_login and store the AQUA session "
+            "locally. Ask the user for the 6-digit code from their email."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "email": {"type": "string", "description": "Same email used in wapupay_login"},
+                "email": {"type": "string", "description": "Same email used in aqua_login"},
                 "otp_code": {"type": "string", "description": "6-digit code from the email"},
             },
             "required": ["email", "otp_code"],
         },
     },
-    "wapupay_logout": {
-        "description": "Forget the local WapuPay session (does not revoke the token server-side).",
+    "aqua_logout": {
+        "description": "Forget the local AQUA session (does not revoke the token server-side).",
         "inputSchema": {"type": "object", "properties": {}},
     },
-    "wapupay_session": {
-        "description": "Report whether a WapuPay session is active (no secrets returned).",
+    "aqua_session": {
+        "description": "Report whether an AQUA session is active (no secrets returned).",
         "inputSchema": {"type": "object", "properties": {}},
     },
     "wapupay_exchange_rates": {
-        "description": "Get WapuPay's current exchange rates (e.g. USDT/ARS). Requires being logged in.",
+        "description": "Get WapuPay's current exchange rates (e.g. USDT/ARS). Public — no login or API key.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     "wapupay_quote": {
@@ -1193,7 +1191,7 @@ TOOL_SCHEMAS = {
         },
     },
     "wapupay_transactions": {
-        "description": "List the user's WapuPay transactions (scoped to their sub-user).",
+        "description": "List WapuPay transactions (scoped to the WapuPay account/key).",
         "inputSchema": {"type": "object", "properties": {}},
     },
     "wapupay_transaction": {
@@ -1207,7 +1205,7 @@ TOOL_SCHEMAS = {
         },
     },
     "wapupay_spending_limit": {
-        "description": "Get the user's monthly WapuPay spending limit (USDT), based on KYC tier.",
+        "description": "Get the WapuPay account/key's monthly spending limit (USDT), based on KYC tier.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     "qr_decode": {

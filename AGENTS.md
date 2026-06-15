@@ -121,17 +121,30 @@ SideSwap is not yet implemented for production use. Do not suggest or offer Side
 ## WapuPay (Argentine direct-fiat)
 
 `wapupay.py` lets a user pay an Argentine bank account in **ARS**, funded with
-**USDT on Liquid**, via JAN3's AQUA Ankara backend proxy (`/api/v1/wapupay/*`).
-Auth is email-OTP against Ankara (`/api/v1/auth/{login,verify,refresh}/`) → JWT,
-sent to the proxy as `Authorization: Bearer`. `wapupay_create_order` returns a
-Liquid USDT funding address; the user pays it with `lw_send_asset` (no auto-pay).
+**USDT on Liquid**. WapuPay's API is called **directly** (`https://be-prod.wapu.app`),
+not through Ankara. Each business call carries WapuPay's own **`X-API-Key`**;
+WapuPay rejects a request bearing both `X-API-Key` and `Authorization: Bearer`
+(→ 400), so business calls send **only** the key — never a Bearer token.
+`wapupay_create_order` returns a Liquid USDT funding address; the user pays it
+with `lw_send_asset` (no auto-pay). `wapupay_exchange_rates` is **public** (no key).
 
-- **Env vars:** `ANKARA_API_URL` (default `https://ankara.aquabtc.com`, shared
-  with the Lightning integration) and `WAPUPAY_BASE_URL` (default
-  `{ANKARA_API_URL}/api/v1/wapupay`). Override for a staging Ankara.
-- **Dark-launched OFF.** All `wapupay_*` tools ship disabled-by-default
-  (`features._SHIPPED_DISABLED`), mirroring Ankara's `wapupay_direct_payments`
-  waffle switch. Users opt in via `~/.aqua/config.json` `enabled_tools`.
-- **Rail pinned** to Liquid USDT; Ankara rejects any other funding rail (400).
-- Session (JWT) and order records persist under `~/.aqua/wapupay/` at `0o600`
-  (bank PII + bearer token); never logged — see `wapupay._redact`.
+Two independent auth surfaces:
+- **WapuPay API key** — `WAPUPAY_API_KEY`, read lazily per business call
+  (`WapuPayManager._require_api_key`); missing/invalid → a clear `ValueError`
+  (a WapuPay 401 means the key is wrong, not a session issue).
+- **AQUA account login** — `aqua_login`/`aqua_verify`/`aqua_logout`/`aqua_session`
+  (CLI `aqua auth …`) are an *AQUA-account* email-OTP against Ankara
+  (`/api/v1/auth/{login,verify}/` → JWT). This session is **decoupled** from the
+  WapuPay business calls (they need the API key, not a login).
+
+- **Env vars:** `WAPUPAY_BASE_URL` (default `https://be-prod.wapu.app`; override
+  for staging, e.g. `https://be-stage.wapu.app`), `WAPUPAY_API_KEY` (required for
+  business calls), and `ANKARA_API_URL` (default `https://ankara.aquabtc.com`,
+  shared with Lightning; used by the `aqua_*` login only).
+- **Dark-launched OFF.** All 12 `aqua_*` / `wapupay_*` tools ship
+  disabled-by-default (`features._SHIPPED_DISABLED`); opt in via
+  `~/.aqua/config.json` `enabled_tools` (and set `WAPUPAY_API_KEY`).
+- **Rail pinned** to Liquid USDT; WapuPay rejects any other funding rail (400).
+- AQUA session (JWT) and order records persist under `~/.aqua/wapupay/` at `0o600`;
+  bank PII + tokens + API key are never logged (see `wapupay._redact` /
+  `_SENSITIVE_LOG_FIELDS`).

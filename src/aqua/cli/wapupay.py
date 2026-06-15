@@ -1,35 +1,28 @@
-"""WapuPay CLI — Argentine direct-fiat payments via JAN3's AQUA Ankara backend.
+"""WapuPay CLI — Argentine direct-fiat payments funded with USDT on Liquid.
 
 Pay an Argentine bank account (alias / CBU / CVU) in ARS, funded with USDT on
-Liquid. Auth is email-OTP against Ankara: `login` emails a code, `verify` stores
-the session. Then `create-order` returns a Liquid USDT address to fund; pay it
-with `aqua liquid send-asset` and WapuPay settles the ARS payout.
+Liquid. These commands call WapuPay directly and require `WAPUPAY_API_KEY` set in
+the environment. `create-order` returns a Liquid USDT address to fund; pay it with
+`aqua liquid send-asset` and WapuPay settles the ARS payout.
+
+Logging in to your AQUA account is a separate step — see `aqua auth login`.
 """
 
 from __future__ import annotations
 
-import logging
-
 import click
-
-logger = logging.getLogger(__name__)
 
 from ..tools import (
     wapupay_create_order,
     wapupay_exchange_rates,
     wapupay_fund_order,
-    wapupay_login,
-    wapupay_logout,
     wapupay_order_status,
     wapupay_quote,
-    wapupay_session,
     wapupay_spending_limit,
     wapupay_transaction,
     wapupay_transactions,
-    wapupay_verify,
 )
 from .output import run_tool
-from .password import read_secret
 
 _TRANSFER_TYPE = click.Choice(["fiat_transfer", "fast_fiat_transfer"])
 
@@ -38,55 +31,11 @@ _TRANSFER_TYPE = click.Choice(["fiat_transfer", "fast_fiat_transfer"])
 def wapupay():
     """WapuPay — pay Argentine bank accounts in ARS, funded with USDT on Liquid.
 
-    Routed through JAN3's AQUA Ankara backend. Log in with your email (you'll
-    get an OTP code), then generate a direct-payment order that returns a Liquid
-    USDT address to fund. Pay it with `aqua liquid send-asset`; WapuPay settles
-    the pesos.
+    Calls WapuPay directly; set WAPUPAY_API_KEY in your environment first.
+    `create-order` returns a Liquid USDT address to fund — pay it with
+    `aqua liquid send-asset` and WapuPay settles the pesos. (Logging in to your
+    AQUA account is separate: see `aqua auth login`.)
     """
-
-
-@wapupay.command("login")
-@click.option("--email", required=True, help="Your email address (an OTP will be sent here).")
-@click.option(
-    "--language", default="en", show_default=True,
-    type=click.Choice(["en", "es", "pt"]), help="OTP email language.",
-)
-@click.pass_obj
-def login(ctx, email, language):
-    """Request an OTP code by email to start a WapuPay session."""
-    run_tool(ctx, lambda: wapupay_login(email=email, language=language))
-
-
-@wapupay.command("verify")
-@click.option("--email", required=True, help="The same email used in `login`.")
-@click.option(
-    "--otp-code", default=None,
-    help="6-digit code from the email. Omit to be prompted / read from stdin.",
-)
-@click.option(
-    "--otp-stdin", is_flag=True, default=False,
-    help="Read the OTP code from piped stdin (or prompt interactively).",
-)
-@click.pass_obj
-def verify(ctx, email, otp_code, otp_stdin):
-    """Verify the OTP and store the WapuPay session locally."""
-    if otp_code is None:
-        otp_code = read_secret("OTP code") if otp_stdin else click.prompt("OTP code")
-    run_tool(ctx, lambda: wapupay_verify(email=email, otp_code=otp_code))
-
-
-@wapupay.command("logout")
-@click.pass_obj
-def logout(ctx):
-    """Forget the local WapuPay session."""
-    run_tool(ctx, lambda: wapupay_logout())
-
-
-@wapupay.command("session")
-@click.pass_obj
-def session(ctx):
-    """Show whether a WapuPay session is active."""
-    run_tool(ctx, lambda: wapupay_session())
 
 
 @wapupay.command("rates")

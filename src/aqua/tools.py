@@ -1182,15 +1182,15 @@ def changelly_status(order_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def wapupay_login(email: str, language: str = "en") -> dict[str, Any]:
-    """Start WapuPay login: JAN3's Ankara backend emails a one-time code (OTP).
+def aqua_login(email: str, language: str = "en") -> dict[str, Any]:
+    """Start AQUA account login: JAN3's Ankara backend emails a one-time code (OTP).
 
-    WapuPay direct payments are accessed through the AQUA Ankara backend. The
-    user authenticates with their email; Ankara sends a 6-digit OTP to that
-    address. Follow up with `wapupay_verify` passing the code the user received.
+    The user authenticates with their AQUA account email; Ankara sends a 6-digit
+    OTP to that address. Follow up with `aqua_verify` passing the code the user
+    received.
 
     Args:
-        email: the user's email address.
+        email: the user's AQUA account email address.
         language: OTP email language (en/es/pt). Default: en.
 
     Returns:
@@ -1199,14 +1199,14 @@ def wapupay_login(email: str, language: str = "en") -> dict[str, Any]:
     return get_wapupay_manager().login(email, language=language)
 
 
-def wapupay_verify(email: str, otp_code: str) -> dict[str, Any]:
-    """Verify the OTP emailed by `wapupay_login` and store the WapuPay session.
+def aqua_verify(email: str, otp_code: str) -> dict[str, Any]:
+    """Verify the OTP emailed by `aqua_login` and store the AQUA session.
 
-    On success the AQUA↔Ankara JWT session is persisted locally (encrypted at
-    rest by file permissions) so subsequent WapuPay calls don't re-prompt.
+    On success the AQUA↔Ankara JWT session is persisted locally (protected at
+    rest by file permissions) so subsequent AQUA calls don't re-prompt.
 
     Args:
-        email: the same email used in `wapupay_login`.
+        email: the same email used in `aqua_login`.
         otp_code: the 6-digit code from the email.
 
     Returns:
@@ -1215,18 +1215,18 @@ def wapupay_verify(email: str, otp_code: str) -> dict[str, Any]:
     return get_wapupay_manager().verify(email, otp_code)
 
 
-def wapupay_logout() -> dict[str, Any]:
-    """Forget the local WapuPay session (does not revoke the token server-side)."""
+def aqua_logout() -> dict[str, Any]:
+    """Forget the local AQUA session (does not revoke the token server-side)."""
     return get_wapupay_manager().logout()
 
 
-def wapupay_session() -> dict[str, Any]:
-    """Report whether a WapuPay session is active (no secrets returned)."""
+def aqua_session() -> dict[str, Any]:
+    """Report whether an AQUA session is active (no secrets returned)."""
     return get_wapupay_manager().session_status()
 
 
 def wapupay_exchange_rates() -> dict[str, Any]:
-    """Get WapuPay's current exchange rates (e.g. USDT/ARS). Requires login."""
+    """Get WapuPay's current exchange rates (e.g. USDT/ARS). Public — no login or key."""
     return get_wapupay_manager().exchange_rates()
 
 
@@ -1336,7 +1336,7 @@ def wapupay_order_status(tentative_id: str) -> dict[str, Any]:
 
 
 def wapupay_transactions() -> dict[str, Any]:
-    """List the user's WapuPay transactions (scoped to their sub-user)."""
+    """List WapuPay transactions (scoped to the WapuPay account/key)."""
     result = get_wapupay_manager().transactions()
     return result if isinstance(result, dict) else {"transactions": result}
 
@@ -1351,7 +1351,7 @@ def wapupay_transaction(id: str) -> dict[str, Any]:
 
 
 def wapupay_spending_limit() -> dict[str, Any]:
-    """Get the user's monthly WapuPay spending limit (USDT), based on KYC tier.
+    """Get the WapuPay account/key's monthly spending limit (USDT), based on KYC tier.
 
     Passes WapuPay's response through unchanged (typically the KYC tier plus the
     monthly limit and amount used, in USDT — exact field names per WapuPay).
@@ -2041,10 +2041,10 @@ TOOLS = {
     "sideswap_quote": sideswap_quote,
     "sideswap_execute_swap": sideswap_execute_swap,
     "sideswap_swap_status": sideswap_swap_status,
-    "wapupay_login": wapupay_login,
-    "wapupay_verify": wapupay_verify,
-    "wapupay_logout": wapupay_logout,
-    "wapupay_session": wapupay_session,
+    "aqua_login": aqua_login,
+    "aqua_verify": aqua_verify,
+    "aqua_logout": aqua_logout,
+    "aqua_session": aqua_session,
     "wapupay_exchange_rates": wapupay_exchange_rates,
     "wapupay_quote": wapupay_quote,
     "wapupay_create_order": wapupay_create_order,

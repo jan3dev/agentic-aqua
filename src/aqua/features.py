@@ -33,12 +33,14 @@ _SHIPPED_DISABLED: frozenset[str] = frozenset({
     "sideswap_quote",
     "sideswap_execute_swap",
     "sideswap_swap_status",
-    # WapuPay direct payments — dark-launched OFF, mirroring Ankara's
-    # `wapupay_direct_payments` waffle switch. Opt in via ~/.aqua/config.json.
-    "wapupay_login",
-    "wapupay_verify",
-    "wapupay_logout",
-    "wapupay_session",
+    # AQUA account auth (login used by WapuPay) — dark-launched OFF alongside
+    # the rest of the WapuPay surface. Opt in via ~/.aqua/config.json.
+    "aqua_login",
+    "aqua_verify",
+    "aqua_logout",
+    "aqua_session",
+    # WapuPay direct payments — dark-launched OFF pending broader rollout.
+    # Opt in via ~/.aqua/config.json (also requires WAPUPAY_API_KEY set).
     "wapupay_exchange_rates",
     "wapupay_quote",
     "wapupay_create_order",
@@ -127,11 +129,13 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("sideswap", "swap"): "sideswap_execute_swap",
     ("sideswap", "swap-status"): "sideswap_swap_status",
 
+    # auth group (cli/auth.py) — AQUA account login (used by WapuPay)
+    ("auth", "login"): "aqua_login",
+    ("auth", "verify"): "aqua_verify",
+    ("auth", "logout"): "aqua_logout",
+    ("auth", "session"): "aqua_session",
+
     # wapupay group (cli/wapupay.py)
-    ("wapupay", "login"): "wapupay_login",
-    ("wapupay", "verify"): "wapupay_verify",
-    ("wapupay", "logout"): "wapupay_logout",
-    ("wapupay", "session"): "wapupay_session",
     ("wapupay", "rates"): "wapupay_exchange_rates",
     ("wapupay", "quote"): "wapupay_quote",
     ("wapupay", "create-order"): "wapupay_create_order",

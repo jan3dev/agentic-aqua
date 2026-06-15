@@ -2,13 +2,14 @@
 
 Two seams, per tests/AGENTS.md:
 - HTTP-client tests patch ``urllib.request.urlopen`` in ``aqua.wapupay`` to drive
-  the single ``_api_request`` method (auth header, error mapping, 401 signalling).
+  the single ``_api_request`` method (X-API-Key header, error mapping).
 - Manager tests inject a ``FakeClient`` (``manager._client = fake``) so the
-  orchestration logic (session persistence, refresh-and-retry, persist-before-fund,
-  rail pinning) is exercised without any network.
+  orchestration logic (API-key gating, persist-before-fund, rail pinning) is
+  exercised without any network.
 
 Money/auth invariants checked: no fake-success fallbacks, secrets never logged,
-funding amounts are integer sats, rail pinned to Liquid USDT.
+funding amounts are integer sats, rail pinned to Liquid USDT, business calls send
+X-API-Key (never a Bearer token), and exchange_rates is public.
 """
 
 from __future__ import annotations
@@ -29,7 +30,6 @@ from aqua.wapupay import (
     FUNDING_METHOD_USDT,
     FUNDING_NETWORK_LIQUID,
     WAPUPAY_BASE_URL,
-    WapuPayAuthError,
     WapuPayClient,
     WapuPayManager,
     WapuPayOrder,
@@ -53,6 +53,16 @@ from aqua.wapupay import (
 def storage():
     with tempfile.TemporaryDirectory() as tmpdir:
         yield Storage(Path(tmpdir))
+
+
+@pytest.fixture(autouse=True)
+def _wapupay_api_key(monkeypatch):
+    """Business calls read WAPUPAY_API_KEY lazily; set a dummy for every test.
+
+    Tests that exercise the missing-key path delenv it explicitly. Harmless for
+    HTTP-client tests (only the manager reads the env var).
+    """
+    monkeypatch.setenv("WAPUPAY_API_KEY", "test-api-key")
 
 
 class DummyWallet:
@@ -84,40 +94,38 @@ class FakeClient:
             return val(*args)
         return val if val is not None else {}
 
-    # auth
+    # auth (AQUA account login against Ankara — unchanged)
     def login(self, email, language="en"):
         return self._yield("login", email, language)
 
     def verify(self, email, otp_code):
         return self._yield("verify", email, otp_code)
 
-    def refresh(self, refresh_token):
-        return self._yield("refresh", refresh_token)
+    # WapuPay direct API. exchange_rates is public (no key); the rest carry the
+    # X-API-Key — recorded as the last call arg so tests can assert it.
+    def exchange_rates(self):
+        return self._yield("exchange_rates")
 
-    # proxy
-    def exchange_rates(self, access):
-        return self._yield("exchange_rates", access)
+    def tentative_amount(self, body, *, api_key=None):
+        return self._yield("tentative_amount", body, api_key)
 
-    def tentative_amount(self, access, body):
-        return self._yield("tentative_amount", access, body)
+    def create_tentative(self, body, *, api_key=None):
+        return self._yield("create_tentative", body, api_key)
 
-    def create_tentative(self, access, body):
-        return self._yield("create_tentative", access, body)
+    def issue_funding(self, tentative_id, *, api_key=None):
+        return self._yield("issue_funding", tentative_id, api_key)
 
-    def issue_funding(self, access, tentative_id):
-        return self._yield("issue_funding", access, tentative_id)
+    def get_tentative(self, tentative_id, *, api_key=None):
+        return self._yield("get_tentative", tentative_id, api_key)
 
-    def get_tentative(self, access, tentative_id):
-        return self._yield("get_tentative", access, tentative_id)
+    def my_transactions(self, *, api_key=None):
+        return self._yield("my_transactions", api_key)
 
-    def my_transactions(self, access):
-        return self._yield("my_transactions", access)
+    def get_transaction(self, tx_id, *, api_key=None):
+        return self._yield("get_transaction", tx_id, api_key)
 
-    def get_transaction(self, access, tx_id):
-        return self._yield("get_transaction", access, tx_id)
-
-    def spending_limit(self, access):
-        return self._yield("spending_limit", access)
+    def spending_limit(self, *, api_key=None):
+        return self._yield("spending_limit", api_key)
 
 
 def make_manager(storage, fake):
@@ -181,6 +189,14 @@ def test_ars_must_be_whole_pesos():  # Sig:4
     # Non-integral ARS is rejected (no float on the third-party wire).
     with pytest.raises(ValueError):
         _normalize_ars_amount("100.50")
+
+
+def test_normalize_ars_rejects_non_finite():  # Sig:5
+    # A money validator must never accept NaN / Infinity, and must surface a
+    # clean ValueError (not decimal.InvalidOperation / OverflowError).
+    for bad in ("Infinity", "-Infinity", "NaN", "sNaN"):
+        with pytest.raises(ValueError):
+            _normalize_ars_amount(bad)
 
 
 def test_redact_hides_secrets_and_bank_pii_recursively():  # Sig:5
@@ -256,6 +272,27 @@ def test_order_apply_tentative_derives_sats_and_does_not_wipe():  # Sig:4
     assert order.funding_amount_sat == usdt_to_sats("10.0")
 
 
+def test_apply_tentative_coerces_float_sat_to_int():  # Sig:5
+    """If WapuPay sends funding_amount_sat as a float, it's coerced to int
+    (integer-satoshis invariant) so lw_send_asset never gets a float."""
+    order = WapuPayOrder(
+        tentative_id=TENTATIVE_ID, status="FUNDING_ISSUED", type="fiat_transfer",
+        amount_ars="10000", alias="al.cbu", created_at="t0",
+    )
+    order.apply_tentative({"funding_amount_usdt": 6.99, "funding_amount_sat": 699000000.0})
+    assert order.funding_amount_sat == 699000000
+    assert isinstance(order.funding_amount_sat, int)
+
+
+def test_apply_tentative_rejects_non_dict():  # Sig:4
+    order = WapuPayOrder(
+        tentative_id=TENTATIVE_ID, status="CREATED", type="fiat_transfer",
+        amount_ars="10000", alias="al.cbu", created_at="t0",
+    )
+    with pytest.raises(ValueError):
+        order.apply_tentative([1, 2])  # type: ignore[arg-type]
+
+
 # ---------------------------------------------------------------------------
 # HTTP client seam (patch urlopen)
 # ---------------------------------------------------------------------------
@@ -276,7 +313,9 @@ def _http_error(code, body):
     )
 
 
-def test_api_request_sets_bearer_and_content_type():  # Sig:5
+def test_api_request_sets_api_key_and_content_type():  # Sig:5
+    # urllib.request.Request capitalizes header names, so "X-API-Key" is stored
+    # (and fetched) as "X-api-key".
     client = WapuPayClient()
     captured = {}
 
@@ -286,16 +325,17 @@ def test_api_request_sets_bearer_and_content_type():  # Sig:5
 
     with patch("aqua.wapupay.urllib.request.urlopen", side_effect=fake_urlopen):
         out = client._api_request(
-            "POST", "http://h/x", json_body={"a": 1}, access="tok123"
+            "POST", "http://h/x", json_body={"a": 1}, api_key="key123"
         )
     assert out == {"ok": True}
     req = captured["req"]
-    assert req.get_header("Authorization") == "Bearer tok123"
+    assert req.get_header("X-api-key") == "key123"
+    assert req.get_header("Authorization") is None  # never a Bearer token
     assert req.get_header("Content-type") == "application/json"
     assert json.loads(req.data) == {"a": 1}
 
 
-def test_api_request_no_auth_header_without_access():  # Sig:4
+def test_api_request_no_auth_header_without_api_key():  # Sig:4
     client = WapuPayClient()
     captured = {}
 
@@ -305,17 +345,21 @@ def test_api_request_no_auth_header_without_access():  # Sig:4
 
     with patch("aqua.wapupay.urllib.request.urlopen", side_effect=fake_urlopen):
         client._api_request("GET", "http://h/x")
+    assert captured["req"].get_header("X-api-key") is None
     assert captured["req"].get_header("Authorization") is None
 
 
-def test_api_request_401_raises_auth_error():  # Sig:5
+def test_api_request_401_raises_valueerror_about_config():  # Sig:5
+    # A 401 now means the API key is missing/invalid (config error), not an
+    # expired session — it surfaces as a plain ValueError, no special type.
     client = WapuPayClient()
     with patch(
         "aqua.wapupay.urllib.request.urlopen",
-        side_effect=_http_error(401, '{"detail": "token invalid"}'),
+        side_effect=_http_error(401, '{"detail": "invalid api key"}'),
     ):
-        with pytest.raises(WapuPayAuthError):
-            client._api_request("GET", "http://h/x", access="stale")
+        with pytest.raises(ValueError) as ei:
+            client._api_request("GET", "http://h/x", api_key="bad")
+    assert "401" in str(ei.value)
 
 
 def test_api_request_other_http_error_raises_valueerror_with_message():  # Sig:5
@@ -325,9 +369,21 @@ def test_api_request_other_http_error_raises_valueerror_with_message():  # Sig:5
         side_effect=_http_error(400, '{"error": "Invalid payment amount"}'),
     ):
         with pytest.raises(ValueError) as ei:
-            client._api_request("POST", "http://h/x", json_body={}, access="t")
+            client._api_request("POST", "http://h/x", json_body={}, api_key="t")
     assert "Invalid payment amount" in str(ei.value)
-    assert not isinstance(ei.value, WapuPayAuthError)
+
+
+def test_api_request_non_json_2xx_raises_valueerror():  # Sig:4
+    """A 2xx with a non-JSON body (e.g. an HTML page from a proxy/LB) surfaces a
+    clean ValueError, not a leaked json.JSONDecodeError."""
+    client = WapuPayClient()
+    with patch(
+        "aqua.wapupay.urllib.request.urlopen",
+        side_effect=lambda req, timeout=None: _mock_resp(b"<html>oops</html>"),
+    ):
+        with pytest.raises(ValueError) as ei:
+            client._api_request("GET", "http://h/x")
+    assert "non-json" in str(ei.value).lower()
 
 
 def test_api_request_unreachable_raises_valueerror():  # Sig:4
@@ -341,7 +397,8 @@ def test_api_request_unreachable_raises_valueerror():  # Sig:4
     assert "unreachable" in str(ei.value).lower()
 
 
-def test_client_login_verify_refresh_targets():  # Sig:4
+def test_client_login_verify_targets():  # Sig:4
+    # login/verify are AQUA-account auth — still POSTed to Ankara's /auth/.
     client = WapuPayClient()
     seen = {}
 
@@ -355,26 +412,60 @@ def test_client_login_verify_refresh_targets():  # Sig:4
         assert seen["last_body"] == {"email": "u@e.com", "language": "es"}
         client.verify("u@e.com", "123456")
         assert seen["last_body"] == {"email": "u@e.com", "otp_code": "123456"}
-        client.refresh("ref")
-        assert seen["last_body"] == {"refresh": "ref"}
     assert seen["urls"][0] == f"{AUTH_BASE_URL}/login/"
     assert seen["urls"][1] == f"{AUTH_BASE_URL}/verify/"
-    assert seen["urls"][2] == f"{AUTH_BASE_URL}/refresh/"
 
 
-def test_client_proxy_builds_wapupay_url():  # Sig:4
+def test_client_exchange_rates_is_public():  # Sig:4
+    # exchange_rates hits WapuPay directly with NO auth header (public endpoint).
     client = WapuPayClient()
     seen = {}
 
     def fake_urlopen(req, timeout=None):
         seen["url"] = req.full_url
+        seen["api_key"] = req.get_header("X-api-key")
         seen["auth"] = req.get_header("Authorization")
         return _mock_resp({"rates": []})
 
     with patch("aqua.wapupay.urllib.request.urlopen", side_effect=fake_urlopen):
-        client.exchange_rates("tok")
+        client.exchange_rates()
     assert seen["url"] == f"{WAPUPAY_BASE_URL}/exchange_rates"
-    assert seen["auth"] == "Bearer tok"
+    assert seen["api_key"] is None  # public — no key sent
+    assert seen["auth"] is None  # and never a Bearer token
+
+
+def test_client_business_call_sends_api_key_not_bearer():  # Sig:5
+    # A keyed business call carries X-API-Key and NEVER an Authorization header
+    # (WapuPay treats the two as mutually exclusive → 400 if both).
+    client = WapuPayClient()
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["api_key"] = req.get_header("X-api-key")
+        seen["auth"] = req.get_header("Authorization")
+        return _mock_resp({"available": 1})
+
+    with patch("aqua.wapupay.urllib.request.urlopen", side_effect=fake_urlopen):
+        client.spending_limit(api_key="secret-key")
+    assert seen["url"] == f"{WAPUPAY_BASE_URL}/users/spending_limit"
+    assert seen["api_key"] == "secret-key"
+    assert seen["auth"] is None
+
+
+def test_client_uses_configured_base_url_for_native_paths():  # Sig:4
+    # WAPUPAY_BASE_URL is read at import, so override per-client (e.g. be-stage)
+    # to confirm the native WapuPay subpaths build under it (no Ankara proxy).
+    client = WapuPayClient(base_url="https://be-stage.wapu.app")
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        return _mock_resp({})
+
+    with patch("aqua.wapupay.urllib.request.urlopen", side_effect=fake_urlopen):
+        client.create_tentative({"amount_ars": 10000}, api_key="k")
+    assert seen["url"] == "https://be-stage.wapu.app/transactions/direct-fiat/tentatives"
 
 
 # ---------------------------------------------------------------------------
@@ -427,51 +518,23 @@ def test_logout_and_session_status(storage):  # Sig:3
     assert storage.load_wapupay_session() is None
 
 
-def test_call_without_session_raises(storage):  # Sig:5
+def test_business_call_without_api_key_raises(monkeypatch, storage):  # Sig:5
+    # A keyed business call with no WAPUPAY_API_KEY fails fast with a clear,
+    # config-pointing ValueError (not a "not logged in" / session error).
+    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
     m = make_manager(storage, FakeClient())
     with pytest.raises(ValueError) as ei:
-        m.exchange_rates()
-    assert "not logged in" in str(ei.value).lower()
+        m.spending_limit()
+    assert "WAPUPAY_API_KEY" in str(ei.value)
 
 
-def test_with_auth_refreshes_on_401_then_retries(storage):  # Sig:5
-    logged_in(storage, access="OLD", refresh="REF")
-    fake = FakeClient({
-        "exchange_rates": [WapuPayAuthError("401"), {"rates": ["ok"]}],
-        "refresh": {"access": "NEW"},
-    })
+def test_exchange_rates_works_without_api_key(monkeypatch, storage):  # Sig:4
+    # exchange_rates is public + decoupled from any login: no key, no session.
+    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
+    fake = FakeClient({"exchange_rates": {"rates": ["ok"]}})
     m = make_manager(storage, fake)
-    out = m.exchange_rates()
-    assert out == {"rates": ["ok"]}
-    # New access token persisted; refresh token preserved.
-    sess = storage.load_wapupay_session()
-    assert sess.access == "NEW" and sess.refresh == "REF"
-    assert ("refresh", ("REF",)) in fake.calls
-
-
-def test_with_auth_refresh_failure_clears_session(storage):  # Sig:5
-    logged_in(storage)
-    fake = FakeClient({
-        "exchange_rates": WapuPayAuthError("401"),
-        "refresh": ValueError("refresh rejected"),
-    })
-    m = make_manager(storage, fake)
-    with pytest.raises(ValueError) as ei:
-        m.exchange_rates()
-    assert "log in again" in str(ei.value).lower()
-    assert storage.load_wapupay_session() is None  # stale session purged
-
-
-def test_with_auth_persistent_401_after_refresh_clears_session(storage):  # Sig:5
-    logged_in(storage)
-    fake = FakeClient({
-        "exchange_rates": [WapuPayAuthError("401"), WapuPayAuthError("401")],
-        "refresh": {"access": "NEW"},
-    })
-    m = make_manager(storage, fake)
-    with pytest.raises(ValueError):
-        m.exchange_rates()
-    assert storage.load_wapupay_session() is None
+    assert m.exchange_rates() == {"rates": ["ok"]}
+    assert fake.calls == [("exchange_rates", ())]  # called with no auth args
 
 
 # ---------------------------------------------------------------------------
@@ -480,12 +543,13 @@ def test_with_auth_persistent_401_after_refresh_clears_session(storage):  # Sig:
 
 
 def test_quote_forces_currencies_and_validates_type(storage):  # Sig:5
-    logged_in(storage)
     fake = FakeClient({"tentative_amount": {"usdt_amount": 6.99, "valid_cbu_alias": True}})
     m = make_manager(storage, fake)
     out = m.quote("10000", "fiat_transfer", alias="al.cbu")
     assert out["valid_cbu_alias"] is True
-    _, (access, body) = fake.calls[0]
+    name, (body, api_key) = fake.calls[0]
+    assert name == "tentative_amount"
+    assert api_key == "test-api-key"  # X-API-Key carried, not a session token
     assert body["currency_payment"] == "ARS"
     assert body["currency_taken"] == "USDT"
     assert body["amount"] == 10000
@@ -496,7 +560,6 @@ def test_quote_forces_currencies_and_validates_type(storage):  # Sig:5
 
 
 def test_create_order_pins_rail_and_persists_then_funds(storage):  # Sig:5
-    logged_in(storage)
     fake = FakeClient({
         "create_tentative": dict(CREATE_RESP),
         "issue_funding": dict(FUNDING_RESP),
@@ -506,14 +569,18 @@ def test_create_order_pins_rail_and_persists_then_funds(storage):  # Sig:5
         amount_ars="10000", alias="al.cbu", transfer_type="fiat_transfer",
         receiver_name="Jane Doe", wallet_name="default",
     )
-    # Rail pinned in the create body.
+    # Rail pinned + X-API-Key carried on the create body.
     create_call = next(c for c in fake.calls if c[0] == "create_tentative")
-    body = create_call[1][1]
+    body, create_key = create_call[1]
+    assert create_key == "test-api-key"
     assert body["funding_method"] == FUNDING_METHOD_USDT
     assert body["network"] == FUNDING_NETWORK_LIQUID
     assert body["amount_ars"] == 10000
     assert body["alias"] == "al.cbu"
     assert body["receiver_name"] == "Jane Doe"
+    # Funding call carries the key too (tentative_id, api_key).
+    fund_call = next(c for c in fake.calls if c[0] == "issue_funding")
+    assert fund_call[1] == (TENTATIVE_ID, "test-api-key")
     # Funded result surfaces the Liquid address + integer sats.
     assert out["funded"] is True
     assert out["address_destination"] == "lq1qqfunding0address"
@@ -528,7 +595,6 @@ def test_create_order_pins_rail_and_persists_then_funds(storage):  # Sig:5
 
 def test_create_order_persists_before_funding_failure(storage):  # Sig:5
     """Funding failure leaves a recoverable CREATED order — no orphan, no fake success."""
-    logged_in(storage)
     fake = FakeClient({
         "create_tentative": dict(CREATE_RESP),
         "issue_funding": ValueError("funding upstream 400"),
@@ -546,34 +612,35 @@ def test_create_order_persists_before_funding_failure(storage):  # Sig:5
     assert saved.address_destination is None
 
 
-def test_create_order_funding_auth_loss_hint(storage):  # Sig:4
-    """If funding fails via a persistent 401, the session is purged — the
-    recovery hint must tell the user to log in again before fund_order."""
-    logged_in(storage)
-    fake = FakeClient({
-        "create_tentative": dict(CREATE_RESP),
-        "issue_funding": [WapuPayAuthError("401"), WapuPayAuthError("401")],
-        "refresh": {"access": "NEW"},
-    })
+def test_create_order_without_api_key_raises_before_persist(monkeypatch, storage):  # Sig:5
+    """No WAPUPAY_API_KEY → ValueError up front: no network call, no order persisted."""
+    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
+    fake = FakeClient({"create_tentative": dict(CREATE_RESP)})
     m = make_manager(storage, fake)
-    out = m.create_order(amount_ars="10000", alias="al.cbu", transfer_type="fiat_transfer")
-    assert out["funded"] is False
-    assert storage.load_wapupay_session() is None  # purged by persistent 401
-    assert "log in again" in out["next_step"].lower()
-    # Order still persisted (recoverable once re-authenticated).
-    assert storage.load_wapupay_order(TENTATIVE_ID).status == "CREATED"
+    with pytest.raises(ValueError) as ei:
+        m.create_order(amount_ars="10000", alias="al.cbu", transfer_type="fiat_transfer")
+    assert "WAPUPAY_API_KEY" in str(ei.value)
+    assert fake.calls == []  # never reached the network
+    assert storage.list_wapupay_orders() == []  # nothing persisted
 
 
 def test_create_order_missing_tentative_id_raises(storage):  # Sig:5
-    logged_in(storage)
     fake = FakeClient({"create_tentative": {"status": "CREATED"}})  # no tentative_id
     m = make_manager(storage, fake)
     with pytest.raises(ValueError):
         m.create_order(amount_ars="10000", alias="al.cbu", transfer_type="fiat_transfer")
 
 
+def test_create_order_non_dict_response_raises_valueerror(storage):  # Sig:4
+    """A non-dict create response yields a clean ValueError, not AttributeError."""
+    # callable form returns the list verbatim (a bare list value is a response queue)
+    fake = FakeClient({"create_tentative": lambda *a: [1, 2]})
+    m = make_manager(storage, fake)
+    with pytest.raises(ValueError):
+        m.create_order(amount_ars="10000", alias="al.cbu", transfer_type="fiat_transfer")
+
+
 def test_create_order_validates_inputs(storage):  # Sig:4
-    logged_in(storage)
     m = make_manager(storage, FakeClient())
     with pytest.raises(ValueError):
         m.create_order(amount_ars="10000", alias="", transfer_type="fiat_transfer")
@@ -584,7 +651,6 @@ def test_create_order_validates_inputs(storage):  # Sig:4
 
 
 def test_fund_order_recovers_created_order(storage):  # Sig:5
-    logged_in(storage)
     # Pre-existing CREATED order (e.g. from a prior funding failure).
     storage.save_wapupay_order(WapuPayOrder(
         tentative_id=TENTATIVE_ID, status="CREATED", type="fiat_transfer",
@@ -601,7 +667,6 @@ def test_fund_order_recovers_created_order(storage):  # Sig:5
 
 
 def test_order_status_refreshes_and_flags(storage):  # Sig:5
-    logged_in(storage)
     storage.save_wapupay_order(WapuPayOrder(
         tentative_id=TENTATIVE_ID, status="FUNDING_ISSUED", type="fiat_transfer",
         amount_ars="10000", alias="al.cbu", created_at="t0",
@@ -616,7 +681,6 @@ def test_order_status_refreshes_and_flags(storage):  # Sig:5
 
 
 def test_order_status_warns_when_remote_fails_but_local_exists(storage):  # Sig:4
-    logged_in(storage)
     storage.save_wapupay_order(WapuPayOrder(
         tentative_id=TENTATIVE_ID, status="FUNDING_ISSUED", type="fiat_transfer",
         amount_ars="10000", alias="al.cbu", created_at="t0",
@@ -629,7 +693,6 @@ def test_order_status_warns_when_remote_fails_but_local_exists(storage):  # Sig:
 
 
 def test_order_status_unknown_order_raises_when_remote_fails(storage):  # Sig:3
-    logged_in(storage)
     fake = FakeClient({"get_tentative": ValueError("nope")})
     m = make_manager(storage, fake)
     unknown = "00000000-0000-0000-0000-000000000000"  # valid UUID, not stored
@@ -638,7 +701,6 @@ def test_order_status_unknown_order_raises_when_remote_fails(storage):  # Sig:3
 
 
 def test_fund_order_rejects_malformed_id_without_network(storage):  # Sig:5
-    logged_in(storage)
     fake = FakeClient({"issue_funding": ValueError("must not be called")})
     m = make_manager(storage, fake)
     with pytest.raises(ValueError) as ei:
@@ -648,7 +710,6 @@ def test_fund_order_rejects_malformed_id_without_network(storage):  # Sig:5
 
 
 def test_read_only_delegations(storage):  # Sig:3
-    logged_in(storage)
     fake = FakeClient({
         "my_transactions": {"transactions": [1, 2]},
         "get_transaction": {"transaction_id": "tx1"},
@@ -658,10 +719,13 @@ def test_read_only_delegations(storage):  # Sig:3
     assert m.transactions() == {"transactions": [1, 2]}
     assert m.transaction("tx1")["transaction_id"] == "tx1"
     assert m.spending_limit()["available"] == 376.55
+    # Every business read carries the X-API-Key (recorded as the last call arg).
+    assert ("my_transactions", ("test-api-key",)) in fake.calls
+    assert ("get_transaction", ("tx1", "test-api-key")) in fake.calls
+    assert ("spending_limit", ("test-api-key",)) in fake.calls
 
 
 def test_list_orders_sorted(storage):  # Sig:2
-    logged_in(storage)
     for tid, created in [("a" * 8, "2026-01-01"), ("b" * 8, "2026-02-01")]:
         storage.save_wapupay_order(WapuPayOrder(
             tentative_id=tid, status="CREATED", type="fiat_transfer",
@@ -689,9 +753,11 @@ def test_list_orders_skips_corrupt_file(storage):  # Sig:4
 # ---------------------------------------------------------------------------
 
 
-def test_tool_create_order_without_session_raises(monkeypatch, storage):  # Sig:5
+def test_tool_create_order_without_api_key_raises(monkeypatch, storage):  # Sig:5
     """tools.wapupay_create_order surfaces a ValueError (server wraps it into the
-    error envelope). Routed through a temp-storage manager so no real ~/.aqua."""
+    error envelope) when WAPUPAY_API_KEY is unset. Routed through a temp-storage
+    manager so no real ~/.aqua."""
+    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
     mgr = make_manager(storage, FakeClient())
     monkeypatch.setattr(tools, "_wapupay_manager", mgr)
     with pytest.raises(ValueError):
@@ -699,7 +765,6 @@ def test_tool_create_order_without_session_raises(monkeypatch, storage):  # Sig:
 
 
 def test_tool_create_order_attaches_qr(monkeypatch, storage):  # Sig:4
-    logged_in(storage)
     fake = FakeClient({
         "create_tentative": dict(CREATE_RESP),
         "issue_funding": dict(FUNDING_RESP),
