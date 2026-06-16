@@ -3,7 +3,7 @@ revision = 3
 requires-python = "==3.13.*"
 
 [options]
-exclude-newer = "2026-05-15T00:00:00Z"
+exclude-newer = "2026-06-17T00:00:00Z"
 
 [[package]]
 name = "agentic-aqua"
@@ -35,7 +35,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1" },
     { name = "coincurve", specifier = ">=21.0.0" },
     { name = "cryptography", specifier = ">=42.0.0" },
-    { name = "lwk", specifier = ">=0.8.0" },
+    { name = "lwk", specifier = ">=0.18.0" },
     { name = "mcp", specifier = ">=1.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
@@ -351,12 +351,12 @@ wheels = [
 
 [[package]]
 name = "lwk"
-version = "0.16.0"
+version = "0.18.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/51/b6/020ceac54555d58e24b34ce0373723c711db285d093e1b067dfa14eef22a/lwk-0.16.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:a9735572129121a9a947f7f1deebf6f551844ae1b01a5a935771f0110ae20e1b", size = 13305373, upload-time = "2026-03-23T14:56:39.204Z" },
-    { url = "https://files.pythonhosted.org/packages/ce/07/869c1776c9af28bf9bd34d52acebdcee192ee2fd044f45eb52f67e4dfe03/lwk-0.16.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:f2230169f3f32cebe0506e239394765041a136a5d8d7753c7cbab11d23ef234b", size = 14262437, upload-time = "2026-03-23T14:56:44.67Z" },
-    { url = "https://files.pythonhosted.org/packages/a0/fb/af963f93e4018641ee27ea4ecf4fb3a41d8886990cdde5e6c6d6f1db798b/lwk-0.16.0-py3-none-win_amd64.whl", hash = "sha256:d86d104025dc306e336332d85401c5188b9b89256d8f213ec851516e94371969", size = 13008275, upload-time = "2026-03-23T14:56:50.421Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/d3/e1fe56accfadb8bde70bf00426760325b5a57df3eda5c2bd8c42d28ee9f4/lwk-0.18.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:26c7b5dfcd3f1a7b35fd3e1f29e25c0ad85289aa9e9db291480b91d3efe3cf5f", size = 13616700, upload-time = "2026-06-16T08:48:30.642Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/46/01d54fb5baf6d6b30f4f8a43b16e0f8ba232eb57efc25cf716909ed02666/lwk-0.18.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0bf6eb5b2f0036fea93b636d4df2f0c9f45e3869da4f11c8130effdfc5f53d54", size = 14601824, upload-time = "2026-06-16T08:48:34.278Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/c6/f423501d1efbc31fea8dec3ba33b76a98675ff8ff19c22e485ff0f6fcc64/lwk-0.18.0-py3-none-win_amd64.whl", hash = "sha256:169e330928b7e3c814b1ad00fe20411d572d5c65fb4eaf71c393699150f7e69e", size = 13369555, upload-time = "2026-06-16T08:48:38.214Z" },
 ]
 
 [[package]]
