@@ -39,14 +39,18 @@ requires-dist = [
     { name = "click", specifier = ">=8.1" },
     { name = "coincurve", specifier = ">=21.0.0" },
     { name = "cryptography", specifier = ">=42.0.0" },
-    { name = "lwk", specifier = ">=0.17.2" },
+    { name = "lwk", specifier = ">=0.18.0" },
     { name = "mcp", specifier = ">=1.0.0" },
+    { name = "pillow", specifier = ">=10.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "qrcode", extras = ["pil"], specifier = ">=7.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.2.0" },
+    { name = "wallycore", specifier = ">=1.5.3" },
     { name = "websockets", specifier = ">=12.0" },
+    { name = "zxing-cpp", specifier = ">=2.2" },
 ]
 provides-extras = ["dev"]
 
@@ -355,12 +359,12 @@ wheels = [
 
 [[package]]
 name = "lwk"
-version = "0.17.2"
+version = "0.18.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1c/c5/898c8397e42971460b6d4f2ad0749381b34f2e5c002a5b06bcda423e9d99/lwk-0.17.2-py3-none-macosx_11_0_arm64.whl", hash = "sha256:a0ac203c21c3e1e06017a50238e7d91c77f63bb272a848e87f7e2e1b326bcc13", size = 13551426, upload-time = "2026-05-21T13:21:24.62Z" },
-    { url = "https://files.pythonhosted.org/packages/a5/22/c4369027e4a37e803b3daea1a00de66f70a81b320ac2066d240907852686/lwk-0.17.2-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:f0b9e7607c7f68852235aba9b34e5082e275db8b5c6523285d671a26c2775549", size = 14533374, upload-time = "2026-05-21T13:21:29.43Z" },
-    { url = "https://files.pythonhosted.org/packages/61/6e/fea2346bec25829bd7d568aa05cdb9172e6e66d5ae1850f5ef78eba3be9b/lwk-0.17.2-py3-none-win_amd64.whl", hash = "sha256:2e9a405ea927d6f1311bfdefcf2fa1f4b31c5507d9361141857a1719a3da7bbf", size = 13294192, upload-time = "2026-05-21T13:21:33.521Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/d3/e1fe56accfadb8bde70bf00426760325b5a57df3eda5c2bd8c42d28ee9f4/lwk-0.18.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:26c7b5dfcd3f1a7b35fd3e1f29e25c0ad85289aa9e9db291480b91d3efe3cf5f", size = 13616700, upload-time = "2026-06-16T08:48:30.642Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/46/01d54fb5baf6d6b30f4f8a43b16e0f8ba232eb57efc25cf716909ed02666/lwk-0.18.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0bf6eb5b2f0036fea93b636d4df2f0c9f45e3869da4f11c8130effdfc5f53d54", size = 14601824, upload-time = "2026-06-16T08:48:34.278Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/c6/f423501d1efbc31fea8dec3ba33b76a98675ff8ff19c22e485ff0f6fcc64/lwk-0.18.0-py3-none-win_amd64.whl", hash = "sha256:169e330928b7e3c814b1ad00fe20411d572d5c65fb4eaf71c393699150f7e69e", size = 13369555, upload-time = "2026-06-16T08:48:38.214Z" },
 ]
 
 [[package]]
