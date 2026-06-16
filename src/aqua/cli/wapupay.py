@@ -167,34 +167,15 @@ def spending_limit(ctx):
 
 
 @wapupay.command("provision-account")
-@click.option(
-    "--rotate",
-    is_flag=True,
-    default=False,
-    help="Replace any existing key (invalidates the previous one immediately).",
-)
-@click.option(
-    "--yes",
-    "-y",
-    "skip_confirm",
-    is_flag=True,
-    default=False,
-    help="Skip the rotation confirmation prompt.",
-)
 @click.pass_obj
-def provision_account(ctx, rotate, skip_confirm):
+def provision_account(ctx):
     """Provision your WapuPay API key via your AQUA account and store it locally.
 
     Use this when you have no WAPUPAY_API_KEY set. Requires an AQUA session first
     (`aqua auth login` then `aqua auth verify`). The key is stored under
     ~/.aqua/wapupay/ and used automatically by the other `aqua wapupay` commands.
-    Non-rotating by default; pass `--rotate` to deliberately replace an existing
-    key.
+
+    Only calls the backend when no key is configured yet: if one already exists
+    (env var or stored) it does nothing, so it never invalidates a working key.
     """
-    if rotate and not skip_confirm:
-        click.confirm(
-            "Rotate your WapuPay API key? The previous one is invalidated immediately.",
-            abort=True,
-            err=True,
-        )
-    run_tool(ctx, lambda: wapupay_provision_account(rotate=rotate))
+    run_tool(ctx, lambda: wapupay_provision_account())

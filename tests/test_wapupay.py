@@ -880,14 +880,18 @@ def test_provision_client_unreachable():  # Sig:4
 
 
 def test_provision_manager_success_stores_and_masks(monkeypatch, storage):  # Sig:5
-    # rotate=True so the no-op short-circuit doesn't trigger on the dummy env key.
+    # No key configured (env unset, none stored) -> the no-op is skipped and the
+    # backend is called.
     monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
     logged_in(storage, access="aqua.jwt.access")
     fake = FakeClient({"provision_wapupay_account": {"token": "WapuKey_2UJgLDyuY8"}})
     m = make_manager(storage, fake)
-    out = m.provision_account(rotate=True)
+    out = m.provision_account()
 
-    assert out["provisioned"] is True and out["rotated"] is True
+    assert out["provisioned"] is True
+    assert "rotated" not in out  # dropped: it lied (false on a backend-side rotation)
+    # Backend always rotates -> an honest note is present whenever it was called.
+    assert "warning" in out and "invalidates" in out["warning"].lower()
     # Raw key never returned; only a masked preview (first 4 + … + last 4).
     assert out["key_preview"] == _mask("WapuKey_2UJgLDyuY8") == "Wapu…yuY8"
     assert "WapuKey_2UJgLDyuY8" not in json.dumps(out)
@@ -899,16 +903,15 @@ def test_provision_manager_success_stores_and_masks(monkeypatch, storage):  # Si
     assert m._require_api_key() == "WapuKey_2UJgLDyuY8"
 
 
-def test_provision_first_time_has_no_rotation_warning(monkeypatch, storage):  # Sig:4
-    # First-time provision (rotate=False, nothing configured) calls the backend
-    # but didn't invalidate any key the user was using — so NO rotation warning.
+def test_provision_first_time_carries_backend_rotation_note(monkeypatch, storage):
     monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
     logged_in(storage)
     fake = FakeClient({"provision_wapupay_account": {"token": "fresh-first-key"}})
     m = make_manager(storage, fake)
-    out = m.provision_account()  # rotate=False, no key yet -> hits backend
-    assert out["provisioned"] is True and out["rotated"] is False
-    assert "warning" not in out
+    out = m.provision_account()  # no key yet -> hits backend
+    assert out["provisioned"] is True
+    assert "rotated" not in out
+    assert "warning" in out and "invalidates" in out["warning"].lower()
     assert fake.calls == [("provision_wapupay_account", ("acc.tok",))]
 
 
@@ -916,7 +919,7 @@ def test_provision_manager_requires_login(monkeypatch, storage):  # Sig:5
     monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
     m = make_manager(storage, FakeClient())
     with pytest.raises(ValueError) as ei:
-        m.provision_account(rotate=True)
+        m.provision_account()
     assert "aqua_login" in str(ei.value).lower() or "logged in" in str(ei.value).lower()
     assert m._client.calls == []  # never reached the backend
 
@@ -927,13 +930,13 @@ def test_provision_manager_missing_token_raises(monkeypatch, storage):  # Sig:5
     fake = FakeClient({"provision_wapupay_account": {"not_token": "x"}})
     m = make_manager(storage, fake)
     with pytest.raises(ValueError) as ei:
-        m.provision_account(rotate=True)
+        m.provision_account()
     assert "token" in str(ei.value).lower()
     assert storage.load_wapupay_api_key() is None  # nothing persisted on failure
 
 
 def test_provision_noop_when_env_key_set(monkeypatch, storage):  # Sig:5
-    # Default (rotate=False): env key present -> no-op, NO backend call.
+    # env key present -> no-op, NO backend call (env key never invalidated).
     monkeypatch.setenv("WAPUPAY_API_KEY", "env-set-key")
     logged_in(storage)
     fake = FakeClient({"provision_wapupay_account": {"token": "should-not-be-used"}})
@@ -956,18 +959,6 @@ def test_provision_noop_when_stored_key_exists(monkeypatch, storage):  # Sig:5
     assert fake.calls == []
     # Existing key untouched.
     assert storage.load_wapupay_api_key().token == "already-stored"
-
-
-def test_provision_rotate_overwrites_stored(monkeypatch, storage):  # Sig:5
-    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
-    storage.save_wapupay_api_key(WapuPayApiKey(token="old-key", created_at="t0"))
-    logged_in(storage)
-    fake = FakeClient({"provision_wapupay_account": {"token": "rotated-key"}})
-    m = make_manager(storage, fake)
-    out = m.provision_account(rotate=True)
-    assert out["provisioned"] is True
-    assert storage.load_wapupay_api_key().token == "rotated-key"
-    assert "rotated" in out["warning"].lower()
 
 
 def test_require_api_key_env_wins_over_stored(monkeypatch, storage):  # Sig:5

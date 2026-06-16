@@ -713,7 +713,7 @@ class WapuPayManager:
             "created_at": session.created_at,
         }
 
-    def provision_account(self, rotate: bool = False) -> dict:
+    def provision_account(self) -> dict:
         """Provision a WapuPay API key via the AQUA backend and store it locally.
 
         Requires a prior AQUA login (``aqua_login`` → ``aqua_verify``): the call
@@ -721,38 +721,32 @@ class WapuPayManager:
         ``~/.aqua/wapupay/api_key.json`` (0o600) so every ``wapupay_*`` business
         tool can use it without an env var — the raw key is never returned.
 
-        Non-rotating by default: if a key is already configured (env var or
-        stored), this is a no-op that reports the source — it does NOT call the
-        backend, because re-provisioning rotates the key with no grace period and
-        an unintended retry must never invalidate a working credential. Pass
-        ``rotate=True`` to force a fresh key (invalidating the previous one).
+        The AQUA backend issues a fresh key on EVERY call and invalidates any key
+        previously issued for the account (no grace period).
         """
-        if not rotate:
-            env_key = os.environ.get(WAPUPAY_API_KEY_ENV)
-            if env_key:
-                return {
-                    "already_configured": True,
-                    "source": "env",
-                    "key_preview": _mask(env_key),
-                    "message": (
-                        f"A WapuPay API key is already set via {WAPUPAY_API_KEY_ENV} "
-                        "(env takes precedence). Pass rotate=True to provision a new "
-                        "one — note this invalidates the previous key immediately."
-                    ),
-                }
-            stored = self.storage.load_wapupay_api_key()
-            if stored and stored.token:
-                return {
-                    "already_configured": True,
-                    "source": "stored",
-                    "key_preview": _mask(stored.token),
-                    "created_at": stored.created_at,
-                    "message": (
-                        "A WapuPay API key is already provisioned and stored. Pass "
-                        "rotate=True to replace it — note this invalidates the "
-                        "previous key immediately."
-                    ),
-                }
+        env_key = os.environ.get(WAPUPAY_API_KEY_ENV)
+        if env_key:
+            return {
+                "already_configured": True,
+                "source": "env",
+                "key_preview": _mask(env_key),
+                "message": (
+                    f"A WapuPay API key is already set via {WAPUPAY_API_KEY_ENV} "
+                    "(it takes precedence) — nothing to do."
+                ),
+            }
+        stored = self.storage.load_wapupay_api_key()
+        if stored and stored.token:
+            return {
+                "already_configured": True,
+                "source": "stored",
+                "key_preview": _mask(stored.token),
+                "created_at": stored.created_at,
+                "message": (
+                    "A WapuPay API key is already provisioned and stored — all "
+                    "WapuPay tools are ready."
+                ),
+            }
 
         session = self.storage.load_wapupay_session()
         if not session or not session.access:
@@ -769,9 +763,8 @@ class WapuPayManager:
         token = str(token).strip()
         record = WapuPayApiKey(token=token, created_at=datetime.now(UTC).isoformat())
         self.storage.save_wapupay_api_key(record)
-        result = {
+        return {
             "provisioned": True,
-            "rotated": bool(rotate),
             "source": "stored",
             "key_preview": _mask(token),
             "created_at": record.created_at,
@@ -779,16 +772,12 @@ class WapuPayManager:
                 "WapuPay API key provisioned and stored locally — all WapuPay tools "
                 "are now ready."
             ),
+            "warning": (
+                "AQUA's backend issues a fresh WapuPay API key on every call and "
+                "invalidates any key previously issued for this account — any earlier "
+                "WapuPay key no longer works."
+            ),
         }
-        # Only warn about rotation when the user explicitly rotated: a first-time
-        # provision (rotate=False, no key was configured) didn't invalidate any key
-        # the user was using, so a "this rotated your key" warning would mislead.
-        if rotate:
-            result["warning"] = (
-                "This rotated your WapuPay API key; any previously issued key is now "
-                "invalid."
-            )
-        return result
 
     def _require_api_key(self) -> str:
         """Return WapuPay's API key, or raise.

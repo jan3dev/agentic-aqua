@@ -1215,25 +1215,13 @@ TOOL_SCHEMAS = {
             "set. Requires a prior AQUA login (aqua_login then aqua_verify); calls "
             "the AQUA backend with that session, then stores the returned key "
             "locally (0o600) for all wapupay_* tools — the raw key is never "
-            "returned, only a masked preview. Non-rotating by default: if a key is "
-            "already configured it is a no-op (already_configured=true). Set "
-            "rotate=true ONLY to deliberately replace the key — it invalidates the "
-            "previous one immediately, so never retry with rotate=true on a "
-            "transient error."
+            "returned, only a masked preview. The AQUA backend issues a fresh key "
+            "on every call and invalidates the previous one (no grace period), so "
+            "this only calls the backend when no key is configured yet: if one "
+            "already exists (env var or stored) it is a no-op "
+            "(already_configured=true) and never invalidates a working key."
         ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "rotate": {
-                    "type": "boolean",
-                    "default": False,
-                    "description": (
-                        "Force a fresh key, invalidating any previously issued one. "
-                        "Leave false unless the user explicitly wants to rotate."
-                    ),
-                }
-            },
-        },
+        "inputSchema": {"type": "object", "properties": {}},
     },
     "qr_decode": {
         "description": "Decode a QR code from an image file and return the raw string content. Supports Bitcoin addresses, Liquid addresses, Lightning invoices (BOLT11), and Lightning addresses.",

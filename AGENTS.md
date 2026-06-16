@@ -146,10 +146,11 @@ Two independent auth surfaces:
   (`Authorization: Bearer`, **no** `X-API-Key` — this hits AQUA/Ankara, not
   WapuPay), gets back `{"token": ...}`, and stores it locally so every
   `wapupay_*` tool works. **Requires a prior `aqua_login`.** The raw key is never
-  returned (masked preview only). **Non-rotating by default**: a no-op if a key
-  is already configured — `rotate=True` forces a fresh key, invalidating the
-  previous one with no grace period (so never retry with `rotate=True` on a
-  transient failure).
+  returned (masked preview only). The backend issues a **fresh key on every call
+  and invalidates the previous one** (no grace period, verified), so the tool
+  **only calls the backend when no key is configured yet** — if one already exists
+  (env var or stored) it is a no-op (`already_configured`), so it never invalidates
+  a working key.
 
 - **Env vars:** `WAPUPAY_BASE_URL` (default `https://be-prod.wapu.app`; override
   for staging, e.g. `https://be-stage.wapu.app`), `WAPUPAY_API_KEY` (used for

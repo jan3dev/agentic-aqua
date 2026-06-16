@@ -1359,7 +1359,7 @@ def wapupay_spending_limit() -> dict[str, Any]:
     return get_wapupay_manager().spending_limit()
 
 
-def wapupay_provision_account(rotate: bool = False) -> dict[str, Any]:
+def wapupay_provision_account() -> dict[str, Any]:
     """Provision a WapuPay API key via your AQUA account, so the WapuPay tools work.
 
     Use this when the user wants to use WapuPay but has no WapuPay API key set.
@@ -1370,21 +1370,19 @@ def wapupay_provision_account(rotate: bool = False) -> dict[str, Any]:
 
     Requires a prior AQUA login: call `aqua_login` then `aqua_verify` first.
 
-    Non-rotating by default: if a key is already configured (env var or stored)
-    this is a no-op that reports `already_configured` WITHOUT calling the backend.
-    Only set `rotate=True` to deliberately replace the key — that invalidates the
-    previous one immediately with no grace period, so never retry with
-    `rotate=True` just because a call seemed to fail.
-
-    Args:
-        rotate: force-provision a fresh key, invalidating any previous one.
+    The AQUA backend issues a fresh key on EVERY call and invalidates any key
+    previously issued for the account (no grace period). So this only calls the
+    backend when no key is configured yet: if one already exists (env var or
+    stored) it returns `already_configured` without touching the backend, so a
+    stray call can never invalidate a working key.
 
     Returns:
-        On first provision: provisioned=True, key_preview, created_at, message,
-        warning. When already configured (rotate=False): already_configured=True,
-        source ("env"|"stored"), key_preview, message.
+        When the backend was called: provisioned=True, key_preview, created_at,
+        message, and a `warning` noting the backend always rotates. When a key was
+        already configured: already_configured=True, source ("env"|"stored"),
+        key_preview, message.
     """
-    return get_wapupay_manager().provision_account(rotate=rotate)
+    return get_wapupay_manager().provision_account()
 
 
 # ---------------------------------------------------------------------------
