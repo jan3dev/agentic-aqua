@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.13,<3.14"
 authors = [
-    { name = "Andy", email = "andy@example.com" }
+    { name = "Andy", email = "andy@jan3.com" }
 ]
 keywords = ["liquid", "bitcoin", "wallet", "mcp", "ai", "lwk", "blockstream"]
 classifiers = [
