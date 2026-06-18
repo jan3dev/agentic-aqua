@@ -122,9 +122,7 @@ SideSwap is not yet implemented for production use. Do not suggest or offer Side
 
 `wapupay.py` lets a user pay an Argentine bank account in **ARS**, funded with
 **USDT on Liquid**. WapuPay's API is called **directly** (`https://be-prod.wapu.app`),
-not through Ankara. Each business call carries WapuPay's own **`X-API-Key`**;
-WapuPay rejects a request bearing both `X-API-Key` and `Authorization: Bearer`
-(→ 400), so business calls send **only** the key — never a Bearer token.
+not through Ankara. Each call carries WapuPay's own **`X-API-Key`**;
 `wapupay_create_order` returns a Liquid USDT funding address; the user pays it
 with `lw_send_asset` (no auto-pay). `wapupay_exchange_rates` is **public** (no key).
 
