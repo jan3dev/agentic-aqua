@@ -23,7 +23,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "lwk>=0.8.0",
+    "lwk>=0.18.0",
     "mcp>=1.0.0",
     "cryptography>=42.0.0",
     "bdkpython>=2.2.0",
@@ -34,6 +34,7 @@ dependencies = [
     "pillow>=10.0",
     "zxing-cpp>=2.2",
     "qrcode[pil]>=7.0",
+    "wallycore>=1.5.3",
 ]
 
 [project.optional-dependencies]
