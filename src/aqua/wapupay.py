@@ -840,7 +840,10 @@ class WapuPayManager:
         return self.client.get_transaction(str(tx_id).strip(), api_key=key)
 
     def spending_limit(self) -> dict:
-        return self.client.spending_limit(api_key=self._require_api_key())
+        result = self.client.spending_limit(api_key=self._require_api_key())
+        if "kyc_tier" in result:
+            result["tier"] = result.pop("kyc_tier")
+        return result
 
     # -- Order lifecycle -----------------------------------------------------
 
