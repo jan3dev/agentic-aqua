@@ -18,6 +18,7 @@ import io
 import json
 import tempfile
 import urllib.error
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -41,11 +42,11 @@ from aqua.wapupay import (
     _mask,
     _normalize_ars_amount,
     _redact,
-    _validate_liquid_refund_address,
     order_is_failed,
     order_is_final,
     order_is_success,
     usdt_to_base_units,
+    validate_liquid_refund_address,
 )
 
 # ---------------------------------------------------------------------------
@@ -301,6 +302,29 @@ def test_apply_tentative_rejects_non_dict():  # Sig:4
     )
     with pytest.raises(ValueError):
         order.apply_tentative([1, 2])  # type: ignore[arg-type]
+
+
+def test_money_fields_are_decimal_and_serialize_as_str():  # Sig:5
+    """USDT amounts / rate are Decimal in memory (never float — CLAUDE.md
+    invariant #1) and serialize as strings (JSON has no Decimal)."""
+    order = WapuPayOrder(
+        tentative_id=TENTATIVE_ID, status="CREATED", type="fiat_transfer",
+        amount_ars="10000", alias="al.cbu", created_at="t0",
+    )
+    order.apply_tentative({
+        "total_amount_usdt": 7.13, "fee_amount_usdt": 0.14,
+        "funding_amount_usdt": 6.99, "exchange_rate": 1432.5,
+    })
+    for fld in ("total_amount_usdt", "fee_amount_usdt", "funding_amount_usdt", "exchange_rate"):
+        assert isinstance(getattr(order, fld), Decimal), fld
+    data = order.to_dict()
+    assert data["total_amount_usdt"] == "7.13"  # string, no float drift
+    assert data["fee_amount_usdt"] == "0.14"
+    # Round-trips back to Decimal (and the integer send amount is unaffected).
+    reloaded = WapuPayOrder.from_dict(data)
+    assert reloaded.total_amount_usdt == Decimal("7.13")
+    assert isinstance(reloaded.total_amount_usdt, Decimal)
+    assert reloaded.total_funding_amount_base_units == usdt_to_base_units("7.13")
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +672,21 @@ def test_create_order_missing_tentative_id_raises(storage):  # Sig:5
         m.create_order(amount_ars="10000", alias="al.cbu", transfer_type="fiat_transfer")
 
 
+def test_create_order_rejects_non_uuid_tentative_id(storage):  # Sig:5
+    """A non-UUID tentative_id from WapuPay is rejected with the SAME rule
+    fund_order / order_status use, so we never persist an un-pollable order or
+    attempt funding for it (storage's looser SWAP_ID_PATTERN would accept it)."""
+    fake = FakeClient(
+        {"create_tentative": {"tentative_id": "not-a-uuid", "status": "CREATED"}}
+    )
+    m = make_manager(storage, fake)
+    with pytest.raises(ValueError, match="UUID"):
+        m.create_order(amount_ars="10000", alias="al.cbu", transfer_type="fiat_transfer")
+    # create_tentative ran, but funding was never attempted and nothing persisted.
+    assert [c[0] for c in fake.calls] == ["create_tentative"]
+    assert storage.list_wapupay_orders() == []
+
+
 def test_create_order_non_dict_response_raises_valueerror(storage):  # Sig:4
     """A non-dict create response yields a clean ValueError, not AttributeError."""
     # callable form returns the list verbatim (a bare list value is a response queue)
@@ -685,16 +724,16 @@ _LEGACY_REFUND = (
 
 def test_validate_liquid_refund_address_helper():  # Sig:4
     # Valid mainnet address parses and is returned stripped.
-    assert _validate_liquid_refund_address(f"  {_MAINNET_REFUND}  ") == _MAINNET_REFUND
+    assert validate_liquid_refund_address(f"  {_MAINNET_REFUND}  ") == _MAINNET_REFUND
     # Legacy base58 confidential mainnet addresses (VJL…) must be accepted too —
     # validation parses + checks network, never gates on the bech32 prefix.
-    assert _validate_liquid_refund_address(_LEGACY_REFUND) == _LEGACY_REFUND
+    assert validate_liquid_refund_address(_LEGACY_REFUND) == _LEGACY_REFUND
     # Malformed address (the user's literal example) is rejected on format.
     with pytest.raises(ValueError, match="not a valid Liquid address"):
-        _validate_liquid_refund_address("lq12341234")
+        validate_liquid_refund_address("lq12341234")
     # A well-formed but wrong-network (testnet) address is rejected on network.
     with pytest.raises(ValueError, match="mainnet"):
-        _validate_liquid_refund_address(_TESTNET_REFUND)
+        validate_liquid_refund_address(_TESTNET_REFUND)
 
 
 def test_create_order_rejects_invalid_refund_address(storage):  # Sig:5
@@ -769,6 +808,24 @@ def test_fund_order_thin_record_no_total_does_not_fabricate_amount(storage):  # 
     assert out["total_funding_amount_base_units"] is None
     assert "None" not in out["pay_instructions"]
     assert "wapupay_order_status" in out["pay_instructions"]
+
+
+def test_fund_order_thin_record_with_total_but_no_fee_uses_placeholder(storage):  # Sig:5
+    """A thin / cross-device funding response can carry the total but no fee.
+    pay_instructions must show a placeholder, never a literal "None USDT" fee."""
+    funding = {
+        "tentative_id": TENTATIVE_ID, "status": "FUNDING_ISSUED",
+        "address_destination": "lq1qqfunding0address",
+        "asset_id": "ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2",
+        "total_amount_usdt": 5.0,  # total known, but fee_amount_usdt absent
+    }
+    fake = FakeClient({"issue_funding": funding})
+    m = make_manager(storage, fake)
+    out = m.fund_order(TENTATIVE_ID)
+    assert out["funded"] is True
+    assert out["total_funding_amount_base_units"] == usdt_to_base_units("5.0")
+    assert "None" not in out["pay_instructions"]
+    assert "$$ USDT fee" in out["pay_instructions"]
 
 
 def test_from_dict_migration_drops_stale_sat_on_none_network(storage):  # Sig:5
@@ -940,7 +997,7 @@ def test_provision_client_sends_bearer_not_api_key():  # Sig:5
 
 
 def test_provision_client_default_backend_is_ankara():
-    # AQUA_BACKEND_API_URL defaults to ANKARA_API_URL (same backend).
+    # Provisioning hits the same AQUA/Ankara backend, so it uses ANKARA_API_URL.
     from aqua.wapupay import ANKARA_API_URL
 
     client = WapuPayClient()

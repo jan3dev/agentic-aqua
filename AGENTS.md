@@ -152,10 +152,9 @@ Two independent auth surfaces:
 
 - **Env vars:** `WAPUPAY_BASE_URL` (default `https://be-prod.wapu.app`; override
   for staging, e.g. `https://be-stage.wapu.app`), `WAPUPAY_API_KEY` (used for
-  business calls if set), `ANKARA_API_URL` (default `https://ankara.aquabtc.com`,
-  shared with Lightning; used by the `aqua_*` login), and `AQUA_BACKEND_API_URL`
-  (host for the provisioning endpoint; defaults to `ANKARA_API_URL` — staging
-  `https://test.aquabtc.com`, prod `https://ankara.aquabtc.com`, same backend).
+  business calls if set), and `ANKARA_API_URL` (default `https://ankara.aquabtc.com`,
+  shared with Lightning; used by the `aqua_*` login **and** the WapuPay
+  provisioning endpoint — same backend, staging `https://test.aquabtc.com`).
 - **Dark-launched OFF.** All 13 `aqua_*` / `wapupay_*` tools ship
   disabled-by-default (`features._SHIPPED_DISABLED`); opt in via
   `~/.aqua/config.json` `enabled_tools` (business calls also need a key — env or

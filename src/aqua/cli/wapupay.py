@@ -21,7 +21,7 @@ from ..tools import (
     wapupay_transaction,
     wapupay_transactions,
 )
-from ..wapupay import _validate_liquid_refund_address
+from ..wapupay import validate_liquid_refund_address
 from .output import run_tool
 
 _TRANSFER_TYPE = click.Choice(["fiat_transfer", "fast_fiat_transfer"])
@@ -94,7 +94,7 @@ def create_order(ctx, amount_ars, alias, transfer_type, receiver_name, refund_ad
     """
     if refund_address and refund_address.strip():
         try:
-            _validate_liquid_refund_address(refund_address)
+            validate_liquid_refund_address(refund_address)
         except ValueError as e:
             raise click.UsageError(str(e)) from e
 
