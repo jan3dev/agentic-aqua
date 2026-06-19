@@ -825,7 +825,7 @@ def test_fund_order_thin_record_with_total_but_no_fee_uses_placeholder(storage):
     assert out["funded"] is True
     assert out["total_funding_amount_base_units"] == usdt_to_base_units("5.0")
     assert "None" not in out["pay_instructions"]
-    assert "$$ USDT fee" in out["pay_instructions"]
+    assert "0 USDT fee" in out["pay_instructions"]
 
 
 def test_from_dict_migration_drops_stale_sat_on_none_network(storage):  # Sig:5

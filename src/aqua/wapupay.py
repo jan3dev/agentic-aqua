@@ -1150,9 +1150,7 @@ class WapuPayManager:
         result = order.to_dict()
         result["funded"] = bool(order.address_destination)
         if order.address_destination and order.total_funding_amount_base_units is not None:
-            # The fee may be absent on a thin / cross-device record — show a
-            # placeholder instead of rendering a literal "None USDT".
-            fee_display = order.fee_amount_usdt if order.fee_amount_usdt is not None else "$$"
+            fee_display = order.fee_amount_usdt if order.fee_amount_usdt is not None else 0
             result["pay_instructions"] = (
                 f"Send exactly {order.total_amount_usdt} USDT "
                 f"({order.total_funding_amount_base_units} base units) on Liquid "
