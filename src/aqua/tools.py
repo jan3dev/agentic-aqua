@@ -1269,10 +1269,12 @@ def wapupay_create_order(
     `wapupay_fund_order` — no silent failure.
 
     The result includes `address_destination` (a Liquid address), `asset_id`
-    (USDT on Liquid), `funding_amount_usdt` / `funding_amount_sat`, and
-    `funding_expires_at`. Pay it with `lw_send_asset` (amount in sats,
-    asset_id from the response); WapuPay then settles `amount_ars` ARS to the
-    bank account. This tool never broadcasts a payment itself.
+    (USDT on Liquid), `funding_amount_usdt`, `total_amount_usdt`,
+    `total_funding_amount_base_units`, and `funding_expires_at`. Pay the TOTAL
+    with `lw_send_asset` (amount = `total_funding_amount_base_units`, the exact
+    total_amount_usdt in USDT base units; asset_id from the response); WapuPay
+    then settles `amount_ars` ARS to the bank account. This tool never
+    broadcasts a payment itself.
 
     Args:
         amount_ars: amount to pay in Argentine pesos (decimal string, e.g. "10000").
@@ -1285,7 +1287,8 @@ def wapupay_create_order(
 
     Returns:
         The order record incl. tentative_id, status, address_destination,
-        asset_id, funding_amount_usdt/sat, funding_expires_at, funded,
+        asset_id, funding_amount_usdt, total_amount_usdt,
+        total_funding_amount_base_units, funding_expires_at, funded,
         pay_instructions, and qr_code_path (QR of the funding address).
     """
     result = get_wapupay_manager().create_order(

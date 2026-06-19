@@ -44,7 +44,7 @@ from aqua.wapupay import (
     order_is_failed,
     order_is_final,
     order_is_success,
-    usdt_to_sats,
+    usdt_to_base_units,
 )
 
 # ---------------------------------------------------------------------------
@@ -166,7 +166,6 @@ FUNDING_RESP = {
     "address_destination": "lq1qqfunding0address",
     "asset_id": "ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2",
     "funding_amount_usdt": 6.99,
-    "funding_amount_sat": 699000000,
     "funding_expires_at": "2026-05-24T14:35:00Z",
 }
 
@@ -176,10 +175,10 @@ FUNDING_RESP = {
 # ---------------------------------------------------------------------------
 
 
-def test_usdt_to_sats_precision():  # Sig:4
-    assert usdt_to_sats("6.99") == 699000000
-    assert usdt_to_sats("0.00000001") == 1
-    assert usdt_to_sats(1) == 100000000
+def test_usdt_to_base_units_precision():  # Sig:4
+    assert usdt_to_base_units("6.99") == 699000000
+    assert usdt_to_base_units("0.00000001") == 1
+    assert usdt_to_base_units(1) == 100000000
 
 
 def test_normalize_ars_amount_rejects_nonpositive_and_garbage():  # Sig:4
@@ -262,30 +261,34 @@ def test_status_helpers():  # Sig:3
     assert not order_is_failed("SETTLED_TO_BALANCE")
 
 
-def test_order_apply_tentative_derives_sats_and_does_not_wipe():  # Sig:4
+def test_order_apply_tentative_derives_total_base_units_and_does_not_wipe():  # Sig:4
     order = WapuPayOrder(
         tentative_id=TENTATIVE_ID, status="CREATED", type="fiat_transfer",
         amount_ars="10000", alias="al.cbu", created_at="t0",
     )
-    order.apply_tentative({"funding_amount_usdt": 6.99, "address_destination": "lq1x"})
-    assert order.funding_amount_sat == 699000000  # derived when omitted
+    # The send amount is derived from the TOTAL (funding + fee), not funding.
+    order.apply_tentative({"total_amount_usdt": 7.13, "address_destination": "lq1x"})
+    assert order.total_funding_amount_base_units == usdt_to_base_units("7.13")
+    # A USDT/Liquid order never carries WapuPay's real BTC/Lightning sat field.
+    assert order.funding_amount_sat is None
     # A later status poll that omits funding fields must not erase the address.
     order.apply_tentative({"status": "EXECUTED"})
     assert order.address_destination == "lq1x"
     assert order.status == "EXECUTED"
-    # A re-funding that changes USDT without a sat must re-derive sat (no stale).
-    order.apply_tentative({"funding_amount_usdt": 10.0})
-    assert order.funding_amount_sat == usdt_to_sats("10.0")
+    # A re-quote that changes the total must re-derive (no stale base units).
+    order.apply_tentative({"total_amount_usdt": 10.0})
+    assert order.total_funding_amount_base_units == usdt_to_base_units("10.0")
 
 
-def test_apply_tentative_coerces_float_sat_to_int():  # Sig:5
-    """If WapuPay sends funding_amount_sat as a float, it's coerced to int
-    (integer-satoshis invariant) so lw_send_asset never gets a float."""
+def test_apply_tentative_passes_through_real_btc_sats_as_int():  # Sig:5
+    """funding_amount_sat is WapuPay's REAL value for BTC/Lightning rails —
+    passed through (never derived from USDT) and coerced to int if WapuPay
+    sends it as a float, so lw_send_asset never gets a float."""
     order = WapuPayOrder(
         tentative_id=TENTATIVE_ID, status="FUNDING_ISSUED", type="fiat_transfer",
         amount_ars="10000", alias="al.cbu", created_at="t0",
     )
-    order.apply_tentative({"funding_amount_usdt": 6.99, "funding_amount_sat": 699000000.0})
+    order.apply_tentative({"funding_network": "LIGHTNING", "funding_amount_sat": 699000000.0})
     assert order.funding_amount_sat == 699000000
     assert isinstance(order.funding_amount_sat, int)
 
@@ -587,12 +590,19 @@ def test_create_order_pins_rail_and_persists_then_funds(storage):  # Sig:5
     # Funding call carries the key too (tentative_id, api_key).
     fund_call = next(c for c in fake.calls if c[0] == "issue_funding")
     assert fund_call[1] == (TENTATIVE_ID, "test-api-key")
-    # Funded result surfaces the Liquid address + integer sats.
+    # Funded result surfaces the Liquid address + the integer TOTAL to send
+    # (derived from total_amount_usdt=7.13, i.e. funding 6.99 + fee 0.14).
     assert out["funded"] is True
     assert out["address_destination"] == "lq1qqfunding0address"
-    assert out["funding_amount_sat"] == 699000000
+    assert out["total_funding_amount_base_units"] == usdt_to_base_units("7.13")
+    assert out["funding_amount_sat"] is None  # USDT/Liquid rail: no real BTC sats
     assert out["asset_id"] == FUNDING_RESP["asset_id"]
-    assert "pay_instructions" in out
+    # pay_instructions must quote the TOTAL (7.13 / 713000000), include the fee,
+    # and never fabricate a "None" amount.
+    assert "7.13 USDT" in out["pay_instructions"]
+    assert "713000000 base units" in out["pay_instructions"]
+    assert "0.14 USDT fee" in out["pay_instructions"]
+    assert "None" not in out["pay_instructions"]
     # Persisted with funding applied.
     saved = storage.load_wapupay_order(TENTATIVE_ID)
     assert saved.status == "FUNDING_ISSUED"
@@ -670,6 +680,50 @@ def test_fund_order_recovers_created_order(storage):  # Sig:5
     saved = storage.load_wapupay_order(TENTATIVE_ID)
     assert saved.status == "FUNDING_ISSUED"
     assert saved.last_error is None
+
+
+def test_fund_order_thin_record_no_total_does_not_fabricate_amount(storage):  # Sig:5
+    """Cross-device fund_order: no local order and the funding response carries
+    no total_amount_usdt, so the exact total isn't known. pay_instructions must
+    NOT print "Send exactly None USDT" — it points at order-status instead."""
+    # FUNDING_RESP has no total_amount_usdt; no pre-existing local order.
+    fake = FakeClient({"issue_funding": dict(FUNDING_RESP)})
+    m = make_manager(storage, fake)
+    out = m.fund_order(TENTATIVE_ID)
+    assert out["funded"] is True
+    assert out["address_destination"] == "lq1qqfunding0address"
+    assert out["total_funding_amount_base_units"] is None
+    assert "None" not in out["pay_instructions"]
+    assert "wapupay_order_status" in out["pay_instructions"]
+
+
+def test_from_dict_migration_drops_stale_sat_on_none_network(storage):  # Sig:5
+    """A legacy thin record (funding_network missing) with a stale USDT-derived
+    funding_amount_sat must NOT load as a real BTC sat. It's dropped, and the
+    base-units send amount re-derives from the persisted total_amount_usdt."""
+    legacy = {
+        "tentative_id": TENTATIVE_ID, "status": "FUNDING_ISSUED",
+        "type": "fiat_transfer", "amount_ars": "10000", "alias": "al.cbu",
+        "created_at": "t0", "total_amount_usdt": 3.53,
+        "funding_amount_sat": 339000000,  # old USDT-derived value, NOT real sats
+        # no funding_network (old thin record)
+    }
+    o = WapuPayOrder.from_dict(legacy)
+    assert o.funding_amount_sat is None  # stale value dropped
+    assert o.total_funding_amount_base_units == usdt_to_base_units("3.53")
+
+
+def test_from_dict_migration_keeps_real_sat_on_btc_network():  # Sig:5
+    """On a genuine BTC/Lightning rail, WapuPay's real funding_amount_sat is a
+    passthrough and must survive a load round-trip (not dropped)."""
+    btc = {
+        "tentative_id": TENTATIVE_ID, "status": "FUNDING_ISSUED",
+        "type": "fiat_transfer", "amount_ars": "10000", "alias": "al.cbu",
+        "created_at": "t0", "funding_network": "LIGHTNING",
+        "funding_amount_sat": 699000000,  # real BTC sats from the wire
+    }
+    o = WapuPayOrder.from_dict(btc)
+    assert o.funding_amount_sat == 699000000  # preserved
 
 
 def test_order_status_refreshes_and_flags(storage):  # Sig:5

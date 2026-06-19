@@ -235,14 +235,18 @@ def _ars_for_wire(d: Decimal) -> int:
     return int(d)
 
 
-def usdt_to_sats(amount_usdt: str | int | float | Decimal) -> int:
-    """Convert a USDT (Liquid) decimal amount to integer satoshis.
+def usdt_to_base_units(amount_usdt: str | int | float | Decimal) -> int:
+    """Convert a USDT-on-Liquid decimal amount to integer base units.
 
-    USDT-Liquid uses 8 decimal places — same conversion as L-BTC sats.
+    L-USDt has precision 8 (8 decimal places), so 1 USDT = 100_000_000 base
+    units — the same scale as L-BTC satoshis, but these are USDT units, not
+    bitcoin sats. Kept deliberately distinct from WapuPay's wire
+    ``funding_amount_sat`` (real BTC/Lightning satoshis) so the two are never
+    conflated.
     """
     d = Decimal(str(amount_usdt))
-    sats = (d * Decimal(100_000_000)).quantize(Decimal("1."), rounding=ROUND_HALF_UP)
-    return int(sats)
+    units = (d * Decimal(100_000_000)).quantize(Decimal("1."), rounding=ROUND_HALF_UP)
+    return int(units)
 
 
 # A WapuPay tentative id is a canonical UUID (matches Ankara's proxy allowlist,
@@ -331,8 +335,18 @@ class WapuPayOrder:
     exchange_rate: Optional[float] = None
     fee_amount_usdt: Optional[float] = None
     funding_amount_usdt: Optional[float] = None
+    # WapuPay's own wire field: REAL satoshis, present only when the funding
+    # network is Lightning or BTC. Passthrough only — for the Liquid/USDT rail
+    # it stays None and AQUA never derives it (deriving here would collide with
+    # this upstream field, which means a different unit). See
+    # total_funding_amount_base_units for the USDT amount to actually send.
     funding_amount_sat: Optional[int] = None
     total_amount_usdt: Optional[float] = None
+    # The exact integer USDT amount (base units, precision-8) the user must send
+    # on Liquid via lw_send_asset = total_amount_usdt * 10^8. Derived from the
+    # TOTAL (funding + fee): WapuPay only settles if it receives the full
+    # total_amount_usdt. NOT bitcoin sats — see funding_amount_sat above.
+    total_funding_amount_base_units: Optional[int] = None
     address_destination: Optional[str] = None
     asset_id: Optional[str] = None
     expires_at: Optional[str] = None
@@ -350,8 +364,24 @@ class WapuPayOrder:
 
     @classmethod
     def from_dict(cls, data: dict) -> "WapuPayOrder":
+        data = dict(data)  # don't mutate the caller's dict
+        # Migration for pre-rename orders: older records stored AQUA's
+        # USDT-derived send amount under the key `funding_amount_sat`. That key
+        # is now reserved for WapuPay's REAL satoshis, which only exist on a
+        # BTC/Lightning funding network. Keep it ONLY when the network is an
+        # explicit non-Liquid (BTC/Lightning) rail; for Liquid OR an
+        # unknown/empty network (e.g. a thin cross-device record persisted by
+        # the old code), any funding_amount_sat is a stale USDT-scaled value —
+        # drop it and let total_funding_amount_base_units re-derive from
+        # total_amount_usdt below.
+        network = (data.get("funding_network") or "").upper()
+        if network in ("", FUNDING_NETWORK_LIQUID):
+            data.pop("funding_amount_sat", None)
         known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        obj = cls(**{k: v for k, v in data.items() if k in known})
+        if obj.total_funding_amount_base_units is None and obj.total_amount_usdt is not None:
+            obj.total_funding_amount_base_units = usdt_to_base_units(obj.total_amount_usdt)
+        return obj
 
     def apply_tentative(self, resp: dict) -> None:
         """Merge a tentative / funding response from WapuPay into this record.
@@ -384,19 +414,17 @@ class WapuPayOrder:
         for attr, key in mapping.items():
             if key in resp and resp[key] is not None:
                 setattr(self, attr, resp[key])
-        # Derive sats from the USDT funding amount when WapuPay omits it (it
-        # always does on create). Re-derive whenever a response carries a new
-        # USDT amount without a sat, so a re-funding can't leave a stale sat
-        # that mis-states the amount to send via lw_send_asset.
-        usdt_in_resp = resp.get("funding_amount_usdt") is not None
-        sat_in_resp = resp.get("funding_amount_sat") is not None
-        if self.funding_amount_usdt is not None and (
-            self.funding_amount_sat is None or (usdt_in_resp and not sat_in_resp)
-        ):
-            self.funding_amount_sat = usdt_to_sats(self.funding_amount_usdt)
-        # Integer-satoshis invariant: if WapuPay sent funding_amount_sat as a
-        # float (against its own integer spec), coerce so callers / lw_send_asset
-        # never receive a float amount.
+        # Derive the exact integer USDT amount to send on Liquid from the TOTAL
+        # the user owes (funding + fee). WapuPay only settles if it receives
+        # total_amount_usdt exactly, so re-derive whenever the total changes so
+        # a re-quote can't leave a stale base-units amount. These are USDT base
+        # units (precision-8), NOT bitcoin sats — kept distinct from the
+        # passthrough funding_amount_sat below.
+        if self.total_amount_usdt is not None:
+            self.total_funding_amount_base_units = usdt_to_base_units(self.total_amount_usdt)
+        # Integer invariant: funding_amount_sat is WapuPay's REAL BTC/Lightning
+        # value (passthrough only, never derived). If it ever arrives as a float
+        # (against WapuPay's integer spec), coerce so callers never get a float.
         if isinstance(self.funding_amount_sat, float):
             self.funding_amount_sat = int(self.funding_amount_sat)
 
@@ -867,9 +895,10 @@ class WapuPayManager:
         with the error (no silent fake-success); recover with ``fund_order``.
 
         Returns the order record including ``address_destination`` (Liquid),
-        ``asset_id`` (USDT), ``funding_amount_usdt`` / ``funding_amount_sat`` and
-        ``funding_expires_at``. The caller pays it with ``lw_send_asset`` — this
-        method never broadcasts.
+        ``asset_id`` (USDT), ``funding_amount_usdt`` / ``total_amount_usdt`` /
+        ``total_funding_amount_base_units`` and ``funding_expires_at``. The
+        caller pays the TOTAL with ``lw_send_asset`` — this method never
+        broadcasts.
         """
         # Read the API key up front — before any network call or persistence —
         # so a missing key fails fast and never leaves a half-created order.
@@ -1027,12 +1056,26 @@ class WapuPayManager:
     def _funded_result(order: "WapuPayOrder") -> dict:
         result = order.to_dict()
         result["funded"] = bool(order.address_destination)
-        if order.address_destination:
+        if order.address_destination and order.total_funding_amount_base_units is not None:
             result["pay_instructions"] = (
-                f"Send {order.funding_amount_usdt} USDT "
-                f"({order.funding_amount_sat} sats) on Liquid to "
-                f"{order.address_destination} using lw_send_asset "
-                f"(asset_id={order.asset_id}). WapuPay then pays "
+                f"Send exactly {order.total_amount_usdt} USDT "
+                f"({order.total_funding_amount_base_units} base units) on Liquid "
+                f"to {order.address_destination} using lw_send_asset "
+                f"(asset_id={order.asset_id}). This total already includes "
+                f"WapuPay's {order.fee_amount_usdt} USDT fee — send the full "
+                f"amount or WapuPay won't settle. WapuPay then pays "
                 f"{order.amount_ars} ARS to {order.alias}."
+            )
+        elif order.address_destination:
+            # Thin record (e.g. order created on another device): the funding
+            # response carries no total_amount_usdt, so the exact total isn't
+            # known locally. Don't fabricate a "None" amount (No-lies rule) —
+            # point the user at order-status to fetch the real total first.
+            result["pay_instructions"] = (
+                f"Funding address ready ({order.address_destination}, "
+                f"asset_id={order.asset_id}), but the exact USDT total to send "
+                f"is not available locally yet. Call wapupay_order_status with "
+                f"tentative_id={order.tentative_id} to fetch total_amount_usdt, "
+                f"then pay that exact amount with lw_send_asset."
             )
         return result

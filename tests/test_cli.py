@@ -2019,7 +2019,8 @@ class _FakeWapuPayManager:
             "address_destination": "lq1qqfunding0address",
             "asset_id": "ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2",
             "funding_amount_usdt": 6.99,
-            "funding_amount_sat": 699000000,
+            "total_amount_usdt": 7.13,
+            "total_funding_amount_base_units": 713000000,
             "funded": True,
         }
 
@@ -2134,7 +2135,7 @@ class TestWapuPayCli:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["address_destination"] == "lq1qqfunding0address"
-        assert data["funding_amount_sat"] == 699000000
+        assert data["total_funding_amount_base_units"] == 713000000
         call = next(c for c in wapupay_cli.calls if c[0] == "create_order")
         assert call[1]["amount_ars"] == "10000"
         assert call[1]["alias"] == "al.cbu"
