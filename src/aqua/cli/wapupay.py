@@ -23,6 +23,7 @@ from ..tools import (
     wapupay_transaction,
     wapupay_transactions,
 )
+from ..wapupay import _validate_liquid_refund_address
 from .output import run_tool
 
 _TRANSFER_TYPE = click.Choice(["fiat_transfer", "fast_fiat_transfer"])
@@ -75,7 +76,7 @@ def quote(ctx, amount_ars, transfer_type, alias):
 @click.option("--receiver-name", default=None, help="Recipient name (optional).")
 @click.option(
     "--refund-address", default=None,
-    help="Liquid refund address if funding cannot execute (optional).",
+    help="Liquid mainnet refund address (lq1…/ex1…) if funding cannot execute (optional).",
 )
 @click.option("--external-reference", default=None, help="Client reference string (optional).")
 @click.option(
@@ -95,6 +96,14 @@ def create_order(ctx, amount_ars, alias, transfer_type, receiver_name, refund_ad
     instructions. Fund the returned address with `aqua liquid send-asset`;
     WapuPay then pays the pesos. This command never broadcasts a payment.
     """
+    # Fail fast on a bad refund address — before the quote fetch / confirm and
+    # before any network call. The manager re-validates as the source of truth.
+    if refund_address and refund_address.strip():
+        try:
+            _validate_liquid_refund_address(refund_address)
+        except ValueError as e:
+            raise click.UsageError(str(e)) from e
+
     if not skip_confirm:
         click.echo("Fetching WapuPay quote…", err=True)
         try:

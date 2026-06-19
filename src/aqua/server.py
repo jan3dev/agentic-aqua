@@ -1156,7 +1156,7 @@ TOOL_SCHEMAS = {
                     "default": "fiat_transfer",
                 },
                 "receiver_name": {"type": "string", "description": "Recipient name (optional)"},
-                "refund_address": {"type": "string", "description": "Liquid refund address if funding cannot execute (optional)"},
+                "refund_address": {"type": "string", "description": "Liquid mainnet refund address (lq1…/ex1…) if funding cannot execute (optional); validated before the order is created"},
                 "external_reference": {"type": "string", "description": "Client reference string (optional)"},
                 "wallet_name": {"type": "string", "default": "default", "description": "Wallet you intend to fund from (recorded for tracking)"},
             },

@@ -41,6 +41,7 @@ from aqua.wapupay import (
     _mask,
     _normalize_ars_amount,
     _redact,
+    _validate_liquid_refund_address,
     order_is_failed,
     order_is_final,
     order_is_success,
@@ -664,6 +665,79 @@ def test_create_order_validates_inputs(storage):  # Sig:4
         m.create_order(amount_ars="0", alias="al.cbu", transfer_type="fiat_transfer")
     with pytest.raises(ValueError):
         m.create_order(amount_ars="10000", alias="al.cbu", transfer_type="bad")
+
+
+# A real Liquid mainnet (confidential lq1…) and testnet (tlq1…) address, used to
+# prove the refund-address validator rejects garbage and wrong-network input.
+_MAINNET_REFUND = (
+    "lq1qqvxk052kf3qtkxmrakx50a9gc3smqad2ync54hzntjt980kfej9kkfe0247rp5h"
+    "4yzmdftsahhw64uy8pzfe7cpg4fgykm7cv"
+)
+_TESTNET_REFUND = (
+    "tlq1qq2xvpcvfup5j8zscjq05u2wxxjcyewk7979f3mmz5l7uw5pqmx6xf5xy50hsn6"
+    "vhkm5euwt72x878eq6zxx2z58hd7zrsg9qn"
+)
+# A legacy base58 confidential mainnet address (VJL…) — still valid + deliverable.
+_LEGACY_REFUND = (
+    "VJL8PjuoM1VQZ3xhxq9sLChhXrG2NizaHTvM6oM9pUBF16gRoTq81qADeeLCdkdRhjCSnuA3YBN679gp"
+)
+
+
+def test_validate_liquid_refund_address_helper():  # Sig:4
+    # Valid mainnet address parses and is returned stripped.
+    assert _validate_liquid_refund_address(f"  {_MAINNET_REFUND}  ") == _MAINNET_REFUND
+    # Legacy base58 confidential mainnet addresses (VJL…) must be accepted too —
+    # validation parses + checks network, never gates on the bech32 prefix.
+    assert _validate_liquid_refund_address(_LEGACY_REFUND) == _LEGACY_REFUND
+    # Malformed address (the user's literal example) is rejected on format.
+    with pytest.raises(ValueError, match="not a valid Liquid address"):
+        _validate_liquid_refund_address("lq12341234")
+    # A well-formed but wrong-network (testnet) address is rejected on network.
+    with pytest.raises(ValueError, match="mainnet"):
+        _validate_liquid_refund_address(_TESTNET_REFUND)
+
+
+def test_create_order_rejects_invalid_refund_address(storage):  # Sig:5
+    """A bad refund address fails before any network call or persistence."""
+    fake = FakeClient({"create_tentative": dict(CREATE_RESP)})
+    m = make_manager(storage, fake)
+    with pytest.raises(ValueError, match="not a valid Liquid address"):
+        m.create_order(
+            amount_ars="10000", alias="al.cbu", transfer_type="fiat_transfer",
+            refund_address="lq12341234",
+        )
+    assert fake.calls == []  # never reached the network
+    assert storage.list_wapupay_orders() == []  # nothing persisted
+
+
+def test_create_order_rejects_non_mainnet_refund_address(storage):  # Sig:5
+    fake = FakeClient({"create_tentative": dict(CREATE_RESP)})
+    m = make_manager(storage, fake)
+    with pytest.raises(ValueError, match="mainnet"):
+        m.create_order(
+            amount_ars="10000", alias="al.cbu", transfer_type="fiat_transfer",
+            refund_address=_TESTNET_REFUND,
+        )
+    assert fake.calls == []
+    assert storage.list_wapupay_orders() == []
+
+
+def test_create_order_carries_valid_refund_address(storage):  # Sig:5
+    """A valid mainnet refund address is sent on the create body and persisted."""
+    fake = FakeClient({
+        "create_tentative": dict(CREATE_RESP),
+        "issue_funding": dict(FUNDING_RESP),
+    })
+    m = make_manager(storage, fake)
+    out = m.create_order(
+        amount_ars="10000", alias="al.cbu", transfer_type="fiat_transfer",
+        refund_address=f"  {_MAINNET_REFUND}  ",
+    )
+    body, _ = next(c for c in fake.calls if c[0] == "create_tentative")[1]
+    assert body["refund_address"] == _MAINNET_REFUND  # normalized (stripped)
+    assert out["refund_address"] == _MAINNET_REFUND
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.refund_address == _MAINNET_REFUND
 
 
 def test_fund_order_recovers_created_order(storage):  # Sig:5

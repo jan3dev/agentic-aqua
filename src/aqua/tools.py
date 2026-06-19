@@ -1281,7 +1281,8 @@ def wapupay_create_order(
         alias: recipient bank alias / CBU / CVU.
         type: "fiat_transfer" or "fast_fiat_transfer".
         receiver_name: recipient name (optional).
-        refund_address: Liquid address for a refund if funding cannot execute (optional).
+        refund_address: Liquid mainnet address (lq1…/ex1…) for a refund if funding
+            cannot execute (optional); validated before the order is created.
         external_reference: a client reference string (optional).
         wallet_name: wallet you intend to fund from (recorded for tracking).
 

@@ -270,6 +270,35 @@ def _validate_tentative_id(tentative_id: str) -> str:
     return tid
 
 
+def _validate_liquid_refund_address(address: str) -> str:
+    """Validate + normalize a user-supplied Liquid refund address.
+
+    The refund rail is pinned to Liquid **mainnet** USDT (USDt on Liquid exists
+    only on mainnet), so a refund sent to a wrong-network address would be
+    unrecoverable. Parse with LWK (lazy import keeps wapupay importable without
+    network deps, matching ``sideswap._validate_btc_address``) and require the
+    address to be mainnet. Confidential (``lq1…``), unconfidential (``ex1…``)
+    and legacy base58 confidential (``VJL…``) forms are all accepted — they are
+    all valid, deliverable mainnet addresses. Validate by parsing + network only;
+    never gate on the prefix.
+    """
+    import lwk
+
+    addr = (address or "").strip()
+    try:
+        parsed = lwk.Address(addr)
+    except Exception as e:
+        raise ValueError(
+            f"Invalid Liquid refund_address {address!r}: not a valid Liquid address."
+        ) from e
+    if not parsed.network().is_mainnet():
+        raise ValueError(
+            f"refund_address {address!r} is not a Liquid mainnet address. "
+            "WapuPay refunds USDT on Liquid mainnet — use an lq1…/ex1… address."
+        )
+    return addr
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -906,6 +935,11 @@ class WapuPayManager:
         self._validate_type(transfer_type)
         if not alias or not alias.strip():
             raise ValueError("alias (recipient bank alias / CBU / CVU) is required")
+        refund = (
+            _validate_liquid_refund_address(refund_address)
+            if refund_address and refund_address.strip()
+            else None
+        )
         d = _normalize_ars_amount(amount_ars)
 
         body: dict[str, Any] = {
@@ -917,8 +951,8 @@ class WapuPayManager:
         }
         if receiver_name and receiver_name.strip():
             body["receiver_name"] = receiver_name.strip()
-        if refund_address and refund_address.strip():
-            body["refund_address"] = refund_address.strip()
+        if refund:
+            body["refund_address"] = refund
         if external_reference and external_reference.strip():
             body["external_reference"] = external_reference.strip()
 
@@ -941,7 +975,7 @@ class WapuPayManager:
             alias=alias.strip(),
             created_at=datetime.now(UTC).isoformat(),
             receiver_name=(receiver_name.strip() if receiver_name else None),
-            refund_address=(refund_address.strip() if refund_address else None),
+            refund_address=refund,
             external_reference=(external_reference.strip() if external_reference else None),
             wallet_name=wallet_name,
         )

@@ -2140,6 +2140,18 @@ class TestWapuPayCli:
         assert call[1]["amount_ars"] == "10000"
         assert call[1]["alias"] == "al.cbu"
 
+    def test_create_order_rejects_invalid_refund_address(self, runner, wapupay_cli):
+        """A bad --refund-address fails fast: before the quote fetch and before
+        any manager call (no order is created)."""
+        result = runner.invoke(
+            cli,
+            ["wapupay", "create-order", "--amount-ars", "10000", "--alias", "al.cbu",
+             "--refund-address", "lq12341234", "--yes"],
+        )
+        assert result.exit_code != 0
+        assert "not a valid Liquid address" in result.output
+        assert not any(c[0] == "create_order" for c in wapupay_cli.calls)
+
     def test_create_order_confirm_flow_quotes_first(self, runner, wapupay_cli):
         """Without --yes, a quote is fetched and the user confirms."""
         result = runner.invoke(
