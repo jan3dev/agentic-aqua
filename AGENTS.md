@@ -126,6 +126,16 @@ not through Ankara. Each call carries WapuPay's own **`X-API-Key`**;
 `wapupay_create_order` returns a Liquid USDT funding address; the user pays it
 with `lw_send_asset` (no auto-pay). `wapupay_exchange_rates` is **public** (no key).
 
+**Module split:** WapuPay *business* logic (orders, quotes, `X-API-Key` calls)
+lives in `wapupay.py`; the JAN3/AQUA/Ankara *account* surface (login/verify/
+logout/session + the WapuPay-key provisioning call against `ANKARA_API_URL`)
+lives in `ankara.py` as `JAN3AuthClient` / `JAN3AccountManager` / `JAN3Session`,
+alongside the Lightning `AnkaraClient`. `WapuPayManager` receives the account
+manager as `self.jan3` (injected by `get_wapupay_manager`; the `aqua_*` tools use
+`get_jan3_manager`) and delegates provisioning to it. The shared HTTP/PII helpers
+also live in `ankara.py` (`wapupay.py` imports them; ankara never imports
+wapupay). Future JAN3 account features go in `ankara.py`.
+
 Two independent auth surfaces:
 - **WapuPay API key** — resolved lazily per business call
   (`WapuPayManager._require_api_key`): `WAPUPAY_API_KEY` env var first, then the
@@ -134,16 +144,19 @@ Two independent auth surfaces:
   pointing at both. A WapuPay 401 means the key is wrong, not a session issue.
 - **AQUA account login** — `aqua_login`/`aqua_verify`/`aqua_logout`/`aqua_session`
   (CLI `aqua auth …`) are an *AQUA-account* email-OTP against Ankara
-  (`/api/v1/auth/{login,verify}/` → JWT). This session is **decoupled** from the
-  WapuPay business calls (they need the API key, not a login). `aqua_logout`
-  forgets the session but does **not** delete the provisioned API key.
+  (`/api/v1/auth/{login,verify}/` → JWT), implemented by `JAN3AccountManager` in
+  `ankara.py`. This session is **decoupled** from the WapuPay calls (they
+  need the API key, not a login). `aqua_logout` forgets the session but does
+  **not** delete the provisioned API key.
 
 - **Provisioning a key** — `wapupay_provision_account` (CLI
   `aqua wapupay provision-account`) is for the user who has no `WAPUPAY_API_KEY`.
-  It calls the AQUA backend `POST /api/v1/wapupay/account/` with the AQUA JWT
-  (`Authorization: Bearer`, **no** `X-API-Key` — this hits AQUA/Ankara, not
-  WapuPay), gets back `{"token": ...}`, and stores it locally so every
-  `wapupay_*` tool works. **Requires a prior `aqua_login`.** The raw key is never
+  `WapuPayManager.provision_account` delegates the backend call to
+  `JAN3AccountManager.provision_wapupay_token()` (in `ankara.py`), which POSTs
+  `/api/v1/wapupay/account/` with the AQUA JWT (`Authorization: Bearer`, **no**
+  `X-API-Key` — this hits AQUA/Ankara, not WapuPay) and returns `{"token": ...}`;
+  WapuPay then stores the key locally so every `wapupay_*` tool works.
+  **Requires a prior `aqua_login`.** The raw key is never
   returned (masked preview only). The backend issues a **fresh key on every call
   and invalidates the previous one** (no grace period, verified), so the tool
   **only calls the backend when no key is configured yet** — if one already exists
@@ -160,6 +173,7 @@ Two independent auth surfaces:
   `~/.aqua/config.json` `enabled_tools` (business calls also need a key — env or
   provisioned).
 - **Rail pinned** to Liquid USDT; WapuPay rejects any other funding rail (400).
-- AQUA session (JWT), the provisioned API key, and order records persist under
-  `~/.aqua/wapupay/` at `0o600`; bank PII + tokens + API key are never logged
-  (see `wapupay._redact` / `_SENSITIVE_LOG_FIELDS`, which includes `token`).
+- The AQUA session (JWT) persists at `~/.aqua/jan3/session.json`; the provisioned
+  API key and order records persist under `~/.aqua/wapupay/` — all at `0o600`.
+  Bank PII + tokens + API key are never logged (see `ankara._redact` /
+  `_SENSITIVE_LOG_FIELDS`, which includes `token`).

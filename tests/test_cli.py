@@ -1990,8 +1990,11 @@ class TestErrorHandling:
 # ---------------------------------------------------------------------------
 
 
-class _FakeWapuPayManager:
-    """Stand-in for WapuPayManager — records calls, returns canned responses."""
+class _FakeJAN3Manager:
+    """Stand-in for JAN3AccountManager — records calls, returns canned responses.
+
+    The `aqua_*` auth tools route through `tools._jan3_manager`, so the auth CLI
+    tests inject this (not the WapuPay manager)."""
 
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
@@ -2003,6 +2006,21 @@ class _FakeWapuPayManager:
     def verify(self, email, otp_code):
         self.calls.append(("verify", {"email": email, "otp_code": otp_code}))
         return {"email": email, "logged_in": True, "message": "ok"}
+
+    def logout(self):
+        self.calls.append(("logout", {}))
+        return {"logged_out": True}
+
+    def session_status(self):
+        self.calls.append(("session_status", {}))
+        return {"logged_in": True, "email": "u@e.com", "created_at": "t0"}
+
+
+class _FakeWapuPayManager:
+    """Stand-in for WapuPayManager — records calls, returns canned responses."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
 
     def quote(self, amount_ars, transfer_type, alias=None):
         self.calls.append(("quote", {
@@ -2072,8 +2090,8 @@ def auth_cli():
     The `aqua_*` auth tools ship disabled-by-default (alongside the rest of the
     WapuPay surface), so the `auth` group is absent from the import-time
     registration; enable it for the test, then restore the default registration.
-    The `aqua_login`/`aqua_verify` tools route through `tools._wapupay_manager`,
-    so the same `_FakeWapuPayManager` stand-in records the calls.
+    The `aqua_login`/`aqua_verify` tools route through `tools._jan3_manager`,
+    so the `_FakeJAN3Manager` stand-in records the calls.
     """
     import aqua.tools as tools_module
     from aqua.cli.commands import register_commands
@@ -2086,13 +2104,13 @@ def auth_cli():
             enabled[k] = True
     register_commands(cli, Config(enabled_tools=enabled))
 
-    fake = _FakeWapuPayManager()
-    saved = tools_module._wapupay_manager
-    tools_module._wapupay_manager = fake
+    fake = _FakeJAN3Manager()
+    saved = tools_module._jan3_manager
+    tools_module._jan3_manager = fake
     try:
         yield fake
     finally:
-        tools_module._wapupay_manager = saved
+        tools_module._jan3_manager = saved
         register_commands(cli, Config(enabled_tools=dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)))
 
 

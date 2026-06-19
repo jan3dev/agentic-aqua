@@ -37,6 +37,7 @@ _sideshift_manager: "SideShiftManager | None" = None
 _sideswap_peg_manager: "SideSwapPegManager | None" = None
 _sideswap_swap_manager: "SideSwapSwapManager | None" = None
 _wapupay_manager: "WapuPayManager | None" = None
+_jan3_manager: "JAN3AccountManager | None" = None
 
 
 def get_manager() -> WalletManager:
@@ -135,8 +136,22 @@ def get_sideswap_swap_manager() -> "SideSwapSwapManager":
     return _sideswap_swap_manager
 
 
+def get_jan3_manager() -> "JAN3AccountManager":
+    """Get or create the JAN3 / AQUA account manager (shares storage).
+
+    Owns the AQUA-account auth surface (the ``aqua_*`` tools) and the WapuPay-key
+    provisioning call against the JAN3/AQUA backend (``ANKARA_API_URL``).
+    """
+    global _jan3_manager
+    if _jan3_manager is None:
+        from .ankara import JAN3AccountManager
+
+        _jan3_manager = JAN3AccountManager(storage=get_manager().storage)
+    return _jan3_manager
+
+
 def get_wapupay_manager() -> "WapuPayManager":
-    """Get or create the WapuPay manager (shares storage + wallet manager)."""
+    """Get or create the WapuPay manager (shares storage + wallet + JAN3 manager)."""
     global _wapupay_manager
     if _wapupay_manager is None:
         from .wapupay import WapuPayManager
@@ -144,6 +159,7 @@ def get_wapupay_manager() -> "WapuPayManager":
         _wapupay_manager = WapuPayManager(
             storage=get_manager().storage,
             wallet_manager=get_manager(),
+            jan3_manager=get_jan3_manager(),
         )
     return _wapupay_manager
 
@@ -1178,9 +1194,8 @@ def changelly_status(order_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# WapuPay (Argentine direct-fiat payments via JAN3's AQUA Ankara proxy)
+# JAN3's AQUA (Ankara) account auth surface
 # ---------------------------------------------------------------------------
-
 
 def aqua_login(email: str, language: str = "en") -> dict[str, Any]:
     """Start AQUA account login: JAN3's Ankara backend emails a one-time code (OTP).
@@ -1196,7 +1211,7 @@ def aqua_login(email: str, language: str = "en") -> dict[str, Any]:
     Returns:
         email, message, next_step (and otp_code only on non-prod Ankara).
     """
-    return get_wapupay_manager().login(email, language=language)
+    return get_jan3_manager().login(email, language=language)
 
 
 def aqua_verify(email: str, otp_code: str) -> dict[str, Any]:
@@ -1212,18 +1227,22 @@ def aqua_verify(email: str, otp_code: str) -> dict[str, Any]:
     Returns:
         email, logged_in, message.
     """
-    return get_wapupay_manager().verify(email, otp_code)
+    return get_jan3_manager().verify(email, otp_code)
 
 
 def aqua_logout() -> dict[str, Any]:
-    """Forget the local AQUA session (does not revoke the token server-side)."""
-    return get_wapupay_manager().logout()
+    """Forget the local AQUA session."""
+    return get_jan3_manager().logout()
 
 
 def aqua_session() -> dict[str, Any]:
     """Report whether an AQUA session is active (no secrets returned)."""
-    return get_wapupay_manager().session_status()
+    return get_jan3_manager().session_status()
 
+
+# ---------------------------------------------------------------------------
+# WapuPay (Argentine direct-fiat payments)
+# ---------------------------------------------------------------------------
 
 def wapupay_exchange_rates() -> dict[str, Any]:
     """Get WapuPay's current exchange rates (e.g. USDT/ARS). Public — no login or key."""
@@ -1280,7 +1299,7 @@ def wapupay_create_order(
         alias: recipient bank alias / CBU / CVU.
         type: "fiat_transfer" or "fast_fiat_transfer".
         receiver_name: recipient name (optional).
-        refund_address: Liquid mainnet address (lq1…/ex1…) for a refund if funding
+        refund_address: Liquid mainnet address (lq1…/ex1…/VJL…) for a refund if funding
             cannot execute (optional); validated before the order is created.
         wallet_name: wallet you intend to fund from (recorded for tracking).
 

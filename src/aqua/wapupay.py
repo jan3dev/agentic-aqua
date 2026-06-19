@@ -4,7 +4,7 @@ A WapuPay **direct-fiat** order lets a user pay an Argentine bank account
 (by alias / CBU / CVU) in **ARS**, funding the payout with **USDT on Liquid**.
 WapuPay's API is called **directly** (``https://be-prod.wapu.app`` by default;
 override with ``WAPUPAY_BASE_URL`` for staging, e.g. ``be-stage.wapu.app``).
-Each business call carries WapuPay's own ``X-API-Key`` (read lazily from the
+Each call carries WapuPay's own ``X-API-Key`` (read lazily from the
 ``WAPUPAY_API_KEY`` env var); the funding rail is pinned to Liquid USDT.
 WapuPay is the source of truth; we keep only a lightweight local order record
 for CLI / MCP recovery and tracking.
@@ -13,13 +13,13 @@ Two independent auth surfaces (see CLAUDE.md):
 
     * **WapuPay API key** — every order/transaction call sends ``X-API-Key``.
       WapuPay treats ``X-API-Key`` and ``Authorization: Bearer`` as mutually
-      exclusive (sending both → 400), so business calls send **only** the key
+      exclusive (sending both → 400), so WapuPay calls send **only** the key
       and never a Bearer token. ``exchange_rates`` is a public endpoint and
       sends no auth header at all.
     * **AQUA account login** — ``login``/``verify`` are an *AQUA-account*
       email-OTP against Ankara (``{ANKARA}/api/v1/auth/{login,verify}/`` → JWT),
       surfaced as the ``aqua_*`` tools. This session is **decoupled** from the
-      WapuPay business calls above (they need ``WAPUPAY_API_KEY``, not a login).
+      WapuPay calls above (they need ``WAPUPAY_API_KEY``, not a login).
 
 Direct-fiat flow (the "order"):
 
@@ -46,6 +46,14 @@ from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Optional
 
+from .ankara import (
+    HTTP_TIMEOUT_SECONDS,
+    USER_AGENT,
+    _extract_error_message,
+    _mask,
+    _redact,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,26 +61,14 @@ logger = logging.getLogger(__name__)
 # Endpoint configuration
 # ---------------------------------------------------------------------------
 
-# WapuPay's own API host — called directly (no Ankara proxy). Override for
+# WapuPay's own API host — called directly. Override for
 # staging / local development with WAPUPAY_BASE_URL (e.g. be-stage.wapu.app).
 WAPUPAY_BASE_URL = os.environ.get(
     "WAPUPAY_BASE_URL", "https://be-prod.wapu.app"
 ).rstrip("/")
-# AQUA-account login (the `aqua_*` tools) still authenticates against Ankara —
-# the same host as the Lightning integration. Override with ANKARA_API_URL.
-ANKARA_API_URL = os.environ.get("ANKARA_API_URL", "https://ankara.aquabtc.com").rstrip(
-    "/"
-)
-AUTH_BASE_URL = f"{ANKARA_API_URL}/api/v1/auth"
-# The WapuPay user provisioning endpoint (POST /api/v1/wapupay/account/)
-# lives on the SAME AQUA/Ankara backend that issues the AQUA JWT
-WAPUPAY_ACCOUNT_PATH = "/api/v1/wapupay/account/"
 
 # WapuPay API key, read lazily per call (see WapuPayManager._require_api_key)
 WAPUPAY_API_KEY_ENV = "WAPUPAY_API_KEY"
-
-USER_AGENT = "agentic-aqua"
-HTTP_TIMEOUT_SECONDS = 30.0
 
 # Fixed funding rail (v1: Liquid USDT only). So we send them explicitly and never offer a choice.
 FUNDING_METHOD_USDT = "USDT"
@@ -84,21 +80,6 @@ CURRENCY_TAKEN_USDT = "USDT"
 
 # WapuPay direct-fiat transfer types the user can choose between.
 TRANSFER_TYPES = ("fiat_transfer", "fast_fiat_transfer")
-
-# Bank-PII / secret fields that must never reach the logs.
-_SENSITIVE_LOG_FIELDS = frozenset(
-    {
-        "alias",
-        "receiver_name",
-        "refund_address",
-        "access",
-        "refresh",
-        "authorization",
-        "x-api-key",
-        "api_key",
-        "token",
-    }
-)
 
 # Tentative status groupings.
 _FINAL_STATUSES = {"EXECUTED", "EXPIRED", "SETTLED_TO_BALANCE", "FAILED"}
@@ -123,93 +104,19 @@ def order_is_failed(status: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _redact(payload: Any) -> Any:
-    """Recursively redact sensitive keys for safe logging."""
-    if isinstance(payload, dict):
-        return {
-            k: ("***" if k.lower() in _SENSITIVE_LOG_FIELDS else _redact(v))
-            for k, v in payload.items()
-        }
-    if isinstance(payload, list):
-        return [_redact(v) for v in payload]
-    return payload
-
-
-def _scrub_text(s: str) -> str:
-    """Mask structured PII embedded in free text before it reaches a log/envelope.
-
-    Bank PII must never be logged, and key-based ``_redact`` cannot see PII inside
-    a *string value* (e.g. an upstream error like ``"Invalid alias: 0001234..."``).
-    This masks the unambiguous structured identifiers — email addresses and long
-    digit runs (CBU/CVU are 22 digits; account/phone/DNI). Realistic ARS amounts
-    are well under 11 digits (KYC caps payouts at a few million pesos), so the
-    digit mask won't touch a legitimate amount.
-    """
-    if not s:
-        return s
-    s = re.sub(r"[\w.+-]+@[\w-]+\.[\w.-]+", "<redacted-email>", s)
-    s = re.sub(r"\d{11,}", "<redacted>", s)
-    return s
-
-
-def _mask(secret: str) -> str:
-    """Mask a secret for display: keep the first/last few chars, hide the middle.
-
-    The raw key must never appear in tool output or logs; this gives the user
-    enough to confirm which key is configured without revealing it. Short
-    strings collapse to ``***`` so we never leak a meaningful fraction.
-    """
-    if not secret:
-        return ""
-    if len(secret) <= 8:
-        return "***"
-    return f"{secret[:4]}…{secret[-4:]}"
-
-
-def _extract_error_message(body: str) -> str:
-    """Pull a human-readable, PII-scrubbed message out of an Ankara/WapuPay error body.
-
-    Ankara DRF errors use ``detail`` / ``message`` / ``error_code``; WapuPay
-    envelopes use ``error`` / ``message``. The result flows into a logged
-    exception message and the client error envelope, so every return path is
-    scrubbed: dict dumps are ``_redact``-ed (key-based) and all strings pass
-    through ``_scrub_text`` (value-based). Falls back to the raw body.
-    """
-    if not body:
-        return ""
-    try:
-        parsed = json.loads(body)
-    except (ValueError, TypeError):
-        return _scrub_text(body[:200])
-    if isinstance(parsed, dict):
-        for key in ("error", "detail", "message"):
-            val = parsed.get(key)
-            if isinstance(val, str) and val:
-                return _scrub_text(val[:200])
-        # DRF validation errors nest under "details" or field keys — redact keys
-        # (alias/receiver_name/...) before dumping, then scrub residual free text.
-        details = parsed.get("details")
-        if details:
-            return _scrub_text(json.dumps(_redact(details))[:200])
-        return _scrub_text(json.dumps(_redact(parsed))[:200])
-    return _scrub_text(str(parsed)[:200])
-
-
 def _normalize_ars_amount(amount_ars: str | int | float | Decimal) -> Decimal:
     """Validate ``amount_ars`` as a positive, whole-peso fiat Decimal.
 
     ARS is fiat, not satoshis — kept as a Decimal at the wire boundary, never a
     float internally. WapuPay direct-fiat transfers are whole pesos
-    (``min_payment_amount_ars`` is 10000), so a non-integral amount is rejected
-    rather than silently floated onto the wire (no-float-at-boundary invariant).
+    (``min_payment_amount_ars`` is 10000), so a non-integral amount is rejected.
     Raises ``ValueError`` on non-positive / non-integral / unparseable input.
     """
     try:
         d = Decimal(str(amount_ars))
     except (InvalidOperation, ValueError) as e:
         raise ValueError(f"Invalid amount_ars: {amount_ars!r}") from e
-    # Reject NaN / ±Infinity BEFORE the comparison below (a money validator must
-    # never accept a non-finite amount, and `NaN <= 0` would raise InvalidOperation).
+    # Reject non-finite amounts (NaN or Infinity) before validating.
     if not d.is_finite():
         raise ValueError(f"amount_ars must be a finite number, got {amount_ars!r}")
     if d <= 0:
@@ -241,18 +148,11 @@ def usdt_to_base_units(amount_usdt: str | int | float | Decimal) -> int:
 
 
 def _to_decimal(value: str | int | float | Decimal) -> Decimal:
-    """Coerce a wire/stored money value to Decimal without float drift.
-
-    USDT amounts/rates arrive from WapuPay's JSON as floats (or as strings when
-    loaded from disk). Going through ``str()`` first yields the shortest decimal
-    that round-trips, so money is kept as Decimal internally — never a float
-    (CLAUDE.md invariant #1). Idempotent for a value already Decimal.
-    """
+    """Convert a numeric value to Decimal, avoiding float drift."""
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
 
-# WapuPayOrder money/rate fields kept as Decimal in memory and serialized as
-# strings (JSON has no Decimal; the project has no Decimal-aware encoder).
+# Money/rate fields are Decimals in memory and serialized as strings.
 _MONEY_FIELDS = (
     "exchange_rate",
     "fee_amount_usdt",
@@ -261,19 +161,14 @@ _MONEY_FIELDS = (
 )
 
 
-# A WapuPay tentative id is a canonical UUID (matches Ankara's proxy allowlist,
-# which is stricter than storage's SWAP_ID_PATTERN).
+# A WapuPay tentative id is a canonical UUID.
 _TENTATIVE_ID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 
 
 def _validate_tentative_id(tentative_id: str) -> str:
-    """Validate + normalize a user-supplied tentative id BEFORE it builds a URL.
-
-    Fails fast locally (no network call, no malformed path) on a bad id, and
-    matches the UUID shape Ankara's allowlist requires.
-    """
+    """Validate and normalize a tentative id, ensuring it is a UUID before building a URL."""
     tid = (tentative_id or "").strip()
     if not tid:
         raise ValueError("tentative_id is required")
@@ -283,20 +178,10 @@ def _validate_tentative_id(tentative_id: str) -> str:
 
 
 def validate_liquid_refund_address(address: str) -> str:
-    """Validate + normalize a user-supplied Liquid refund address.
+    """Validate and normalize a Liquid mainnet refund address for USDT refunds.
 
-    Public so the CLI can fail fast with early feedback before the quote step,
-    and ``create_order`` can re-validate on the MCP path — one shared validator,
-    no reaching into a private symbol.
-
-    The refund rail is pinned to Liquid **mainnet** USDT (USDt on Liquid exists
-    only on mainnet), so a refund sent to a wrong-network address would be
-    unrecoverable. Parse with LWK (lazy import keeps wapupay importable without
-    network deps, matching ``sideswap._validate_btc_address``) and require the
-    address to be mainnet. Confidential (``lq1…``), unconfidential (``ex1…``)
-    and legacy base58 confidential (``VJL…``) forms are all accepted — they are
-    all valid, deliverable mainnet addresses. Validate by parsing + network only;
-    never gate on the prefix.
+    Accepts all valid mainnet address formats (confidential, unconfidential, and legacy).
+    Ensures the address is Liquid mainnet by parsing and checking its network.
     """
     import lwk
 
@@ -321,29 +206,10 @@ def validate_liquid_refund_address(address: str) -> str:
 
 
 @dataclass
-class WapuPaySession:
-    """Persisted AQUA↔Ankara session (JWT pair). Stored 0o600 — holds a
-    money-authorizing bearer token; never logged."""
-
-    email: str
-    access: str
-    refresh: str
-    created_at: str
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "WapuPaySession":
-        known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in known})
-
-
-@dataclass
 class WapuPayApiKey:
     """Locally-persisted WapuPay API key provisioned via the AQUA backend.
 
-    Stored 0o600 — it authorizes WapuPay business calls directly and is never
+    Stored 0o600 — it authorizes WapuPay calls directly and is never
     logged (``token`` is in ``_SENSITIVE_LOG_FIELDS``). Decoupled from the AQUA
     login session: logging out does NOT delete it."""
 
@@ -377,22 +243,14 @@ class WapuPayOrder:
     receiver_name: Optional[str] = None
     funding_currency: Optional[str] = None
     funding_network: Optional[str] = None
-    # USDT amounts / exchange rate: Decimal in memory (never float — CLAUDE.md
-    # invariant #1), serialized as strings by to_dict. See _MONEY_FIELDS.
+    # USDT amounts / exchange rate: Decimal in memory, serialized as strings.
     exchange_rate: Optional[Decimal] = None
     fee_amount_usdt: Optional[Decimal] = None
     funding_amount_usdt: Optional[Decimal] = None
-    # WapuPay's own wire field: REAL satoshis, present only when the funding
-    # network is Lightning or BTC. Passthrough only — for the Liquid/USDT rail
-    # it stays None and AQUA never derives it (deriving here would collide with
-    # this upstream field, which means a different unit). See
-    # total_funding_amount_base_units for the USDT amount to actually send.
+    # Amount in satoshis for Lightning/BTC funding only; None otherwise.
     funding_amount_sat: Optional[int] = None
     total_amount_usdt: Optional[Decimal] = None
-    # The exact integer USDT amount (base units, precision-8) the user must send
-    # on Liquid via lw_send_asset = total_amount_usdt * 10^8. Derived from the
-    # TOTAL (funding + fee): WapuPay only settles if it receives the full
-    # total_amount_usdt. NOT bitcoin sats — see funding_amount_sat above.
+    # Integer USDT amount (precision-8) to send on Liquid; derived from total_amount_usdt.
     total_funding_amount_base_units: Optional[int] = None
     address_destination: Optional[str] = None
     asset_id: Optional[str] = None
@@ -406,32 +264,24 @@ class WapuPayOrder:
     last_error: Optional[str] = None
 
     def __post_init__(self) -> None:
-        # Coerce money/rate to Decimal exactly once, at construction — whatever
-        # the constructor or from_dict received (float from the wire, str from
-        # disk) becomes Decimal so it is never a float internally.
+        # Ensure money/rate fields are always Decimals internally.
         for fld in _MONEY_FIELDS:
             value = getattr(self, fld)
             if value is not None and not isinstance(value, Decimal):
                 setattr(self, fld, _to_decimal(value))
 
     def _derive_base_units(self, *, only_if_missing: bool = False) -> None:
-        """Re-derive total_funding_amount_base_units from total_amount_usdt.
-
-        Single source of truth for the integer USDT amount (precision-8 base
-        units) the user must send on Liquid. WapuPay only settles on the exact
-        TOTAL (funding + fee), so this derives from total_amount_usdt. With
-        only_if_missing, an already-set value is preserved (loading a record).
-        """
+        """Set total_funding_amount_base_units from total_amount_usdt,
+        unless it is already set (if only_if_missing is True).
+        Ensures the correct integer USDT amount (precision-8) for Liquid funding."""
+   
         if only_if_missing and self.total_funding_amount_base_units is not None:
             return
         if self.total_amount_usdt is not None:
             self.total_funding_amount_base_units = usdt_to_base_units(self.total_amount_usdt)
 
     def to_dict(self) -> dict:
-        data = asdict(self)
-        # Decimal isn't JSON-serializable and the project has no Decimal-aware
-        # encoder, so emit money/rate as strings (full fidelity, no float) for
-        # both the on-disk record and the tool-result envelope.
+        data = asdict(self) 
         for fld in _MONEY_FIELDS:
             if data.get(fld) is not None:
                 data[fld] = str(data[fld])
@@ -439,16 +289,8 @@ class WapuPayOrder:
 
     @classmethod
     def from_dict(cls, data: dict) -> "WapuPayOrder":
-        data = dict(data)  # don't mutate the caller's dict
-        # Migration for pre-rename orders: older records stored AQUA's
-        # USDT-derived send amount under the key `funding_amount_sat`. That key
-        # is now reserved for WapuPay's REAL satoshis, which only exist on a
-        # BTC/Lightning funding network. Keep it ONLY when the network is an
-        # explicit non-Liquid (BTC/Lightning) rail; for Liquid OR an
-        # unknown/empty network (e.g. a thin cross-device record persisted by
-        # the old code), any funding_amount_sat is a stale USDT-scaled value —
-        # drop it and let total_funding_amount_base_units re-derive from
-        # total_amount_usdt below.
+        data = dict(data)
+        # This cleans up data from older records predating the rename.
         network = (data.get("funding_network") or "").upper()
         if network in ("", FUNDING_NETWORK_LIQUID):
             data.pop("funding_amount_sat", None)
@@ -493,16 +335,11 @@ class WapuPayOrder:
                 if attr in _MONEY_FIELDS:
                     value = _to_decimal(value)
                 setattr(self, attr, value)
-        # Derive the exact integer USDT amount to send on Liquid from the TOTAL
-        # the user owes (funding + fee). WapuPay only settles if it receives
-        # total_amount_usdt exactly, so re-derive whenever the total changes so
-        # a re-quote can't leave a stale base-units amount. These are USDT base
-        # units (precision-8), NOT bitcoin sats — kept distinct from the
-        # passthrough funding_amount_sat below.
+        # Always recalculate integer USDT base units (precision-8) for Liquid from 
+        # total_amount_usdt to avoid stale values; distinct from funding_amount_sat (BTC).
+ 
         self._derive_base_units()
-        # Integer invariant: funding_amount_sat is WapuPay's REAL BTC/Lightning
-        # value (passthrough only, never derived). If it ever arrives as a float
-        # (against WapuPay's integer spec), coerce so callers never get a float.
+        # Ensure funding_amount_sat remains an integer per WapuPay spec.
         if isinstance(self.funding_amount_sat, float):
             self.funding_amount_sat = int(self.funding_amount_sat)
 
@@ -513,32 +350,21 @@ class WapuPayOrder:
 
 
 class WapuPayClient:
-    """HTTP client for WapuPay's direct API + AQUA-account (Ankara) auth.
+    """HTTP client for WapuPay's API.
 
-    All network I/O funnels through the single ``_api_request`` seam so tests
-    patch one method (see ``tests/AGENTS.md``). Business calls send WapuPay's
-    ``X-API-Key`` (never a Bearer token — the two are mutually exclusive).
-    Upstream errors are surfaced as ``ValueError`` with a human message (a 401
-    means the API key is missing/invalid); no fallback fake-success values
-    (CLAUDE.md "No lies rules").
+    Uses ``_api_request`` for all network calls, always authenticating with ``X-API-Key`` (not Bearer).
+    Raises ValueError on upstream errors with a clear message.
     """
 
-    def __init__(
-        self,
-        base_url: Optional[str] = None,
-        auth_base_url: Optional[str] = None,
-        aqua_backend_url: Optional[str] = None,
-    ) -> None:
+    def __init__(self, base_url: Optional[str] = None) -> None:
         self.base_url = (base_url or WAPUPAY_BASE_URL).rstrip("/")
-        self.auth_base_url = (auth_base_url or AUTH_BASE_URL).rstrip("/")
-        self.aqua_backend_url = (aqua_backend_url or ANKARA_API_URL).rstrip("/")
 
     @staticmethod
     def _api_key_headers(api_key: str) -> dict[str, str]:
         """Build WapuPay's API-key auth header.
 
         WapuPay rejects a request that carries both ``X-API-Key`` and a Bearer
-        token, so this is the *only* auth header business calls ever send.
+        token, so this is the *only* auth header WapuPay calls ever send.
         """
         return {"X-API-Key": api_key}
 
@@ -594,88 +420,6 @@ class WapuPayClient:
             raise ValueError(
                 f"WapuPay / Ankara unreachable ({method}): {e.reason}"
             ) from e
-
-    # -- Ankara auth ---------------------------------------------------------
-
-    def login(self, email: str, language: str = "en") -> dict:
-        """POST /auth/login/ — request an OTP email. Returns ``{message[, otp_code]}``."""
-        return self._api_request(
-            "POST",
-            f"{self.auth_base_url}/login/",
-            json_body={"email": email, "language": language},
-        ) or {}
-
-    def verify(self, email: str, otp_code: str) -> dict:
-        """POST /auth/verify/ — exchange the OTP for ``{access, refresh}`` JWTs."""
-        return self._api_request(
-            "POST",
-            f"{self.auth_base_url}/verify/",
-            json_body={"email": email, "otp_code": otp_code},
-        ) or {}
-
-    def provision_wapupay_account(self, access_token: str) -> dict:
-        """POST /api/v1/wapupay/account/ — provision a WapuPay sub-user & return its key.
-
-        This hits the AQUA/Ankara backend (NOT WapuPay directly), authenticated
-        with the AQUA JWT — so it sends ``Authorization: Bearer``.
-        The backend returns ``{"token": "<wapupay api key>"}`` and
-        rotates the key on every successful call. Self-contained (does not reuse
-        the WapuPay-flavoured ``_api_request`` seam) so the error messages and
-        Bearer auth are correct for the AQUA backend; all network I/O still goes
-        through ``urllib.request.urlopen``.
-
-        Raises:
-            ValueError: on any non-2xx (401 = bad/expired AQUA JWT, 403 =
-                wapupay_b2b feature off, 502 = WapuPay upstream), a non-JSON
-                body, or an unreachable host.
-        """
-        url = f"{self.aqua_backend_url}{WAPUPAY_ACCOUNT_PATH}"
-        headers = {
-            "User-Agent": USER_AGENT,
-            "Accept": "application/json",
-            "Authorization": f"Bearer {access_token}",
-        }
-        req = urllib.request.Request(url, data=None, method="POST", headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
-                raw = resp.read().decode()
-                if not raw.strip():
-                    return {}
-                try:
-                    return json.loads(raw)
-                except json.JSONDecodeError as e:
-                    raise ValueError(
-                        f"AQUA backend returned a non-JSON response ({resp.status} POST)"
-                    ) from e
-        except urllib.error.HTTPError as e:
-            # Code-specific, actionable messages. For 401 we replace (not append)
-            # the upstream DRF detail — "credentials were not provided" is noise.
-            if e.code == 401:
-                raise ValueError(
-                    "AQUA session invalid or expired — run aqua_login / aqua_verify again."
-                ) from e
-            if e.code == 403:
-                raise ValueError(
-                    "WapuPay B2B is not enabled for your AQUA account "
-                    "(feature 'wapupay_b2b'; contact AQUA ops)."
-                ) from e
-            if e.code == 502:
-                raise ValueError(
-                    "WapuPay upstream error while provisioning your account — "
-                    "try again shortly."
-                ) from e
-            body = ""
-            try:
-                body = e.read().decode()
-            except Exception:
-                pass
-            detail = _extract_error_message(body)
-            msg = f"AQUA backend request failed ({e.code} POST)"
-            if detail:
-                msg += f": {detail}"
-            raise ValueError(msg) from e
-        except urllib.error.URLError as e:
-            raise ValueError(f"AQUA backend unreachable (POST): {e.reason}") from e
 
     # -- WapuPay direct API --------------------------------------------------
 
@@ -742,15 +486,18 @@ class WapuPayClient:
 
 
 class WapuPayManager:
-    """Wallet-aware orchestration of WapuPay auth + direct-fiat orders.
+    """Wallet-aware orchestration of WapuPay direct-fiat orders.
 
-    Session and order persistence go through ``Storage``; the wallet manager is
-    used only to resolve a Liquid refund address when one isn't supplied.
+    Order persistence goes through ``Storage``; the wallet manager resolves a
+    Liquid refund address when one isn't supplied. AQUA-account auth (login /
+    session) and the WapuPay-key provisioning call are delegated to the injected
+    ``ankara.JAN3AccountManager`` (``self.jan3``).
     """
 
-    def __init__(self, storage, wallet_manager) -> None:
+    def __init__(self, storage, wallet_manager, jan3_manager) -> None:
         self.storage = storage
         self.wallet_manager = wallet_manager
+        self.jan3 = jan3_manager
         self._client: Optional[WapuPayClient] = None
 
     @property
@@ -759,72 +506,14 @@ class WapuPayManager:
             self._client = WapuPayClient()
         return self._client
 
-    # -- Auth ----------------------------------------------------------------
-
-    def login(self, email: str, language: str = "en") -> dict:
-        """Start login: Ankara emails an OTP. Does not persist anything yet."""
-        if not email or "@" not in email:
-            raise ValueError("A valid email is required to log in to WapuPay")
-        resp = self.client.login(email, language=language)
-        out = {
-            "email": email,
-            "message": resp.get(
-                "message", "An OTP code has been sent to your email."
-            ),
-            "next_step": "Call aqua_verify with the OTP code from your email.",
-        }
-        # Non-prod Ankara (EMAIL_BASED_OTP off) returns the code inline.
-        if resp.get("otp_code"):
-            out["otp_code"] = resp["otp_code"]
-        return out
-
-    def verify(self, email: str, otp_code: str) -> dict:
-        """Verify the OTP and persist the resulting JWT session."""
-        if not otp_code or not str(otp_code).strip():
-            raise ValueError("otp_code is required")
-        tokens = self.client.verify(email, str(otp_code).strip())
-        access = tokens.get("access")
-        refresh = tokens.get("refresh")
-        if not access or not refresh:
-            raise ValueError(
-                "WapuPay verify did not return tokens — check the email and OTP code."
-            )
-        session = WapuPaySession(
-            email=email,
-            access=access,
-            refresh=refresh,
-            created_at=datetime.now(UTC).isoformat(),
-        )
-        self.storage.save_wapupay_session(session)
-        return {
-            "email": email,
-            "logged_in": True,
-            "message": "Logged in to your AQUA account via JAN3 Ankara.",
-        }
-
-    def logout(self) -> dict:
-        """Forget the local AQUA session (does not revoke the token server-side)."""
-        existed = self.storage.load_wapupay_session() is not None
-        self.storage.delete_wapupay_session()
-        return {"logged_out": existed}
-
-    def session_status(self) -> dict:
-        """Report whether a local AQUA session exists (no secrets returned)."""
-        session = self.storage.load_wapupay_session()
-        if not session:
-            return {"logged_in": False}
-        return {
-            "logged_in": True,
-            "email": session.email,
-            "created_at": session.created_at,
-        }
+    # -- Account provisioning ------------------------------------------------
 
     def provision_account(self) -> dict:
         """Provision a WapuPay API key via the AQUA backend and store it locally.
 
         Requires a prior AQUA login (``aqua_login`` → ``aqua_verify``): the call
         is authorized with that JWT. The returned key is persisted to
-        ``~/.aqua/wapupay/api_key.json`` (0o600) so every ``wapupay_*`` business
+        ``~/.aqua/wapupay/api_key.json`` (0o600) so every ``wapupay_*``
         tool can use it without an env var — the raw key is never returned.
 
         The AQUA backend issues a fresh key on EVERY call and invalidates any key
@@ -854,19 +543,9 @@ class WapuPayManager:
                 ),
             }
 
-        session = self.storage.load_wapupay_session()
-        if not session or not session.access:
-            raise ValueError(
-                "Not logged in to your AQUA account. Run aqua_login then aqua_verify "
-                "before provisioning a WapuPay API key."
-            )
-        resp = self.client.provision_wapupay_account(session.access)
-        token = (resp or {}).get("token")
-        if not token or not str(token).strip():
-            raise ValueError(
-                "AQUA backend did not return a WapuPay API key (token missing)."
-            )
-        token = str(token).strip()
+        # Session lookup + the authenticated AQUA-backend call live in the JAN3
+        # account manager; WapuPay only resolves/stores the resulting key.
+        token = self.jan3.provision_wapupay_token()
         record = WapuPayApiKey(token=token, created_at=datetime.now(UTC).isoformat())
         self.storage.save_wapupay_api_key(record)
         return {
@@ -888,7 +567,7 @@ class WapuPayManager:
     def _resolve_api_key(self) -> tuple[Optional[str], Optional[str]]:
         """Resolve the WapuPay API key — the single source of truth for the order.
 
-        Read lazily on every business call (so a key change takes effect without
+        Read lazily on every WapuPay call (so a key change takes effect without
         a restart and tests can monkeypatch it). Returns ``(source, key)``:
 
         1. ``("env", key)`` — ``WAPUPAY_API_KEY`` env var is set; explicit config wins.
@@ -907,7 +586,7 @@ class WapuPayManager:
     def _require_api_key(self) -> str:
         """Return WapuPay's API key, or raise.
 
-        WapuPay business endpoints are authorized by this key (env var first,
+        WapuPay endpoints are authorized by this key (env var first,
         then the stored provisioned key — see ``_resolve_api_key``), not by the
         AQUA login session; a 401 from WapuPay means the key is missing or
         invalid. No silent fallback (CLAUDE.md "No lies rules").

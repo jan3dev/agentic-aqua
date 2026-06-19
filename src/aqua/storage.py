@@ -126,8 +126,9 @@ class Storage:
         self.sideswap_swaps_dir = self.base_dir / "sideswap_swaps"
         self.wapupay_dir = self.base_dir / "wapupay"
         self.wapupay_orders_dir = self.wapupay_dir / "orders"
-        self.wapupay_session_path = self.wapupay_dir / "session.json"
         self.wapupay_api_key_path = self.wapupay_dir / "api_key.json"
+        self.jan3_dir = self.base_dir / "jan3"
+        self.jan3_session_path = self.jan3_dir / "session.json"
         self.qr_dir = self.base_dir / "qr"
         self.config_path = self.base_dir / "config.json"
         self._ensure_dirs()
@@ -160,6 +161,8 @@ class Storage:
         os.chmod(self.wapupay_dir, 0o700)
         self.wapupay_orders_dir.mkdir(exist_ok=True, mode=0o700)
         os.chmod(self.wapupay_orders_dir, 0o700)
+        self.jan3_dir.mkdir(exist_ok=True, mode=0o700)
+        os.chmod(self.jan3_dir, 0o700)
         self.qr_dir.mkdir(exist_ok=True, mode=0o700)
         os.chmod(self.qr_dir, 0o700)
 
@@ -666,37 +669,32 @@ class Storage:
                     pass
         return removed
 
-    # WapuPay operations
+    # JAN3 / AQUA account operations
 
-    def save_wapupay_session(self, session) -> None:
-        """Persist the WapuPay (Ankara JWT) session. File is 0o600 — holds a
-        money-authorizing bearer token."""
-        self._atomic_write_json(self.wapupay_session_path, session.to_dict())
+    def save_jan3_session(self, session) -> None:
+        """Persist the JAN3 / AQUA account session (Ankara JWT pair)."""
+        self._atomic_write_json(self.jan3_session_path, session.to_dict())
 
-    def load_wapupay_session(self):
-        """Load the WapuPay session. Returns WapuPaySession or None."""
-        from .wapupay import WapuPaySession
+    def load_jan3_session(self):
+        """Load the JAN3 / AQUA account session. Returns JAN3Session or None."""
+        from .ankara import JAN3Session
 
-        if not self.wapupay_session_path.exists():
+        if not self.jan3_session_path.exists():
             return None
-        with open(self.wapupay_session_path) as f:
-            return WapuPaySession.from_dict(json.load(f))
+        with open(self.jan3_session_path) as f:
+            return JAN3Session.from_dict(json.load(f))
 
-    def delete_wapupay_session(self) -> None:
-        """Remove the persisted WapuPay session (idempotent).
-
-        Does NOT touch the WapuPay API key (``api_key.json``): the key is
-        decoupled from the AQUA login session — it is used directly against
-        WapuPay — so logging out must not invalidate it locally.
-        """
+    def delete_jan3_session(self) -> None:
+        """Remove the persisted JAN3 / AQUA session (idempotent)."""
         try:
-            self.wapupay_session_path.unlink()
+            self.jan3_session_path.unlink()
         except FileNotFoundError:
             pass
 
+    # WapuPay operations
+
     def save_wapupay_api_key(self, api_key) -> None:
-        """Persist the provisioned WapuPay API key. File is 0o600 — it authorizes
-        WapuPay business calls directly."""
+        """Persist the provisioned WapuPay API key."""
         self._atomic_write_json(self.wapupay_api_key_path, api_key.to_dict())
 
     def load_wapupay_api_key(self):
@@ -725,7 +723,7 @@ class Storage:
         return self.wapupay_orders_dir / f"{tentative_id}.json"
 
     def save_wapupay_order(self, order) -> None:
-        """Save a WapuPay order record for recovery (contains bank PII; 0o600)."""
+        """Save a WapuPay order record for recovery."""
         path = self._wapupay_order_path(order.tentative_id)
         self._atomic_write_json(path, order.to_dict())
 

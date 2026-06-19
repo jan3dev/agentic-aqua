@@ -25,23 +25,24 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import aqua.tools as tools
+from aqua.ankara import (
+    JAN3AccountManager,
+    JAN3Session,
+    _extract_error_message,
+    _mask,
+    _redact,
+)
 from aqua.storage import Storage
 from aqua.wapupay import (
-    AUTH_BASE_URL,
     FUNDING_METHOD_USDT,
     FUNDING_NETWORK_LIQUID,
-    WAPUPAY_ACCOUNT_PATH,
     WAPUPAY_BASE_URL,
     WapuPayApiKey,
     WapuPayClient,
     WapuPayManager,
     WapuPayOrder,
-    WapuPaySession,
     _ars_for_wire,
-    _extract_error_message,
-    _mask,
     _normalize_ars_amount,
-    _redact,
     order_is_failed,
     order_is_final,
     order_is_success,
@@ -137,14 +138,22 @@ class FakeClient:
 
 
 def make_manager(storage, fake):
-    m = WapuPayManager(storage=storage, wallet_manager=DummyWallet())
+    # One scriptable fake stands in for both client seams: the JAN3 auth client
+    # (login / verify / provision) and the WapuPay client. The JAN3
+    # account manager is injected so provision_account() resolves the session +
+    # backend call through it, exactly as get_wapupay_manager() wires production.
+    jan3 = JAN3AccountManager(storage=storage)
+    jan3._client = fake
+    m = WapuPayManager(
+        storage=storage, wallet_manager=DummyWallet(), jan3_manager=jan3
+    )
     m._client = fake
     return m
 
 
 def logged_in(storage, email="user@example.com", access="acc.tok", refresh="ref.tok"):
-    storage.save_wapupay_session(
-        WapuPaySession(email=email, access=access, refresh=refresh, created_at="t0")
+    storage.save_jan3_session(
+        JAN3Session(email=email, access=access, refresh=refresh, created_at="t0")
     )
 
 
@@ -431,25 +440,6 @@ def test_api_request_unreachable_raises_valueerror():  # Sig:4
     assert "unreachable" in str(ei.value).lower()
 
 
-def test_client_login_verify_targets():  # Sig:4
-    # login/verify are AQUA-account auth — still POSTed to Ankara's /auth/.
-    client = WapuPayClient()
-    seen = {}
-
-    def fake_urlopen(req, timeout=None):
-        seen.setdefault("urls", []).append(req.full_url)
-        seen["last_body"] = json.loads(req.data)
-        return _mock_resp({"access": "a", "refresh": "r", "message": "ok"})
-
-    with patch("aqua.wapupay.urllib.request.urlopen", side_effect=fake_urlopen):
-        client.login("u@e.com", language="es")
-        assert seen["last_body"] == {"email": "u@e.com", "language": "es"}
-        client.verify("u@e.com", "123456")
-        assert seen["last_body"] == {"email": "u@e.com", "otp_code": "123456"}
-    assert seen["urls"][0] == f"{AUTH_BASE_URL}/login/"
-    assert seen["urls"][1] == f"{AUTH_BASE_URL}/verify/"
-
-
 def test_client_exchange_rates_is_public():  # Sig:4
     # exchange_rates hits WapuPay directly with NO auth header (public endpoint).
     client = WapuPayClient()
@@ -503,53 +493,9 @@ def test_client_uses_configured_base_url_for_native_paths():  # Sig:4
 
 
 # ---------------------------------------------------------------------------
-# Manager: auth lifecycle
+# Manager: business calls + order orchestration
+# (AQUA-account auth lives in tests/test_ankara.py)
 # ---------------------------------------------------------------------------
-
-
-def test_login_returns_message_and_passes_args(storage):  # Sig:4
-    fake = FakeClient({"login": {"message": "sent"}})
-    m = make_manager(storage, fake)
-    out = m.login("u@e.com", language="es")
-    assert out["email"] == "u@e.com"
-    assert out["message"] == "sent"
-    assert "next_step" in out
-    assert fake.calls[0] == ("login", ("u@e.com", "es"))
-
-
-def test_login_rejects_bad_email(storage):  # Sig:3
-    m = make_manager(storage, FakeClient())
-    with pytest.raises(ValueError):
-        m.login("not-an-email")
-
-
-def test_verify_persists_session(storage):  # Sig:5
-    fake = FakeClient({"verify": {"access": "ACC", "refresh": "REF"}})
-    m = make_manager(storage, fake)
-    out = m.verify("u@e.com", "123456")
-    assert out["logged_in"] is True
-    sess = storage.load_wapupay_session()
-    assert sess is not None and sess.access == "ACC" and sess.refresh == "REF"
-    assert sess.email == "u@e.com"
-
-
-def test_verify_without_tokens_raises_and_saves_nothing(storage):  # Sig:5
-    fake = FakeClient({"verify": {"message": "wrong"}})
-    m = make_manager(storage, fake)
-    with pytest.raises(ValueError):
-        m.verify("u@e.com", "000000")
-    assert storage.load_wapupay_session() is None
-
-
-def test_logout_and_session_status(storage):  # Sig:3
-    m = make_manager(storage, FakeClient())
-    assert m.session_status() == {"logged_in": False}
-    logged_in(storage, email="x@y.com")
-    st = m.session_status()
-    assert st["logged_in"] is True and st["email"] == "x@y.com"
-    assert "access" not in st and "refresh" not in st  # no secrets leaked
-    assert m.logout()["logged_out"] is True
-    assert storage.load_wapupay_session() is None
 
 
 def test_business_call_without_api_key_raises(monkeypatch, storage):  # Sig:5
@@ -970,98 +916,10 @@ def test_tool_create_order_attaches_qr(monkeypatch, storage):  # Sig:4
 
 
 # ---------------------------------------------------------------------------
-# wapupay_provision_account — provision a WapuPay API key via the AQUA backend
+# WapuPayManager.provision_account — orchestration only (the AQUA-backend call
+# is delegated to JAN3AccountManager; the JAN3AuthClient HTTP tests for
+# provisioning live in tests/test_ankara.py)
 # ---------------------------------------------------------------------------
-
-
-def test_provision_client_sends_bearer_not_api_key():  # Sig:5
-    # The provisioning call hits the AQUA backend with the AQUA JWT, so it sends
-    # Authorization: Bearer and NEVER an X-API-Key (that's WapuPay-only).
-    client = WapuPayClient(aqua_backend_url="http://localhost:8000")
-    captured = {}
-
-    def fake_urlopen(req, timeout=None):
-        captured["req"] = req
-        return _mock_resp({"token": "provisioned-key"})
-
-    with patch("aqua.wapupay.urllib.request.urlopen", side_effect=fake_urlopen):
-        out = client.provision_wapupay_account("jwt.access.token")
-    assert out == {"token": "provisioned-key"}
-    req = captured["req"]
-    # Trailing slash preserved (DRF APPEND_SLASH would 301 a slashless POST).
-    assert req.full_url == "http://localhost:8000/api/v1/wapupay/account/"
-    assert req.get_method() == "POST"
-    assert req.get_header("Authorization") == "Bearer jwt.access.token"
-    assert req.get_header("X-api-key") is None
-    assert req.data is None  # bodyless POST
-
-
-def test_provision_client_default_backend_is_ankara():
-    # Provisioning hits the same AQUA/Ankara backend, so it uses ANKARA_API_URL.
-    from aqua.wapupay import ANKARA_API_URL
-
-    client = WapuPayClient()
-    assert client.aqua_backend_url == ANKARA_API_URL.rstrip("/")
-    assert WAPUPAY_ACCOUNT_PATH == "/api/v1/wapupay/account/"
-
-
-def test_provision_client_401_points_at_relogin():  # Sig:5
-    client = WapuPayClient(aqua_backend_url="http://h")
-    with patch(
-        "aqua.wapupay.urllib.request.urlopen",
-        side_effect=_http_error(401, '{"detail": "Authentication credentials were not provided."}'),
-    ):
-        with pytest.raises(ValueError) as ei:
-            client.provision_wapupay_account("expired")
-    msg = str(ei.value)
-    assert "aqua_login" in msg
-    # DRF noise is replaced, not appended.
-    assert "credentials were not provided" not in msg
-
-
-def test_provision_client_403_points_at_feature_flag():  # Sig:5
-    client = WapuPayClient(aqua_backend_url="http://h")
-    with patch(
-        "aqua.wapupay.urllib.request.urlopen",
-        side_effect=_http_error(403, '{"detail": "forbidden"}'),
-    ):
-        with pytest.raises(ValueError) as ei:
-            client.provision_wapupay_account("jwt")
-    assert "wapupay_b2b" in str(ei.value)
-
-
-def test_provision_client_502_points_at_upstream():  # Sig:5
-    client = WapuPayClient(aqua_backend_url="http://h")
-    with patch(
-        "aqua.wapupay.urllib.request.urlopen",
-        side_effect=_http_error(502, "<html>bad gateway</html>"),
-    ):
-        with pytest.raises(ValueError) as ei:
-            client.provision_wapupay_account("jwt")
-    assert "upstream" in str(ei.value).lower()
-
-
-def test_provision_client_other_error_includes_detail():  # Sig:4
-    client = WapuPayClient(aqua_backend_url="http://h")
-    with patch(
-        "aqua.wapupay.urllib.request.urlopen",
-        side_effect=_http_error(400, '{"error": "bad request shape"}'),
-    ):
-        with pytest.raises(ValueError) as ei:
-            client.provision_wapupay_account("jwt")
-    msg = str(ei.value)
-    assert "AQUA backend" in msg and "bad request shape" in msg
-
-
-def test_provision_client_unreachable():  # Sig:4
-    client = WapuPayClient(aqua_backend_url="http://h")
-    with patch(
-        "aqua.wapupay.urllib.request.urlopen",
-        side_effect=urllib.error.URLError("conn refused"),
-    ):
-        with pytest.raises(ValueError) as ei:
-            client.provision_wapupay_account("jwt")
-    assert "unreachable" in str(ei.value).lower()
 
 
 def test_provision_manager_success_stores_and_masks(monkeypatch, storage):  # Sig:5
@@ -1186,6 +1044,6 @@ def test_logout_keeps_api_key(monkeypatch, storage):  # Sig:5
     logged_in(storage)
     storage.save_wapupay_api_key(WapuPayApiKey(token="keep-me", created_at="t0"))
     m = make_manager(storage, FakeClient())
-    m.logout()
-    assert storage.load_wapupay_session() is None
+    m.jan3.logout()
+    assert storage.load_jan3_session() is None
     assert storage.load_wapupay_api_key().token == "keep-me"
