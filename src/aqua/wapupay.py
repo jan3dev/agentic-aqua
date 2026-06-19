@@ -381,7 +381,6 @@ class WapuPayOrder:
     expires_at: Optional[str] = None
     funding_expires_at: Optional[str] = None
     refund_address: Optional[str] = None
-    external_reference: Optional[str] = None
     funding_transaction_id: Optional[str] = None
     executed_transaction_id: Optional[str] = None
     wallet_name: Optional[str] = None
@@ -436,7 +435,6 @@ class WapuPayOrder:
             "expires_at": "expires_at",
             "funding_expires_at": "funding_expires_at",
             "refund_address": "refund_address",
-            "external_reference": "external_reference",
             "funding_transaction_id": "funding_transaction_id",
             "executed_transaction_id": "executed_transaction_id",
         }
@@ -911,7 +909,6 @@ class WapuPayManager:
         transfer_type: str,
         receiver_name: Optional[str] = None,
         refund_address: Optional[str] = None,
-        external_reference: Optional[str] = None,
         wallet_name: str = "default",
     ) -> dict:
         """Create a direct-fiat order and issue Liquid USDT funding instructions.
@@ -953,8 +950,6 @@ class WapuPayManager:
             body["receiver_name"] = receiver_name.strip()
         if refund:
             body["refund_address"] = refund
-        if external_reference and external_reference.strip():
-            body["external_reference"] = external_reference.strip()
 
         created = self.client.create_tentative(body, api_key=key)
         if not isinstance(created, dict):
@@ -976,7 +971,6 @@ class WapuPayManager:
             created_at=datetime.now(UTC).isoformat(),
             receiver_name=(receiver_name.strip() if receiver_name else None),
             refund_address=refund,
-            external_reference=(external_reference.strip() if external_reference else None),
             wallet_name=wallet_name,
         )
         order.apply_tentative(created)

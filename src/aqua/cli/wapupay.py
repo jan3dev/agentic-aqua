@@ -4,8 +4,6 @@ Pay an Argentine bank account (alias / CBU / CVU) in ARS, funded with USDT on
 Liquid. These commands call WapuPay directly and require `WAPUPAY_API_KEY` set in
 the environment. `create-order` returns a Liquid USDT address to fund; pay it with
 `aqua liquid send-asset` and WapuPay settles the ARS payout.
-
-Logging in to your AQUA account is a separate step — see `aqua auth login`.
 """
 
 from __future__ import annotations
@@ -35,8 +33,7 @@ def wapupay():
 
     Calls WapuPay directly; set WAPUPAY_API_KEY in your environment first.
     `create-order` returns a Liquid USDT address to fund — pay it with
-    `aqua liquid send-asset` and WapuPay settles the pesos. (Logging in to your
-    AQUA account is separate: see `aqua auth login`.)
+    `aqua liquid send-asset` and WapuPay settles the pesos.
     """
 
 
@@ -78,7 +75,6 @@ def quote(ctx, amount_ars, transfer_type, alias):
     "--refund-address", default=None,
     help="Liquid mainnet refund address (lq1…/ex1…) if funding cannot execute (optional).",
 )
-@click.option("--external-reference", default=None, help="Client reference string (optional).")
 @click.option(
     "--wallet-name", default="default", show_default=True,
     help="Wallet you intend to fund from.",
@@ -89,15 +85,13 @@ def quote(ctx, amount_ars, transfer_type, alias):
 )
 @click.pass_obj
 def create_order(ctx, amount_ars, alias, transfer_type, receiver_name, refund_address,
-                 external_reference, wallet_name, skip_confirm):
+                 wallet_name, skip_confirm):
     """Create a direct-fiat order and get a Liquid USDT funding address.
 
     Fetches a quote for confirmation, then creates the order and issues funding
     instructions. Fund the returned address with `aqua liquid send-asset`;
     WapuPay then pays the pesos. This command never broadcasts a payment.
     """
-    # Fail fast on a bad refund address — before the quote fetch / confirm and
-    # before any network call. The manager re-validates as the source of truth.
     if refund_address and refund_address.strip():
         try:
             _validate_liquid_refund_address(refund_address)
@@ -131,7 +125,6 @@ def create_order(ctx, amount_ars, alias, transfer_type, receiver_name, refund_ad
             type=transfer_type,
             receiver_name=receiver_name,
             refund_address=refund_address,
-            external_reference=external_reference,
             wallet_name=wallet_name,
         ),
     )
@@ -180,11 +173,7 @@ def spending_limit(ctx):
 def provision_account(ctx):
     """Provision your WapuPay API key via your AQUA account and store it locally.
 
-    Use this when you have no WAPUPAY_API_KEY set. Requires an AQUA session first
-    (`aqua auth login` then `aqua auth verify`). The key is stored under
-    ~/.aqua/wapupay/ and used automatically by the other `aqua wapupay` commands.
-
-    Only calls the backend when no key is configured yet: if one already exists
-    (env var or stored) it does nothing, so it never invalidates a working key.
+    Use this when you have no WAPUPAY_API_KEY set. Requires an AQUA/JAN3 session first.
+    The key is stored under ~/.aqua/wapupay/ and used automatically by `aqua wapupay` commands.
     """
     run_tool(ctx, lambda: wapupay_provision_account())

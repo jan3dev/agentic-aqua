@@ -1243,7 +1243,7 @@ def wapupay_quote(
 
     Args:
         amount_ars: amount to pay in Argentine pesos (decimal string, e.g. "10000").
-        type: "fiat_transfer" (standard) or "fast_fiat_transfer" (instant, higher fee).
+        type: "fiat_transfer" (standard) or "fast_fiat_transfer" (faster, higher fee).
         alias: recipient bank alias / CBU / CVU (optional; enables alias validation).
 
     Returns:
@@ -1258,7 +1258,6 @@ def wapupay_create_order(
     type: str = "fiat_transfer",
     receiver_name: str | None = None,
     refund_address: str | None = None,
-    external_reference: str | None = None,
     wallet_name: str = "default",
 ) -> dict[str, Any]:
     """Create a WapuPay direct-fiat order and get a Liquid USDT funding address.
@@ -1283,7 +1282,6 @@ def wapupay_create_order(
         receiver_name: recipient name (optional).
         refund_address: Liquid mainnet address (lq1…/ex1…) for a refund if funding
             cannot execute (optional); validated before the order is created.
-        external_reference: a client reference string (optional).
         wallet_name: wallet you intend to fund from (recorded for tracking).
 
     Returns:
@@ -1298,7 +1296,6 @@ def wapupay_create_order(
         transfer_type=type,
         receiver_name=receiver_name,
         refund_address=refund_address,
-        external_reference=external_reference,
         wallet_name=wallet_name,
     )
     return _attach_deposit_qr(result, "address_destination")
