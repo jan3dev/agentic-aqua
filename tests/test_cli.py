@@ -2056,9 +2056,8 @@ class _FakeWapuPayManager:
 def wapupay_cli():
     """Re-register the CLI with WapuPay enabled and inject a fake manager.
 
-    WapuPay ships disabled-by-default, so the group is absent from the
-    import-time registration; enable it for the duration of the test, then
-    restore the default registration.
+    WapuPay is enabled by default; we re-register here only to swap in a fake
+    manager for the duration of the test, then restore the default registration.
     """
     import aqua.tools as tools_module
     from aqua.cli.commands import register_commands
@@ -2087,9 +2086,8 @@ def wapupay_cli():
 def auth_cli():
     """Re-register the CLI with the AQUA auth tools enabled + a fake manager.
 
-    The `aqua_*` auth tools ship disabled-by-default (alongside the rest of the
-    WapuPay surface), so the `auth` group is absent from the import-time
-    registration; enable it for the test, then restore the default registration.
+    The `aqua_*` auth tools are enabled by default; we re-register here only to
+    swap in a fake manager, then restore the default registration.
     The `aqua_login`/`aqua_verify` tools route through `tools._jan3_manager`,
     so the `_FakeJAN3Manager` stand-in records the calls.
     """
@@ -2115,17 +2113,17 @@ def auth_cli():
 
 
 class TestWapuPayCli:
-    def test_groups_hidden_by_default(self):
-        """Dark-launch: both the `wapupay` and `auth` groups are absent until
-        their tools are enabled. Asserted against the command registry (not the
-        help text) — "auth" is a substring of unrelated words."""
+    def test_groups_present_by_default(self):
+        """The `wapupay` and `auth` groups are now enabled by default, so both
+        are present in the command registry. Asserted against the registry (not
+        the help text) — "auth" is a substring of unrelated words."""
         from aqua.cli.commands import register_commands
         from aqua.features import SHIPPED_DEFAULTS_ENABLED_TOOLS
         from aqua.storage import Config
 
         register_commands(cli, Config(enabled_tools=dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)))
-        assert "wapupay" not in cli.commands
-        assert "auth" not in cli.commands
+        assert "wapupay" in cli.commands
+        assert "auth" in cli.commands
 
     def test_login(self, runner, auth_cli):
         result = runner.invoke(
@@ -2198,11 +2196,12 @@ class TestWapuPayCli:
         assert json.loads(result.output)["provisioned"] is True
         assert wapupay_cli.calls[-1] == ("provision_account", {})
 
-    def test_provision_account_hidden_by_default(self):
-        """provision-account is dark-launched OFF, like the rest of the surface."""
+    def test_provision_account_present_by_default(self):
+        """WapuPay is enabled by default, so `provision-account` is registered."""
         from aqua.cli.commands import register_commands
         from aqua.features import SHIPPED_DEFAULTS_ENABLED_TOOLS
         from aqua.storage import Config
 
         register_commands(cli, Config(enabled_tools=dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)))
-        assert "wapupay" not in cli.commands
+        assert "wapupay" in cli.commands
+        assert "provision-account" in cli.commands["wapupay"].commands

@@ -33,24 +33,6 @@ _SHIPPED_DISABLED: frozenset[str] = frozenset({
     "sideswap_quote",
     "sideswap_execute_swap",
     "sideswap_swap_status",
-    # AQUA account auth (login used by WapuPay) — dark-launched OFF alongside
-    # the rest of the WapuPay surface. Opt in via ~/.aqua/config.json.
-    "aqua_login",
-    "aqua_verify",
-    "aqua_logout",
-    "aqua_session",
-    # WapuPay direct payments — dark-launched OFF pending broader rollout.
-    # Opt in via ~/.aqua/config.json (also requires WAPUPAY_API_KEY set).
-    "wapupay_exchange_rates",
-    "wapupay_quote",
-    "wapupay_create_order",
-    "wapupay_fund_order",
-    "wapupay_order_status",
-    "wapupay_orders",
-    "wapupay_transactions",
-    "wapupay_transaction",
-    "wapupay_spending_limit",
-    "wapupay_provision_account",
 })
 
 assert _SHIPPED_DISABLED <= TOOLS.keys(), (

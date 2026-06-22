@@ -1,6 +1,6 @@
 """WapuPay CLI — Argentine direct-fiat payments funded with USDT on Liquid.
 
-Pay an Argentine bank account (alias / CBU / CVU) in ARS, funded with USDT on
+Pay an Argentine bank account (alias / CBU / CVU) in ARS via P2P swap, funded with USDT on
 Liquid. These commands call WapuPay directly and require `WAPUPAY_API_KEY` set in
 the environment. `create-order` returns a Liquid USDT address to fund; pay it with
 `aqua liquid send-asset` and WapuPay settles the ARS payout.
