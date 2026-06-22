@@ -168,10 +168,9 @@ Two independent auth surfaces:
   business calls if set), and `ANKARA_API_URL` (default `https://ankara.aquabtc.com`,
   shared with Lightning; used by the `aqua_*` login **and** the WapuPay
   provisioning endpoint — same backend, staging `https://test.aquabtc.com`).
-- **Dark-launched OFF.** All 13 `aqua_*` / `wapupay_*` tools ship
-  disabled-by-default (`features._SHIPPED_DISABLED`); opt in via
-  `~/.aqua/config.json` `enabled_tools` (business calls also need a key — env or
-  provisioned).
+- **Enabled by default.** All `aqua_*` / `wapupay_*` tools ship enabled (not in
+  `features._SHIPPED_DISABLED`). Business calls still need a key — env var or
+  provisioned via `wapupay_provision_account`.
 - **Rail pinned** to Liquid USDT; WapuPay rejects any other funding rail (400).
 - The AQUA session (JWT) persists at `~/.aqua/jan3/session.json`; the provisioned
   API key and order records persist under `~/.aqua/wapupay/` — all at `0o600`.

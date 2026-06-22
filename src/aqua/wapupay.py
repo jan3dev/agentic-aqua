@@ -830,6 +830,12 @@ class WapuPayManager:
         result["funded"] = bool(order.address_destination)
         if order.address_destination and order.total_funding_amount_base_units is not None:
             fee_display = order.fee_amount_usdt if order.fee_amount_usdt is not None else 0
+            expires_note = (
+                f" Funding window: expires at {order.funding_expires_at} UTC"
+                f" (convert to the user's local timezone before displaying)."
+                if order.funding_expires_at
+                else ""
+            )
             result["pay_instructions"] = (
                 f"Send exactly {order.total_amount_usdt} USDT "
                 f"({order.total_funding_amount_base_units} base units) on Liquid "
@@ -837,7 +843,7 @@ class WapuPayManager:
                 f"(asset_id={order.asset_id}). This total already includes "
                 f"WapuPay's {fee_display} USDT fee — send the full "
                 f"amount or WapuPay won't settle. WapuPay then pays "
-                f"{order.amount_ars} ARS to {order.alias}."
+                f"{order.amount_ars} ARS to {order.alias}.{expires_note}"
             )
         elif order.address_destination:
             # Thin record (e.g. order created on another device): the funding
