@@ -478,7 +478,7 @@ def test_provision_client_401_points_at_relogin():
     assert "credentials were not provided" not in msg
 
 
-def test_provision_client_403_points_at_feature_flag():
+def test_provision_client_403_reports_not_enabled():
     client = JAN3AuthClient(aqua_backend_url="http://h")
     with patch(
         "aqua.ankara.urllib.request.urlopen",
@@ -486,7 +486,7 @@ def test_provision_client_403_points_at_feature_flag():
     ):
         with pytest.raises(ValueError) as ei:
             client.provision_wapupay_account("jwt")
-    assert "wapupay_b2b" in str(ei.value)
+    assert "WapuPay is not enabled for your AQUA account." in str(ei.value)
 
 
 def test_provision_client_502_points_at_upstream():

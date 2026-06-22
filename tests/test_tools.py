@@ -872,6 +872,7 @@ class TestToolRegistry:
             "wapupay_create_order",
             "wapupay_fund_order",
             "wapupay_order_status",
+            "wapupay_orders",
             "wapupay_transactions",
             "wapupay_transaction",
             "wapupay_spending_limit",
