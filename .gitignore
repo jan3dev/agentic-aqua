@@ -67,3 +67,4 @@ htmlcov/
 specs/
 .omc/
 .omx/
+.worktrees/
