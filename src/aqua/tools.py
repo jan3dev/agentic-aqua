@@ -1355,6 +1355,18 @@ def wapupay_order_status(tentative_id: str) -> dict[str, Any]:
     return get_wapupay_manager().order_status(tentative_id)
 
 
+def wapupay_orders() -> dict[str, Any]:
+    """List locally-tracked WapuPay direct-fiat orders.
+
+    These are local recovery records of orders this device created — distinct
+    from `wapupay_transactions` (WapuPay's server-side view).
+    Each record carries the involved txids
+    (`funding_transaction_id`, `executed_transaction_id`) plus `status` /
+    `tentative_id` so each stage can be tracked locally.
+    """
+    return {"orders": get_wapupay_manager().list_orders()}
+
+
 def wapupay_transactions() -> dict[str, Any]:
     """List WapuPay transactions (scoped to the WapuPay account/key)."""
     result = get_wapupay_manager().transactions()
@@ -2096,6 +2108,7 @@ TOOLS = {
     "wapupay_create_order": wapupay_create_order,
     "wapupay_fund_order": wapupay_fund_order,
     "wapupay_order_status": wapupay_order_status,
+    "wapupay_orders": wapupay_orders,
     "wapupay_transactions": wapupay_transactions,
     "wapupay_transaction": wapupay_transaction,
     "wapupay_spending_limit": wapupay_spending_limit,

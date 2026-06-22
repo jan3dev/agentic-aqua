@@ -15,6 +15,7 @@ from ..tools import (
     wapupay_exchange_rates,
     wapupay_fund_order,
     wapupay_order_status,
+    wapupay_orders,
     wapupay_provision_account,
     wapupay_quote,
     wapupay_spending_limit,
@@ -144,6 +145,13 @@ def fund_order(ctx, tentative_id):
 def order_status(ctx, tentative_id):
     """Check a direct-fiat order's status (re-read from WapuPay)."""
     run_tool(ctx, lambda: wapupay_order_status(tentative_id))
+
+
+@wapupay.command("orders")
+@click.pass_obj
+def orders(ctx):
+    """List locally-tracked WapuPay direct-fiat orders."""
+    run_tool(ctx, lambda: wapupay_orders())
 
 
 @wapupay.command("transactions")

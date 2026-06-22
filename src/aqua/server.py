@@ -1190,6 +1190,16 @@ TOOL_SCHEMAS = {
             "required": ["tentative_id"],
         },
     },
+    "wapupay_orders": {
+        "description": (
+            "List locally-tracked WapuPay direct-fiat orders (recovery records "
+            "on this device), most recent first — distinct from "
+            "wapupay_transactions (WapuPay's server-side view). Each record "
+            "carries the orchestrated swap's txids (funding/executed) and status "
+            "for local tracking."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
     "wapupay_transactions": {
         "description": "List WapuPay transactions (scoped to the WapuPay account/key).",
         "inputSchema": {"type": "object", "properties": {}},

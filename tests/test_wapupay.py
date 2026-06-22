@@ -885,6 +885,26 @@ def test_list_orders_skips_corrupt_file(storage):  # Sig:4
     assert [o["tentative_id"] for o in orders] == ["a" * 8]
 
 
+def test_tool_orders_wraps_local_records(monkeypatch, storage):  # Sig:3
+    """wapupay_orders returns orders with txids for tracking."""
+    storage.save_wapupay_order(WapuPayOrder(
+        tentative_id="a" * 8, status="CREATED", type="fiat_transfer",
+        amount_ars="10000", alias="al.cbu", created_at="2026-01-01",
+        funding_transaction_id="fund_tx", executed_transaction_id="exec_tx",
+    ))
+    storage.save_wapupay_order(WapuPayOrder(
+        tentative_id="b" * 8, status="EXECUTED", type="fiat_transfer",
+        amount_ars="20000", alias="al.cbu", created_at="2026-02-01",
+    ))
+    mgr = make_manager(storage, FakeClient())
+    monkeypatch.setattr(tools, "_wapupay_manager", mgr)
+    out = tools.wapupay_orders()
+    assert list(out.keys()) == ["orders"]
+    assert [o["tentative_id"] for o in out["orders"]] == ["b" * 8, "a" * 8]
+    assert out["orders"][1]["funding_transaction_id"] == "fund_tx"
+    assert out["orders"][1]["executed_transaction_id"] == "exec_tx"
+
+
 # ---------------------------------------------------------------------------
 # Tool layer: error envelope path uses the global manager
 # ---------------------------------------------------------------------------
