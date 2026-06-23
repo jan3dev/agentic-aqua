@@ -142,7 +142,14 @@ def usdt_to_base_units(amount_usdt: str | int | float | Decimal) -> int:
     ``funding_amount_sat`` (real BTC/Lightning satoshis) so the two are never
     conflated.
     """
-    d = Decimal(str(amount_usdt))
+    try:
+        d = Decimal(str(amount_usdt))
+    except (InvalidOperation, ValueError) as e:
+        raise ValueError(f"Invalid USDT amount: {amount_usdt!r}") from e
+    if not d.is_finite():
+        raise ValueError(f"USDT amount must be a finite number, got {amount_usdt!r}")
+    if d <= 0:
+        raise ValueError(f"USDT amount must be positive, got {amount_usdt!r}")
     units = (d * Decimal(100_000_000)).quantize(Decimal("1."), rounding=ROUND_HALF_UP)
     return int(units)
 
@@ -158,6 +165,24 @@ _MONEY_FIELDS = (
     "fee_amount_usdt",
     "funding_amount_usdt",
     "total_amount_usdt",
+)
+
+_TENTATIVE_RESP_FIELDS = (
+    "status",
+    "funding_currency",
+    "funding_network",
+    "exchange_rate",
+    "fee_amount_usdt",
+    "funding_amount_usdt",
+    "funding_amount_sat",
+    "total_amount_usdt",
+    "address_destination",
+    "asset_id",
+    "expires_at",
+    "funding_expires_at",
+    "refund_address",
+    "funding_transaction_id",
+    "executed_transaction_id",
 )
 
 
@@ -274,14 +299,14 @@ class WapuPayOrder:
         """Set total_funding_amount_base_units from total_amount_usdt,
         unless it is already set (if only_if_missing is True).
         Ensures the correct integer USDT amount (precision-8) for Liquid funding."""
-   
+
         if only_if_missing and self.total_funding_amount_base_units is not None:
             return
         if self.total_amount_usdt is not None:
             self.total_funding_amount_base_units = usdt_to_base_units(self.total_amount_usdt)
 
     def to_dict(self) -> dict:
-        data = asdict(self) 
+        data = asdict(self)
         for fld in _MONEY_FIELDS:
             if data.get(fld) is not None:
                 data[fld] = str(data[fld])
@@ -311,33 +336,16 @@ class WapuPayOrder:
             raise ValueError(
                 f"WapuPay returned an unexpected (non-object) response: {type(resp).__name__}"
             )
-        mapping = {
-            "status": "status",
-            "funding_currency": "funding_currency",
-            "funding_network": "funding_network",
-            "exchange_rate": "exchange_rate",
-            "fee_amount_usdt": "fee_amount_usdt",
-            "funding_amount_usdt": "funding_amount_usdt",
-            "funding_amount_sat": "funding_amount_sat",
-            "total_amount_usdt": "total_amount_usdt",
-            "address_destination": "address_destination",
-            "asset_id": "asset_id",
-            "expires_at": "expires_at",
-            "funding_expires_at": "funding_expires_at",
-            "refund_address": "refund_address",
-            "funding_transaction_id": "funding_transaction_id",
-            "executed_transaction_id": "executed_transaction_id",
-        }
-        for attr, key in mapping.items():
-            if key in resp and resp[key] is not None:
-                value = resp[key]
+        for field in _TENTATIVE_RESP_FIELDS:
+            if resp.get(field) is not None:
+                value = resp[field]
                 # Money/rate stays Decimal internally — coerce at the wire seam.
-                if attr in _MONEY_FIELDS:
+                if field in _MONEY_FIELDS:
                     value = _to_decimal(value)
-                setattr(self, attr, value)
-        # Always recalculate integer USDT base units (precision-8) for Liquid from 
+                setattr(self, field, value)
+        # Always recalculate integer USDT base units (precision-8) for Liquid from
         # total_amount_usdt to avoid stale values; distinct from funding_amount_sat (BTC).
- 
+
         self._derive_base_units()
         # Ensure funding_amount_sat remains an integer per WapuPay spec.
         if isinstance(self.funding_amount_sat, float):
@@ -352,8 +360,9 @@ class WapuPayOrder:
 class WapuPayClient:
     """HTTP client for WapuPay's API.
 
-    Uses ``_api_request`` for all network calls, always authenticating with ``X-API-Key`` (not Bearer).
-    Raises ValueError on upstream errors with a clear message.
+    Uses ``_api_request`` for all network calls, always authenticating with
+    ``X-API-Key`` (not Bearer). Raises ValueError on upstream errors with a
+    clear message.
     """
 
     def __init__(self, base_url: Optional[str] = None) -> None:
@@ -473,7 +482,8 @@ class WapuPayClient:
 
     def get_transaction(self, tx_id: str, *, api_key: str) -> dict:
         """GET transactions/{id} — a single transaction (uuid or numeric)."""
-        return self._proxy("GET", f"transactions/{tx_id}", api_key=api_key) or {}
+        quoted = urllib.parse.quote(str(tx_id), safe="")
+        return self._proxy("GET", f"transactions/{quoted}", api_key=api_key) or {}
 
     def spending_limit(self, *, api_key: str) -> dict:
         """GET users/spending_limit — monthly KYC limit (USDT)."""
@@ -807,7 +817,7 @@ class WapuPayManager:
         for tid in self.storage.list_wapupay_orders():
             try:
                 order = self.storage.load_wapupay_order(tid)
-            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            except (OSError, ValueError, TypeError, InvalidOperation, json.JSONDecodeError):
                 logger.warning("Skipping unreadable WapuPay order file: %s", tid)
                 continue
             if order is not None:
@@ -836,14 +846,20 @@ class WapuPayManager:
                 if order.funding_expires_at
                 else ""
             )
+
+            payout_note = (
+                f" WapuPay then pays {order.amount_ars} ARS to {order.alias}."
+                if order.amount_ars and order.alias
+                else " The ARS payout details (recipient and amount) are not "
+                "stored locally for this order."
+            )
             result["pay_instructions"] = (
                 f"Send exactly {order.total_amount_usdt} USDT "
                 f"({order.total_funding_amount_base_units} base units) on Liquid "
                 f"to {order.address_destination} using lw_send_asset "
                 f"(asset_id={order.asset_id}). This total already includes "
                 f"WapuPay's {fee_display} USDT fee — send the full "
-                f"amount or WapuPay won't settle. WapuPay then pays "
-                f"{order.amount_ars} ARS to {order.alias}.{expires_note}"
+                f"amount or WapuPay won't settle.{payout_note}{expires_note}"
             )
         elif order.address_destination:
             # Thin record (e.g. order created on another device): the funding

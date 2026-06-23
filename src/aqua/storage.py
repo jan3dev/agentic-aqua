@@ -698,13 +698,24 @@ class Storage:
         self._atomic_write_json(self.wapupay_api_key_path, api_key.to_dict())
 
     def load_wapupay_api_key(self):
-        """Load the persisted WapuPay API key. Returns WapuPayApiKey or None."""
+        """Load WapuPay API key; return None and log warning if unreadable or invalid."""
+
         from .wapupay import WapuPayApiKey
 
         if not self.wapupay_api_key_path.exists():
             return None
-        with open(self.wapupay_api_key_path) as f:
-            return WapuPayApiKey.from_dict(json.load(f))
+        try:
+            with open(self.wapupay_api_key_path) as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("api_key.json is not a JSON object")
+            return WapuPayApiKey.from_dict(data)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            logger.warning(
+                "Ignoring unreadable WapuPay API key file: %s",
+                self.wapupay_api_key_path,
+            )
+            return None
 
     def delete_wapupay_api_key(self) -> None:
         """Remove the persisted WapuPay API key (idempotent)."""
