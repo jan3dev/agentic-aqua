@@ -407,16 +407,8 @@ def lw_sweep(
     password: str | None = None,
 ) -> dict[str, Any]:
     """
-    Sweep the entire L-BTC balance (or full balance of a specific Liquid asset)
-    to a single address. Call this when the user says "send all", "sweep",
-    "drain", "empty wallet", or "move everything" — the network fee is deducted
-    from the inputs, so 0 sats of the targeted balance remain in the wallet.
-
-    With ``asset_id`` omitted, sweeps every L-BTC input → 0 L-BTC change.
-    With ``asset_id`` set to a non-L-BTC Liquid asset, sends the entire asset
-    balance to ``address`` in one tx; L-BTC change may remain because the fee
-    is paid from L-BTC. Call ``lw_sweep`` again without ``asset_id`` to also
-    empty the L-BTC remainder.
+    Sweep the entire L-BTC balance (or full balance of a Liquid asset) to one
+    address. Fee paid from the inputs; 0 sats of the targeted balance remain.
 
     Args:
         wallet_name: Name of the wallet
@@ -425,7 +417,10 @@ def lw_sweep(
         password: Password to decrypt mnemonic (if encrypted at rest)
 
     Returns:
-        txid, address, and (for asset sweeps) the ticker / asset_id swept.
+        txid: Transaction ID
+        address: Destination address
+        ticker: "L-BTC" or the resolved asset ticker
+        asset_id: Only set for asset sweeps
     """
     manager = get_manager()
     txid = manager.sweep(wallet_name, address, asset_id, password)
@@ -699,10 +694,8 @@ def btc_sweep(
     password: str | None = None,
 ) -> dict[str, Any]:
     """
-    Sweep the entire Bitcoin balance to a single address. Call this when the
-    user says "send all", "sweep", "drain", "empty wallet", or "move
-    everything" — the network fee is deducted from the inputs, so 0 sats
-    remain in the wallet.
+    Sweep the entire Bitcoin balance to one address. Fee paid from the inputs;
+    0 sats remain.
 
     Args:
         wallet_name: Name of the wallet
