@@ -94,14 +94,14 @@ QUOTE_WAIT_SECONDS = 10.0
 
 # Reserved for the Liquid network fee on a peg-out broadcast. Liquid runs at a
 # fixed 0.1 sat/vB; a standard L-BTC send is ~260–600 vB → ~26–60 sats on-chain
-# in practice (empirically confirmed). 100 sats is a comfortable upper bound
-# that absorbs occasional fee variance without locking up multiples of the
-# typical fee. Used by the peg-out preflight balance check and as the L-BTC-fee
-# headroom added on top of DUST_THRESHOLD_SATS when selecting coins for an
-# L-BTC swap send (the dealer subtracts the on-chain fee from change, so we
-# need an extra cushion above the dust threshold so the post-fee change still
-# clears dust).
-LIQUID_FEE_RESERVE_SATS = 100
+# in practice, but atomic swap txs are larger (extra inputs/outputs from the
+# dealer) and can reach the ~200-sat range. 200 sats is a comfortable upper
+# bound that prevents balance-check pass / broadcast-fail races and gives the
+# swap-side selector enough headroom that the dealer's fee subtraction can't
+# push our change below DUST_THRESHOLD_SATS. Used by the peg-out preflight
+# balance check and as the L-BTC-fee headroom added on top of
+# DUST_THRESHOLD_SATS when selecting coins for an L-BTC swap send.
+LIQUID_FEE_RESERVE_SATS = 200
 
 # Minimum value (in sats) we'll accept on a change output coming back from the
 # SideSwap dealer. The economic break-even on Liquid is ~25 sats: a confidential
