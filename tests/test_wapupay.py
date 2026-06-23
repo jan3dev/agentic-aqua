@@ -1067,3 +1067,111 @@ def test_logout_keeps_api_key(monkeypatch, storage):  # Sig:5
     m.jan3.logout()
     assert storage.load_jan3_session() is None
     assert storage.load_wapupay_api_key().token == "keep-me"
+
+
+# ---------------------------------------------------------------------------
+# Post-review regression tests (findings F2–F5, usdt validation)
+# ---------------------------------------------------------------------------
+
+
+def test_list_orders_skips_order_with_non_numeric_money_field(storage):  # Sig:5
+    """
+    list_orders skips orders with invalid money fields rather than raising,
+    preventing corrupt orders from breaking the listing.
+    """
+    storage.save_wapupay_order(WapuPayOrder(
+        tentative_id="a" * 8, status="CREATED", type="fiat_transfer",
+        amount_ars="10000", alias="al.cbu", created_at="2026-01-01",
+    ))
+    corrupt = {
+        "tentative_id": "b" * 8, "status": "CREATED", "type": "fiat_transfer",
+        "amount_ars": "10000", "alias": "al.cbu", "created_at": "2026-02-01",
+        "total_amount_usdt": "abc",  # not a number → InvalidOperation in _to_decimal
+    }
+    (storage.wapupay_orders_dir / ("b" * 8 + ".json")).write_text(json.dumps(corrupt))
+    m = make_manager(storage, FakeClient())
+    orders = m.list_orders()  # must not raise
+    assert [o["tentative_id"] for o in orders] == ["a" * 8]
+
+
+def test_load_api_key_missing_field_returns_none(storage):  # Sig:5
+    """Missing 'created_at' in key file should return None, not raise TypeError."""
+    storage.wapupay_api_key_path.write_text(json.dumps({"token": "abc"}))
+    assert storage.load_wapupay_api_key() is None
+
+
+def test_load_api_key_invalid_json_returns_none(storage):  # Sig:5
+    """Envalid JSON in the key file is treated as no key."""
+    storage.wapupay_api_key_path.write_text("{ not json")
+    assert storage.load_wapupay_api_key() is None
+
+
+def test_load_api_key_non_object_json_returns_none(storage):  # Sig:5
+    """A valid-JSON array (not an object) must not raise AttributeError."""
+    storage.wapupay_api_key_path.write_text(json.dumps([1, 2]))
+    assert storage.load_wapupay_api_key() is None
+
+
+def test_require_api_key_recovers_from_corrupt_key_file(monkeypatch, storage):  # Sig:5
+    """Corrupt key file + no env var should raise ValueError('not configured')."""
+    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
+    storage.wapupay_api_key_path.write_text(json.dumps({"token": "abc"}))
+    m = make_manager(storage, FakeClient())
+    with pytest.raises(ValueError, match="not configured"):
+        m._require_api_key()
+
+
+def test_fund_order_thin_record_omits_blank_payout_clause(storage):  # Sig:5
+    """pay_instructions must not contain a blank line if alias/amount_ars are missing"""
+    funding = {
+        "tentative_id": TENTATIVE_ID, "status": "FUNDING_ISSUED",
+        "address_destination": "lq1qqfunding0address",
+        "asset_id": "ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2",
+        "total_amount_usdt": 7.13,
+    }
+    m = make_manager(storage, FakeClient({"issue_funding": funding}))
+    out = m.fund_order(TENTATIVE_ID)
+    instr = out["pay_instructions"]
+    assert "pays  ARS to ." not in instr
+    assert "ARS to ." not in instr
+    assert "None" not in instr
+
+
+def test_funded_result_keeps_payout_clause_when_known(storage):  # Sig:5
+    """When alias + amount_ars are known the payout line is unchanged."""
+    order = WapuPayOrder(
+        tentative_id=TENTATIVE_ID, status="FUNDING_ISSUED", type="fiat_transfer",
+        amount_ars="10000", alias="al.cbu", created_at="t0",
+        address_destination="lq1x", asset_id="ce091", total_amount_usdt=Decimal("7.13"),
+    )
+    order._derive_base_units()
+    result = WapuPayManager._funded_result(order)
+    assert "WapuPay then pays 10000 ARS to al.cbu." in result["pay_instructions"]
+
+
+def test_get_transaction_url_encodes_tx_id(monkeypatch):  # Sig:5
+    """A tx_id with path-altering chars is URL-encoded so it can't traverse to another endpoint"""
+    client = WapuPayClient()
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        return _mock_resp({"transaction_id": "x"})
+
+    with patch("aqua.wapupay.urllib.request.urlopen", side_effect=fake_urlopen):
+        client.get_transaction("../users/spending_limit", api_key="k")
+        assert "transactions/../users/spending_limit" not in seen["url"]
+        assert "%2F" in seen["url"]  # the path separators were encoded
+        uuid = "7d977c86-23d0-4505-8078-c1e7362eebac"
+        client.get_transaction(uuid, api_key="k")
+        assert seen["url"] == f"{WAPUPAY_BASE_URL}/transactions/{uuid}"
+
+
+def test_usdt_to_base_units_rejects_non_positive_and_non_finite():  # Sig:4
+    """usdt_to_base_units converts a required funding total, so 0, negatives and
+    non-finite values are rejected with a clear ValueError."""
+    for bad in ("0", 0, "-1", -0.5, "NaN", "Infinity", float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            usdt_to_base_units(bad)
+    # Smallest valid positive amount still works.
+    assert usdt_to_base_units("0.00000001") == 1
