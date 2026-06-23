@@ -92,11 +92,28 @@ PEG_RECOMMENDATION_THRESHOLD_SATS = 1_000_000
 WS_TIMEOUT_SECONDS = 30.0
 QUOTE_WAIT_SECONDS = 10.0
 
-# Reserved for the Liquid network fee on a peg-out broadcast. Liquid fees are
-# fixed-rate and tiny (~50–100 sats in practice); 200 sats is a comfortable
-# upper bound that prevents balance-check pass / broadcast-fail races without
-# blocking realistic peg-outs.
-LIQUID_FEE_RESERVE_SATS = 200
+# Reserved for the Liquid network fee on a peg-out broadcast. Liquid runs at a
+# fixed 0.1 sat/vB; a standard L-BTC send is ~260–600 vB → ~26–60 sats on-chain
+# in practice (empirically confirmed). 100 sats is a comfortable upper bound
+# that absorbs occasional fee variance without locking up multiples of the
+# typical fee. Used by the peg-out preflight balance check and as the L-BTC-fee
+# headroom added on top of DUST_THRESHOLD_SATS when selecting coins for an
+# L-BTC swap send (the dealer subtracts the on-chain fee from change, so we
+# need an extra cushion above the dust threshold so the post-fee change still
+# clears dust).
+LIQUID_FEE_RESERVE_SATS = 100
+
+# Minimum value (in sats) we'll accept on a change output coming back from the
+# SideSwap dealer. The economic break-even on Liquid is ~25 sats: a confidential
+# input is ~250 vB and Liquid's fixed 0.1 sat/vB fee rate gives a ~25-sat cost
+# to spend it. 50 sats is ~2× that break-even — comfortable safety margin while
+# still freeing up sub-50-sat slivers as fair-game change. NOT anchored to
+# Bitcoin's 546-sat dust policy (Bitcoin fee rates are 10–100× Liquid's, so
+# 546 was an order of magnitude too conservative here and was producing the
+# very dust it was meant to prevent). The coin-selector dodges this zone by
+# auto-bumping send_amount to consume the would-be-dust leftover, and the
+# verifier double-checks the dealer's PSET to catch anything that slips through.
+DUST_THRESHOLD_SATS = 50
 
 
 def _validate_btc_address(address: str, network: str) -> None:
@@ -383,7 +400,7 @@ def unblind_dealer_outputs(
     receive_ephemeral_sk: Optional[str],
     change_ephemeral_sk: Optional[str],
     addr_family: str = "lq",
-) -> None:
+) -> dict[str, int]:
     """Cryptographically verify dealer-paid outputs against the on-chain commitments.
 
     SideSwap's `mkt::*` dealer pays the taker via outputs blinded with
@@ -395,10 +412,17 @@ def unblind_dealer_outputs(
     than what the PSET's explicit fields claim. `PsetVerificationError` is
     raised on any mismatch.
 
-    This function exists purely for that security side-effect — its caller
-    relies on `wollet.pset_details(pset).balance()` (after `add_details`) as
-    the source of truth for the balances dict. Wally's job is to ensure
+    The primary purpose is this security side-effect — the caller relies on
+    `wollet.pset_details(pset).balance()` (after `add_details`) as the source
+    of truth for the aggregated balances dict. Wally's job is to ensure
     LWK's explicit-value reading reflects the cryptographic reality.
+
+    Returns a mapping from output role to the unblinded sats value, so
+    callers can enforce policy (e.g. dust check) on a per-output value that
+    has been confirmed honest by the commitment recomputation below. Keys:
+        - "recv": the dealer's receive-side output to the taker
+        - "change": the dealer's change-side output back to the taker
+    Only the roles actually present in the PSET appear in the returned dict.
 
     Implementation mirrors `sideswap_common::pset::swap_amount::get_swap_amount`
     in Rust: for each PSET output whose scriptPubKey matches our recv/change
@@ -411,11 +435,11 @@ def unblind_dealer_outputs(
     SideSwap's protocol needs `ECDH(dealer_ephemeral_sk, recv_addr_blinding_pk)`,
     which only libwally exposes at this layer.
 
-    No-op when no ephemeral keys are supplied (peg flows / legacy orderbook
-    flows that don't use ephemeral blinding).
+    Returns an empty dict when no ephemeral keys are supplied (peg flows /
+    legacy orderbook flows that don't use ephemeral blinding).
     """
     if not receive_ephemeral_sk and not change_ephemeral_sk:
-        return
+        return {}
 
     # Decode addresses up front so we can match by scriptPubKey bytes.
     def _addr_spk_and_bpk(addr: Optional[str]) -> tuple[Optional[bytes], Optional[bytes]]:
@@ -432,6 +456,7 @@ def unblind_dealer_outputs(
 
     psbt = wally.psbt_from_base64(pset_b64)
     num_outputs = wally.psbt_get_num_outputs(psbt)
+    unblinded_by_role: dict[str, int] = {}
 
     for i in range(num_outputs):
         try:
@@ -445,8 +470,10 @@ def unblind_dealer_outputs(
         # calls) — that's harmless because we just try receive first.
         if recv_spk is not None and spk == recv_spk and receive_ephemeral_sk:
             sk_hex, bpk = receive_ephemeral_sk, recv_bpk
+            role = "recv"
         elif change_spk is not None and spk == change_spk and change_ephemeral_sk:
             sk_hex, bpk = change_ephemeral_sk, change_bpk
+            role = "change"
         else:
             continue
 
@@ -512,6 +539,24 @@ def unblind_dealer_outputs(
                 f"rangeproof message decodes to a different value than the "
                 f"on-chain value commitment opens to (script {spk.hex()})"
             )
+
+        # Commitments verified — value_out is the trusted unblinded sats for
+        # this output. Record it so callers can enforce per-output policy
+        # (e.g. dust threshold on the change output) against a value that
+        # cannot have been spoofed by the dealer.
+        #
+        # SideSwap's market protocol creates at most one output per role;
+        # if we ever see two outputs collapsing to the same scriptPubKey we
+        # refuse to sign rather than silently overwrite (which would let a
+        # second, possibly-dust, output hide behind the first).
+        if role in unblinded_by_role:
+            raise PsetVerificationError(
+                f"PSET output {i} is a second {role!r} output (script "
+                f"{spk.hex()}); SideSwap dealer should emit at most one"
+            )
+        unblinded_by_role[role] = int(value_out)
+
+    return unblinded_by_role
 
 
 # ---------------------------------------------------------------------------
@@ -890,7 +935,9 @@ def select_swap_utxos(
     utxos: list,
     send_asset: str,
     send_amount: int,
-) -> list[dict]:
+    *,
+    dust_threshold: int = DUST_THRESHOLD_SATS,
+) -> tuple[list[dict], int]:
     """Pick UTXOs of `send_asset` covering `send_amount`, formatted for SideSwap.
 
     Filters apply per `sideswap_lwk` reference (`sideswap_lwk/src/lib.rs`):
@@ -899,16 +946,38 @@ def select_swap_utxos(
     - We don't filter by script type here because the wallet's descriptor is
       always wpkh (BIP84 m/84'/1776'/0') in agentic-aqua.
 
+    Anti-dust behaviour: SideSwap's dealer creates the change output
+    unilaterally, sized to `accumulated - send_amount` (modulo on-chain fee).
+    If the user's UTXO set produces a sub-`dust_threshold` leftover, the
+    dealer emits a dust change output that costs more to spend than it's
+    worth. To prevent this, when `0 < accumulated - send_amount <
+    dust_threshold`, we return an `effective_send_amount` equal to the full
+    accumulated value — the caller passes the bumped amount to the dealer,
+    no change output is created, and the dust is consumed into the swap.
+    The bump is bounded above by `dust_threshold - 1` sats. Adding more
+    inputs to dodge dust would be strictly worse (each Liquid input is
+    ~250 vB at 0.1 sat/vB ≈ 25 sats, so for any dust_threshold ≥ ~25 the
+    bump is cheaper than an extra input).
+
     Args:
         utxos: List of `lwk.WalletTxOut` (or compatible objects exposing
             `.outpoint`, `.unblinded` with `.asset`, `.value`, `.asset_bf`,
             `.value_bf`).
         send_asset: Asset id to send.
         send_amount: Total sats to cover.
+        dust_threshold: Inclusive lower bound on an acceptable change output
+            value. Defaults to `DUST_THRESHOLD_SATS`.
 
     Returns:
-        List of dicts in the SideSwap `Utxo` shape:
-        {txid, vout, asset, asset_bf, value, value_bf, redeem_script: null}.
+        Tuple of (selected, effective_send_amount):
+        - selected: list of dicts in the SideSwap `Utxo` shape:
+          {txid, vout, asset, asset_bf, value, value_bf, redeem_script: null}.
+        - effective_send_amount: either the original `send_amount` (the
+          common case), or the full `accumulated` value when a bump was
+          required to avoid dust. Callers MUST use this value downstream
+          (passed to the dealer, fed into the PSET verifier, persisted on
+          the swap record) — passing the original send_amount would re-introduce
+          the dust the bump was meant to prevent.
 
     Raises:
         ValueError if there isn't enough confidential balance to cover send_amount.
@@ -949,7 +1018,12 @@ def select_swap_utxos(
         )
         accumulated += int(unblinded.value())
         if accumulated >= send_amount:
-            return selected
+            change = accumulated - send_amount
+            if change == 0 or change >= dust_threshold:
+                return selected, send_amount
+            # 0 < change < dust_threshold: bump send_amount to consume the
+            # would-be-dust leftover. No change output will be created.
+            return selected, accumulated
 
     raise ValueError(
         f"Insufficient confidential balance for {send_asset[:8]}…: "
@@ -1333,9 +1407,10 @@ class SideSwapPegManager:
             logger.warning("Skipping min-amount check: %s", e)
 
         # Balance check: a peg-out broadcast pays a Liquid network fee on top
-        # of `amount`. Liquid fees are tiny and stable (~50–100 sats); use a
-        # small reservation so a wallet whose balance equals `amount` exactly
-        # doesn't fail at broadcast time with the actual-fee error.
+        # of `amount`. Liquid fees are tiny and stable (~26–60 sats for a
+        # standard L-BTC send); LIQUID_FEE_RESERVE_SATS of headroom keeps a
+        # wallet whose balance equals `amount` exactly from failing at
+        # broadcast time with the actual-fee error.
         try:
             balances = self.wallet_manager.get_balance(wallet_name)
             lbtc_balance = next((b.amount for b in balances if b.ticker == "L-BTC"), 0)
@@ -1600,7 +1675,38 @@ class SideSwapSwapManager:
         # Build the inputs/addresses up-front; mkt::* wants them on
         # start_quotes (not as a follow-up call).
         wollet = self.wallet_manager._get_wollet(wallet_name)
-        inputs = select_swap_utxos(wollet.utxos(), send_asset, send_amount)
+        # select_swap_utxos may bump send_amount up to consume a would-be-dust
+        # leftover (see its docstring). The bumped value flows through to the
+        # dealer quote, the verifier, and the persisted SideSwapSwap record
+        # so the user's stored swap accurately reflects what was actually
+        # sent.
+        #
+        # On L-BTC sends the dealer subtracts the on-chain fee from the
+        # change output, so a leftover that looks safe to the bare
+        # DUST_THRESHOLD check can still emerge as sub-dust on-chain.
+        # Reserve LIQUID_FEE_RESERVE_SATS of headroom on the selector's
+        # threshold for that direction; on asset sends the fee lives on the
+        # dealer's L-BTC side and our change is unaffected, so no headroom
+        # is needed.
+        selection_dust_threshold = DUST_THRESHOLD_SATS
+        if send_asset == policy_asset:
+            selection_dust_threshold += LIQUID_FEE_RESERVE_SATS
+        inputs, effective_send_amount = select_swap_utxos(
+            wollet.utxos(),
+            send_asset,
+            send_amount,
+            dust_threshold=selection_dust_threshold,
+        )
+        if effective_send_amount != send_amount:
+            logger.info(
+                "sideswap: bumping send_amount %d → %d sats (+%d) to consume "
+                "would-be-dust change on %s",
+                send_amount,
+                effective_send_amount,
+                effective_send_amount - send_amount,
+                send_asset[:8],
+            )
+            send_amount = effective_send_amount
         # `wollet.address(None)` returns the next-unused index but doesn't
         # consume it, so calling it twice returns the same address. The
         # dealer needs a distinct change scriptPubKey on the reverse-direction
@@ -1819,13 +1925,28 @@ class SideSwapSwapManager:
         # check to ensure those fields are truthful. The helper raises
         # PsetVerificationError on any mismatch; tests stub it out via
         # `_patch_swap_layers`.
-        unblind_dealer_outputs(
+        unblinded_by_role = unblind_dealer_outputs(
             pset_b64,
             recv_addr=recv_addr,
             change_addr=change_addr,
             receive_ephemeral_sk=receive_ephemeral_sk,
             change_ephemeral_sk=change_ephemeral_sk,
         )
+
+        # Defensive dust check: select_swap_utxos avoids picking inputs that
+        # would produce a sub-`DUST_THRESHOLD_SATS` change output, but the
+        # dealer ultimately controls the PSET's output values. Reject any
+        # change output in the dust zone so we never sign a tx that leaves
+        # an unspendable scrap in the user's wallet (the original PR #99
+        # report: a 1-sat L-BTC change output). The unblinded value here is
+        # the value Wally just confirmed matches the on-chain commitment, so
+        # this check is on a trusted number — not on the dealer's PSET claim.
+        change_value = unblinded_by_role.get("change", 0)
+        if 0 < change_value < DUST_THRESHOLD_SATS:
+            raise PsetVerificationError(
+                f"PSET creates dust change output of {change_value} sats "
+                f"(below dust threshold {DUST_THRESHOLD_SATS}); refusing to sign"
+            )
 
         verify_pset_balances(
             balances,

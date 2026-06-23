@@ -18,6 +18,8 @@ import pytest
 import wallycore as wally
 
 from aqua.sideswap import (
+    DUST_THRESHOLD_SATS,
+    LIQUID_FEE_RESERVE_SATS,
     PEG_RECOMMENDATION_THRESHOLD_SATS,
     PsetVerificationError,
     SideSwapPeg,
@@ -1355,9 +1357,10 @@ class TestSelectSwapUtxos:
             _FakeUtxo("bb" * 32, 1, L_BTC, 200_000),
             _FakeUtxo("cc" * 32, 0, L_BTC, 100_000),
         ]
-        selected = select_swap_utxos(utxos, L_BTC, 150_000)
+        selected, effective_send_amount = select_swap_utxos(utxos, L_BTC, 150_000)
         assert len(selected) == 1
         assert selected[0]["value"] == 200_000
+        assert effective_send_amount == 150_000
 
     def test_accumulates_across_multiple_utxos(self):
         from aqua.sideswap import select_swap_utxos
@@ -1367,11 +1370,12 @@ class TestSelectSwapUtxos:
             _FakeUtxo("bb" * 32, 0, L_BTC, 30_000),
             _FakeUtxo("cc" * 32, 0, L_BTC, 30_000),
         ]
-        selected = select_swap_utxos(utxos, L_BTC, 70_000)
+        selected, effective_send_amount = select_swap_utxos(utxos, L_BTC, 70_000)
         assert len(selected) == 3
         assert sum(s["value"] for s in selected) == 90_000
         for s in selected:
             assert s["redeem_script"] is None
+        assert effective_send_amount == 70_000
 
     def test_skips_other_assets(self):
         from aqua.sideswap import select_swap_utxos
@@ -1380,9 +1384,10 @@ class TestSelectSwapUtxos:
             _FakeUtxo("aa" * 32, 0, USDT, 9_000_000),
             _FakeUtxo("bb" * 32, 0, L_BTC, 100_000),
         ]
-        selected = select_swap_utxos(utxos, L_BTC, 50_000)
+        selected, effective_send_amount = select_swap_utxos(utxos, L_BTC, 50_000)
         assert len(selected) == 1
         assert selected[0]["asset"] == L_BTC
+        assert effective_send_amount == 50_000
 
     def test_skips_non_confidential_utxos(self):
         from aqua.sideswap import select_swap_utxos
@@ -1392,9 +1397,10 @@ class TestSelectSwapUtxos:
             _FakeUtxo("aa" * 32, 0, L_BTC, 100_000, asset_bf="0" * 64, value_bf="0" * 64),
             _FakeUtxo("bb" * 32, 0, L_BTC, 50_000),
         ]
-        selected = select_swap_utxos(utxos, L_BTC, 50_000)
+        selected, effective_send_amount = select_swap_utxos(utxos, L_BTC, 50_000)
         assert len(selected) == 1
         assert selected[0]["txid"] == "bb" * 32
+        assert effective_send_amount == 50_000
 
     def test_insufficient_funds_raises(self):
         from aqua.sideswap import select_swap_utxos
@@ -1402,6 +1408,86 @@ class TestSelectSwapUtxos:
         utxos = [_FakeUtxo("aa" * 32, 0, L_BTC, 10_000)]
         with pytest.raises(ValueError, match="Insufficient confidential balance"):
             select_swap_utxos(utxos, L_BTC, 50_000)
+
+    def test_bumps_send_amount_when_change_would_be_dust(self):
+        """PR #99 reproducer: one UTXO 1 sat larger than send_amount must
+        produce no change output (bump send_amount to consume the dust)."""
+        from aqua.sideswap import select_swap_utxos
+
+        utxos = [_FakeUtxo("aa" * 32, 0, L_BTC, 100_001)]
+        selected, effective_send_amount = select_swap_utxos(utxos, L_BTC, 100_000)
+        assert len(selected) == 1
+        # Bumped to the full UTXO value so the dealer creates no change output.
+        assert effective_send_amount == 100_001
+
+    def test_no_bump_when_change_is_above_dust_threshold(self):
+        from aqua.sideswap import select_swap_utxos
+
+        utxos = [_FakeUtxo("aa" * 32, 0, L_BTC, 200_000)]
+        selected, effective_send_amount = select_swap_utxos(utxos, L_BTC, 100_000)
+        assert len(selected) == 1
+        # Change = 100_000 sats, well above dust threshold → no bump.
+        assert effective_send_amount == 100_000
+
+    def test_no_bump_on_exact_match(self):
+        from aqua.sideswap import select_swap_utxos
+
+        utxos = [_FakeUtxo("aa" * 32, 0, L_BTC, 100_000)]
+        selected, effective_send_amount = select_swap_utxos(utxos, L_BTC, 100_000)
+        assert len(selected) == 1
+        # change == 0 → no change output → no bump.
+        assert effective_send_amount == 100_000
+
+    def test_dust_threshold_boundary(self):
+        """Boundary check at DUST_THRESHOLD_SATS: change of exactly the
+        threshold is acceptable; one sat below triggers a bump."""
+        from aqua.sideswap import select_swap_utxos
+
+        # Change = DUST_THRESHOLD_SATS - 1 (dust) → bump
+        below = 100_000 + DUST_THRESHOLD_SATS - 1
+        utxos = [_FakeUtxo("aa" * 32, 0, L_BTC, below)]
+        selected, effective_send_amount = select_swap_utxos(utxos, L_BTC, 100_000)
+        assert effective_send_amount == below
+
+        # Change = DUST_THRESHOLD_SATS (not dust) → no bump
+        at_threshold = 100_000 + DUST_THRESHOLD_SATS
+        utxos = [_FakeUtxo("bb" * 32, 0, L_BTC, at_threshold)]
+        selected, effective_send_amount = select_swap_utxos(utxos, L_BTC, 100_000)
+        assert effective_send_amount == 100_000
+
+    def test_bumps_when_multi_utxo_combined_change_is_dust(self):
+        """The bump must also fire when greedy needs more than one UTXO and
+        the combined leftover lands in the dust zone — the dust check
+        triggers on the iteration that pushes accumulated >= send_amount,
+        not only on the first input."""
+        from aqua.sideswap import select_swap_utxos
+
+        utxos = [
+            _FakeUtxo("aa" * 32, 0, L_BTC, 50_001),
+            _FakeUtxo("bb" * 32, 0, L_BTC, 50_001),
+        ]
+        selected, effective_send_amount = select_swap_utxos(utxos, L_BTC, 100_000)
+        # Both UTXOs were needed (first alone is 50_001 < 100_000); combined
+        # change is 2 sats → bump.
+        assert len(selected) == 2
+        assert effective_send_amount == 100_002
+
+    def test_custom_dust_threshold_is_respected(self):
+        """execute_swap raises the dust_threshold for L-BTC sends (to
+        reserve fee headroom); verify the parameter actually controls the
+        bump trigger."""
+        from aqua.sideswap import select_swap_utxos
+
+        # change == 700, custom threshold = 1000 → bump
+        utxos = [_FakeUtxo("aa" * 32, 0, L_BTC, 100_700)]
+        _, effective_send_amount = select_swap_utxos(
+            utxos, L_BTC, 100_000, dust_threshold=1000
+        )
+        assert effective_send_amount == 100_700
+
+        # change == 700, default threshold = DUST_THRESHOLD_SATS (≤ 700) → no bump
+        _, effective_send_amount = select_swap_utxos(utxos, L_BTC, 100_000)
+        assert effective_send_amount == 100_000
 
 
 # ---------------------------------------------------------------------------
@@ -1534,8 +1620,15 @@ def swap_manager_setup(storage):
     return mgr, wm, fake_wollet, fake_signer, storage
 
 
-def _patch_swap_layers():
-    """Patch WS + lwk.Pset for the manager flow."""
+def _patch_swap_layers(unblinded_by_role: dict | None = None):
+    """Patch WS + lwk.Pset for the manager flow.
+
+    `unblinded_by_role` controls what the stubbed `unblind_dealer_outputs`
+    returns — defaults to `{}` (no ephemeral keys / no recoverable outputs),
+    which is the right shape for tests that don't exercise the dust check.
+    Pass e.g. `{"recv": 9_500_000, "change": 1}` to drive the verifier's
+    dust check past `unblind_dealer_outputs` with a known unblinded value.
+    """
     from contextlib import ExitStack
 
     stack = ExitStack()
@@ -1550,8 +1643,9 @@ def _patch_swap_layers():
     # The wally-based unblind helper needs a real PSET to parse — short-circuit
     # it in tests; the _FakeWollet supplies the canned balances dict that the
     # tests actually assert against.
+    payload = {} if unblinded_by_role is None else unblinded_by_role
     stack.enter_context(
-        patch("aqua.sideswap.unblind_dealer_outputs", lambda *a, **kw: {})
+        patch("aqua.sideswap.unblind_dealer_outputs", lambda *a, **kw: payload)
     )
     return stack
 
@@ -1740,6 +1834,53 @@ class TestSwapManagerExecute:
                     asset_id=USDT, send_amount=100_000, wallet_name="default"
                 )
         assert len(fake_signer.signed) == 0
+
+    def test_aborts_when_dealer_creates_dust_change_output(self, swap_manager_setup):
+        """Defensive layer (PR #99 follow-up): even if coin selection slipped
+        up — or the dealer's fee handling surprised us — a sub-DUST_THRESHOLD
+        change output must block the sign step."""
+        mgr, _, fake_wollet, fake_signer, _ = swap_manager_setup
+        _setup_mkt_responses_forward()
+        # Aggregate balances are clean (matches the agreed amounts) but the
+        # change output unblinds to a single sat — the original PR #99 bug.
+        fake_wollet._balances = {L_BTC: -100_000, USDT: 9_500_000}
+
+        with _patch_swap_layers({"recv": 9_500_000, "change": 1}):
+            with pytest.raises(PsetVerificationError, match="dust change output of 1 sats"):
+                mgr.execute_swap(
+                    asset_id=USDT, send_amount=100_000, wallet_name="default"
+                )
+        # Must not have signed or broadcast the dust-producing PSET.
+        assert len(fake_signer.signed) == 0
+        assert not any(m == "mkt.taker_sign" for m, _ in FakeWSClient.calls)
+
+    def test_accepts_change_output_at_dust_threshold_boundary(self, swap_manager_setup):
+        """Change of exactly DUST_THRESHOLD_SATS is the smallest acceptable
+        change — the verifier must not reject it."""
+        mgr, _, fake_wollet, fake_signer, _ = swap_manager_setup
+        _setup_mkt_responses_forward()
+        fake_wollet._balances = {L_BTC: -100_000, USDT: 9_500_000}
+
+        with _patch_swap_layers({"recv": 9_500_000, "change": DUST_THRESHOLD_SATS}):
+            swap = mgr.execute_swap(
+                asset_id=USDT, send_amount=100_000, wallet_name="default"
+            )
+        assert swap.status == "broadcast"
+        assert len(fake_signer.signed) == 1
+
+    def test_accepts_pset_with_no_change_output(self, swap_manager_setup):
+        """When coin selection bumped send_amount to consume all inputs the
+        dealer creates no change output at all (the unblind helper returns
+        only the recv role). That's the dust-avoidance happy path."""
+        mgr, _, fake_wollet, fake_signer, _ = swap_manager_setup
+        _setup_mkt_responses_forward()
+        fake_wollet._balances = {L_BTC: -100_000, USDT: 9_500_000}
+
+        with _patch_swap_layers({"recv": 9_500_000}):
+            swap = mgr.execute_swap(
+                asset_id=USDT, send_amount=100_000, wallet_name="default"
+            )
+        assert swap.status == "broadcast"
 
     def test_rejects_swap_lbtc_for_lbtc(self, swap_manager_setup):
         mgr, _, _, _, _ = swap_manager_setup
@@ -2172,31 +2313,36 @@ class TestUnblindDealerOutputs:
 
     def test_no_ephemeral_keys_is_noop(self):
         """Peg / legacy-orderbook flows pass no ephemeral keys; the verifier
-        should short-circuit before touching wally at all."""
+        should short-circuit before touching wally at all and return an
+        empty unblinded-values map."""
         from aqua.sideswap import unblind_dealer_outputs
 
         # If anything tries to parse the (deliberately bogus) b64, wally would
-        # raise — reaching the assert means the early-return path fired.
-        unblind_dealer_outputs(
+        # raise — reaching the return means the early-return path fired.
+        result = unblind_dealer_outputs(
             "not-a-real-pset",
             recv_addr="lq1qnotreal",
             change_addr=None,
             receive_ephemeral_sk=None,
             change_ephemeral_sk=None,
         )
+        assert result == {}
 
     def test_honest_pset_passes(self):
         from aqua.sideswap import unblind_dealer_outputs
 
         out = self._synth_blinded_output(L_BTC, value=100_000)
         with self._patch_pset_parser(out):
-            unblind_dealer_outputs(
+            result = unblind_dealer_outputs(
                 "<patched-b64>",
                 recv_addr="lq1qhonest",
                 change_addr=None,
                 receive_ephemeral_sk=out["eph_sk_hex"],
                 change_ephemeral_sk=None,
             )
+        # The cryptographically-verified unblinded value is exposed by role so
+        # the caller can enforce per-output policy (e.g. dust threshold).
+        assert result == {"recv": 100_000}
 
     def test_tampered_value_commitment_raises(self):
         """Flipping a byte in the value commitment must trip the verifier —
@@ -2257,3 +2403,27 @@ class TestUnblindDealerOutputs:
                     receive_ephemeral_sk=out["eph_sk_hex"],
                     change_ephemeral_sk=None,
                 )
+
+    def test_duplicate_role_raises(self):
+        """SideSwap's market protocol emits at most one output per role. If a
+        PSET ever ships two outputs that match the same address — whether
+        from a dealer protocol change or a hostile dealer trying to hide a
+        dust output behind a clean one — we must refuse rather than
+        silently overwrite the first unblinded value."""
+        from aqua.sideswap import unblind_dealer_outputs
+
+        out = self._synth_blinded_output(L_BTC, value=100_000)
+        with self._patch_pset_parser(out):
+            # Override num_outputs to 2 — both outputs share the same spk /
+            # commitments / rangeproof from `out`, so both match the recv
+            # branch. The first should unblind cleanly; the second must
+            # trip the duplicate-role guard.
+            with patch.object(wally, "psbt_get_num_outputs", lambda _p: 2):
+                with pytest.raises(PsetVerificationError, match="second 'recv' output"):
+                    unblind_dealer_outputs(
+                        "<patched-b64>",
+                        recv_addr="lq1qhonest",
+                        change_addr=None,
+                        receive_ephemeral_sk=out["eph_sk_hex"],
+                        change_ephemeral_sk=None,
+                    )

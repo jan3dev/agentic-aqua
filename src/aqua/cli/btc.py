@@ -8,6 +8,7 @@ from ..tools import (
     btc_export_descriptor,
     btc_import_descriptor,
     btc_send,
+    btc_sweep,
     btc_transactions,
 )
 from .output import run_tool
@@ -76,6 +77,44 @@ def send(ctx, wallet_name, address, amount, fee_rate, password_stdin):
                 "wallet_name": wallet_name,
                 "address": address,
                 "amount": amount,
+                "fee_rate": fee_rate,
+                "password": password,
+            },
+        ),
+    )
+
+
+@btc.command("sweep")
+@click.option("--wallet-name", required=True, help="Name of the wallet.")
+@click.option("--address", required=True, help="Destination Bitcoin address (bc1...).")
+@click.option("--fee-rate", type=int, default=None, help="Fee rate in sat/vB.")
+@click.option(
+    "--password-stdin",
+    "password_stdin",
+    is_flag=True,
+    default=False,
+    help=(
+        "Read wallet password from stdin (piped) or prompt interactively. "
+        "Without this flag, falls back to the AQUA_PASSWORD environment variable, "
+        "then to no password."
+    ),
+)
+@click.pass_obj
+def sweep(ctx, wallet_name, address, fee_rate, password_stdin):
+    """Sweep the entire Bitcoin balance to one address.
+
+    Fee is deducted from the inputs — 0 sats remain after broadcast.
+    """
+    password = resolve_secret(
+        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+    )
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            btc_sweep,
+            {
+                "wallet_name": wallet_name,
+                "address": address,
                 "fee_rate": fee_rate,
                 "password": password,
             },

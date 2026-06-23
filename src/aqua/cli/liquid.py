@@ -7,6 +7,7 @@ from ..tools import (
     get_manager,
     lw_address,
     lw_balance,
+    lw_sweep,
     lw_export_descriptor,
     lw_import_descriptor,
     lw_send,
@@ -158,6 +159,68 @@ def send_asset(ctx, wallet_name, address, amount, asset_id, asset_ticker, passwo
                 "wallet_name": wallet_name,
                 "address": address,
                 "amount": amount,
+                "asset_id": asset_id,
+                "password": password,
+            },
+        ),
+    )
+
+
+@liquid.command("sweep")
+@click.option("--wallet-name", required=True, help="Name of the wallet.")
+@click.option("--address", required=True, help="Destination Liquid address.")
+@click.option(
+    "--asset-id",
+    default=None,
+    help="Asset ID (hex). Omit for an L-BTC sweep.",
+)
+@click.option(
+    "--asset-ticker",
+    default=None,
+    help="Asset ticker (resolved via the registry). Omit for L-BTC.",
+)
+@click.option(
+    "--password-stdin",
+    "password_stdin",
+    is_flag=True,
+    default=False,
+    help=(
+        "Read wallet password from stdin (piped) or prompt interactively. "
+        "Without this flag, falls back to the AQUA_PASSWORD environment variable, "
+        "then to no password."
+    ),
+)
+@click.pass_obj
+def sweep(ctx, wallet_name, address, asset_id, asset_ticker, password_stdin):
+    """Sweep the entire L-BTC balance (or full asset balance) to one address.
+
+    Fee is deducted from the inputs — 0 sats of the targeted balance remain
+    after broadcast. Asset sweeps leave L-BTC change in the wallet; run again
+    without --asset-id / --asset-ticker to also empty L-BTC.
+    """
+    if asset_id and asset_ticker:
+        raise click.UsageError("Provide at most one of --asset-id or --asset-ticker.")
+    if asset_ticker:
+        wallet_data = get_manager().storage.load_wallet(wallet_name)
+        if wallet_data is None:
+            raise click.UsageError(f"Wallet '{wallet_name}' not found.")
+        info = lookup_asset_by_ticker(asset_ticker, wallet_data.network)
+        if info is None:
+            raise click.UsageError(
+                f"Unknown ticker '{asset_ticker}' on {wallet_data.network}. "
+                "Run 'aqua-cli liquid assets' to list known tickers."
+            )
+        asset_id = info.asset_id
+    password = resolve_secret(
+        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+    )
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            lw_sweep,
+            {
+                "wallet_name": wallet_name,
+                "address": address,
                 "asset_id": asset_id,
                 "password": password,
             },
