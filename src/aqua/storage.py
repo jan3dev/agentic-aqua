@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,16 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 logger = logging.getLogger(__name__)
 
 SALT_LENGTH = 16
+
+
+def restrict_permissions(path: Path | str, mode: int) -> None:
+    """Apply Unix permission bits. No-op on Windows where chmod strips inherited ACLs."""
+    if sys.platform == "win32":
+        return
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
 
 
 DEFAULT_DIR = Path.home() / ".aqua"
@@ -131,29 +142,29 @@ class Storage:
     def _ensure_dirs(self):
         """Create necessary directories with restricted permissions."""
         self.base_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.base_dir, 0o700)
+        restrict_permissions(self.base_dir, 0o700)
         self.wallets_dir.mkdir(exist_ok=True, mode=0o700)
-        os.chmod(self.wallets_dir, 0o700)
+        restrict_permissions(self.wallets_dir, 0o700)
         self.cache_dir.mkdir(exist_ok=True, mode=0o700)
-        os.chmod(self.cache_dir, 0o700)
+        restrict_permissions(self.cache_dir, 0o700)
         self.swaps_dir.mkdir(exist_ok=True, mode=0o700)
-        os.chmod(self.swaps_dir, 0o700)
+        restrict_permissions(self.swaps_dir, 0o700)
         self.ankara_swaps_dir.mkdir(exist_ok=True, mode=0o700)
-        os.chmod(self.ankara_swaps_dir, 0o700)
+        restrict_permissions(self.ankara_swaps_dir, 0o700)
         self.lightning_swaps_dir.mkdir(exist_ok=True, mode=0o700)
-        os.chmod(self.lightning_swaps_dir, 0o700)
+        restrict_permissions(self.lightning_swaps_dir, 0o700)
         self.pix_swaps_dir.mkdir(exist_ok=True, mode=0o700)
-        os.chmod(self.pix_swaps_dir, 0o700)
+        restrict_permissions(self.pix_swaps_dir, 0o700)
         self.changelly_swaps_dir.mkdir(exist_ok=True, mode=0o700)
-        os.chmod(self.changelly_swaps_dir, 0o700)
+        restrict_permissions(self.changelly_swaps_dir, 0o700)
         self.sideshift_shifts_dir.mkdir(exist_ok=True, mode=0o700)
-        os.chmod(self.sideshift_shifts_dir, 0o700)
+        restrict_permissions(self.sideshift_shifts_dir, 0o700)
         self.sideswap_pegs_dir.mkdir(exist_ok=True, mode=0o700)
-        os.chmod(self.sideswap_pegs_dir, 0o700)
+        restrict_permissions(self.sideswap_pegs_dir, 0o700)
         self.sideswap_swaps_dir.mkdir(exist_ok=True, mode=0o700)
-        os.chmod(self.sideswap_swaps_dir, 0o700)
+        restrict_permissions(self.sideswap_swaps_dir, 0o700)
         self.qr_dir.mkdir(exist_ok=True, mode=0o700)
-        os.chmod(self.qr_dir, 0o700)
+        restrict_permissions(self.qr_dir, 0o700)
 
     def _derive_key(self, password: str, salt: bytes) -> bytes:
         """Derive encryption key from password."""
@@ -303,17 +314,9 @@ class Storage:
                 json.dump(data, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
-            if hasattr(os, "chmod"):
-                try:
-                    os.chmod(tmp_path, 0o600)
-                except OSError:
-                    pass
+            restrict_permissions(tmp_path, 0o600)
             os.replace(tmp_path, path)
-            if hasattr(os, "chmod"):
-                try:
-                    os.chmod(path, 0o600)
-                except OSError:
-                    pass
+            restrict_permissions(path, 0o600)
         except Exception:
             if tmp_path.exists():
                 try:

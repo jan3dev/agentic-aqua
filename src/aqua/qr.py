@@ -7,14 +7,17 @@ import qrcode
 import zxingcpp
 from PIL import Image
 
+from .storage import restrict_permissions
+
 
 def generate_qr(data: str, output_dir: str | Path, filename: str | None = None) -> str:
     """Generate a PNG QR code for ``data`` and return the saved file path.
 
     Used to render deposit addresses, Lightning invoices and swap deposit
     addresses as scannable QR images. The file is written atomically (temp
-    file + ``os.replace``) with ``0o600`` permissions, mirroring the rest of
-    the on-disk ``~/.aqua`` layout.
+    file + ``os.replace``) with ``0o600`` permissions on Unix, mirroring the
+    rest of the on-disk ``~/.aqua`` layout. On Windows, permission bits are
+    left to inherited NTFS ACLs because ``os.chmod`` strips user access there.
 
     Args:
         data: The string to encode (address, BOLT11 invoice, etc.).
@@ -48,7 +51,7 @@ def generate_qr(data: str, output_dir: str | Path, filename: str | None = None) 
             img.save(fh, format="PNG")
             fh.flush()
             os.fsync(fh.fileno())
-        os.chmod(tmp_path, 0o600)
+        restrict_permissions(tmp_path, 0o600)
         os.replace(tmp_path, path)
     except BaseException:
         tmp_path.unlink(missing_ok=True)

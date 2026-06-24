@@ -1,4 +1,6 @@
+import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -114,10 +116,21 @@ def test_generate_qr_returns_absolute_png_path(tmp_path):
     assert p.parent == tmp_path.resolve()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix mode bits")
 def test_generate_qr_file_is_0600(tmp_path):
     path = generate_qr("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", tmp_path)
     mode = stat.S_IMODE(Path(path).stat().st_mode)
     assert mode == 0o600
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows ACL regression")
+def test_generate_qr_readable_on_windows(tmp_path):
+    """chmod(0o600) on Windows strips inherited user ACLs; QR must stay readable."""
+    path = generate_qr("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", tmp_path)
+    p = Path(path)
+    assert p.is_file()
+    assert os.access(p, os.R_OK)
+    assert decode_qr(path) == "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
 
 
 def test_generate_qr_creates_missing_output_dir(tmp_path):
