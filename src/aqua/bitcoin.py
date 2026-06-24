@@ -501,3 +501,67 @@ class BitcoinWalletManager:
         client = self._get_clients(network)[0]
         _retry_on_network_error(lambda: client.broadcast(tx))
         return tx.compute_txid().serialize()[::-1].hex()
+
+    def sweep(
+        self,
+        wallet_name: str,
+        address: str,
+        fee_rate: Optional[int] = None,
+        password: Optional[str] = None,
+    ) -> str:
+        """Sweep the entire Bitcoin balance to ``address``. Returns txid.
+
+        Wraps BDK's ``drain_to`` + ``drain_wallet`` to consume every available
+        UTXO and route the remainder to the destination, with the on-chain
+        fee deducted from the inputs — 0 sats remain in the wallet.
+
+        ``password`` decrypts the at-rest mnemonic when the wallet was
+        imported with one. NOT a BIP39 passphrase.
+        """
+        wallet_data = self.storage.load_wallet(wallet_name)
+        if not wallet_data:
+            raise ValueError(f"Wallet '{wallet_name}' not found")
+        if wallet_data.watch_only:
+            raise ValueError("Cannot sign with watch-only wallet")
+        if fee_rate is not None and fee_rate <= 0:
+            raise ValueError("Fee rate must be positive")
+        if not wallet_data.encrypted_mnemonic:
+            raise ValueError(
+                "No mnemonic available for signing (import wallet with mnemonic to enable sending)"
+            )
+        needs_password = self.storage.requires_user_password(wallet_data.encrypted_mnemonic)
+        if needs_password and not password:
+            raise ValueError("Password required to decrypt mnemonic")
+        mnemonic = self.storage.read_and_migrate_mnemonic(wallet_data, password)
+        wallet, network = self._get_wallet_with_signer(wallet_name, mnemonic)
+        self.sync_wallet(wallet_name)
+
+        if wallet.balance().total.to_sat() <= 0:
+            raise ValueError("No BTC to sweep")
+
+        net = _network_bdk(network)
+        bdk_address = bdk.Address(address, net)
+        spk = bdk_address.script_pubkey()
+
+        builder = bdk.TxBuilder()
+        builder = builder.drain_to(spk)
+        builder = builder.drain_wallet()
+        if fee_rate is not None:
+            builder = builder.fee_rate(bdk.FeeRate.from_sat_per_vb(fee_rate))
+
+        psbt = builder.finish(wallet)
+        sign_opts = bdk.SignOptions(
+            trust_witness_utxo=True,
+            assume_height=None,
+            allow_all_sighashes=False,
+            try_finalize=True,
+            sign_with_tap_internal_key=True,
+            allow_grinding=True,
+        )
+        finalized = wallet.sign(psbt, sign_opts)
+        if not finalized:
+            raise RuntimeError("Failed to finalize PSBT")
+        tx = psbt.extract_tx()
+        client = self._get_clients(network)[0]
+        _retry_on_network_error(lambda: client.broadcast(tx))
+        return tx.compute_txid().serialize()[::-1].hex()

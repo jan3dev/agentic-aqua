@@ -66,6 +66,7 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("liquid", "transactions"): "lw_transactions",
     ("liquid", "send"): "lw_send",
     ("liquid", "send-asset"): "lw_send_asset",
+    ("liquid", "sweep"): "lw_sweep",
     ("liquid", "assets"): "lw_list_assets",
     ("liquid", "tx-status"): "lw_tx_status",
     ("liquid", "import-descriptor"): "lw_import_descriptor",
@@ -76,6 +77,7 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("btc", "address"): "btc_address",
     ("btc", "transactions"): "btc_transactions",
     ("btc", "send"): "btc_send",
+    ("btc", "sweep"): "btc_sweep",
     ("btc", "import-descriptor"): "btc_import_descriptor",
     ("btc", "export-descriptor"): "btc_export_descriptor",
 

@@ -360,3 +360,74 @@ class WalletManager:
         # Broadcast
         txid = client.broadcast(tx)
         return str(txid)
+
+    def sweep(
+        self,
+        wallet_name: str,
+        address: str,
+        asset_id: Optional[str] = None,
+        password: Optional[str] = None,
+    ) -> str:
+        """Sweep a wallet balance to a single address. Returns txid.
+
+        With ``asset_id`` omitted (or set to the network's L-BTC policy asset),
+        spends every L-BTC input and routes the remainder to ``address`` — the
+        on-chain fee is paid from those inputs, so 0 L-BTC remains in the
+        wallet afterwards. (Wraps LWK's ``drain_lbtc_*`` builder API.)
+
+        With ``asset_id`` set to a non-L-BTC asset, sends the entire balance of
+        that asset to ``address``. The on-chain fee is still paid in L-BTC, so
+        L-BTC change may be returned to the wallet — call ``sweep`` again
+        without ``asset_id`` to also sweep the L-BTC remainder.
+        """
+        wallet = self.storage.load_wallet(wallet_name)
+        if not wallet:
+            raise ValueError(f"Wallet '{wallet_name}' not found")
+
+        if wallet.watch_only:
+            raise ValueError("Cannot sign with watch-only wallet")
+
+        if wallet_name not in self._signers:
+            if not wallet.encrypted_mnemonic:
+                raise ValueError("No mnemonic available for signing")
+            needs_password = self.storage.requires_user_password(wallet.encrypted_mnemonic)
+            if needs_password and not password:
+                raise ValueError("Password required to decrypt mnemonic")
+            self.load_wallet(wallet_name, password)
+
+        signer = self._signers[wallet_name]
+        wollet = self._get_wollet(wallet_name)
+        net = self._get_network(wallet.network)
+        client = self._get_client(wallet.network)
+        policy_asset = self._get_policy_asset(wallet.network)
+
+        # An explicit policy-asset id is just an L-BTC sweep — collapse to
+        # the L-BTC path so callers can pass either spelling.
+        if asset_id == policy_asset:
+            asset_id = None
+
+        self.sync_wallet(wallet_name)
+        raw_balance = wollet.balance()
+
+        builder = net.tx_builder()
+        lwk_address = lwk.Address(address)
+
+        if asset_id is None:
+            lbtc_balance = int(raw_balance.get(policy_asset, 0))
+            if lbtc_balance <= 0:
+                raise ValueError("No L-BTC to sweep")
+            builder.drain_lbtc_wallet()
+            builder.drain_lbtc_to(lwk_address)
+        else:
+            asset_balance = int(raw_balance.get(asset_id, 0))
+            if asset_balance <= 0:
+                ticker = resolve_asset_name(asset_id, wallet.network)
+                raise ValueError(f"No {ticker} balance to sweep")
+            builder.add_recipient(lwk_address, asset_balance, asset_id)
+
+        unsigned_pset = builder.finish(wollet)
+        signed_pset = signer.sign(unsigned_pset)
+        tx = signed_pset.finalize()
+
+        txid = client.broadcast(tx)
+        return str(txid)

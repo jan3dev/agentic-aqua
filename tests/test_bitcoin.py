@@ -19,6 +19,7 @@ from aqua.storage import Storage, WalletData
 from aqua.tools import (
     btc_address,
     btc_balance,
+    btc_sweep,
     btc_send,
     btc_transactions,
     get_btc_manager,
@@ -165,6 +166,87 @@ class TestBitcoinWalletManager:
                 amount=1000,
                 fee_rate=-5,
             )
+
+    def test_btc_sweep_watch_only_raises(self, isolated_managers):
+        """Cannot sweep a watch-only wallet."""
+        manager, _ = isolated_managers
+        net = lwk.Network.mainnet()
+        m = lwk.Mnemonic(TEST_MNEMONIC)
+        signer = lwk.Signer(m, net)
+        desc = str(signer.wpkh_slip77_descriptor())
+        manager.import_descriptor(desc, "wo_sweep_btc", "mainnet")
+        with pytest.raises(ValueError, match="watch-only|no Bitcoin descriptors|not found"):
+            btc_sweep(
+                wallet_name="wo_sweep_btc",
+                address="bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            )
+
+    def test_btc_sweep_nonexistent_wallet_raises(self, isolated_managers):
+        """Sweeping a non-existent wallet raises."""
+        with pytest.raises(ValueError, match="not found"):
+            btc_sweep(
+                wallet_name="ghost_btc",
+                address="bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            )
+
+    def test_btc_sweep_zero_balance_raises(self, isolated_managers):
+        """Empty BTC balance → cannot sweep."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="empty_btc", network="mainnet")
+        with patch.object(get_btc_manager(), "sync_wallet"):
+            with pytest.raises(ValueError, match="No BTC to sweep"):
+                btc_sweep(
+                    wallet_name="empty_btc",
+                    address="bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+                )
+
+    def test_btc_sweep_negative_fee_rate_raises(self, isolated_managers):
+        """Negative fee rate raises before reaching BDK."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="neg_fee_sweep", network="mainnet")
+        with pytest.raises(ValueError, match="Fee rate must be positive"):
+            btc_sweep(
+                wallet_name="neg_fee_sweep",
+                address="bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+                fee_rate=-1,
+            )
+
+    def test_btc_sweep_calls_drain_to_and_drain_wallet(self, isolated_managers):
+        """Critical invariant: sweep() must invoke BDK's drain_to + drain_wallet
+        on the TxBuilder, and must NOT use add_recipient. Patches bdk.TxBuilder
+        so the builder calls are inspectable without a real chain sync."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="sweep_builder", network="mainnet")
+        btc_manager = get_btc_manager()
+
+        # Real wallet path is hit up to the point of building the tx — patch
+        # bdk.TxBuilder so we can introspect the calls without finalizing on
+        # an empty wallet.
+        mock_builder = MagicMock()
+        mock_builder.drain_to.return_value = mock_builder
+        mock_builder.drain_wallet.return_value = mock_builder
+        mock_builder.fee_rate.return_value = mock_builder
+        mock_builder.finish.side_effect = RuntimeError("stop after builder")
+
+        # Fake a non-zero balance so the pre-check passes.
+        mock_balance = MagicMock()
+        mock_balance.total.to_sat.return_value = 100_000
+
+        with (
+            patch.object(btc_manager, "sync_wallet"),
+            patch("aqua.bitcoin.bdk.TxBuilder", return_value=mock_builder),
+            patch("aqua.bitcoin.bdk.Wallet") as mock_wallet_cls,
+        ):
+            mock_wallet = MagicMock()
+            mock_wallet.balance.return_value = mock_balance
+            mock_wallet_cls.load.return_value = mock_wallet
+
+            with pytest.raises(RuntimeError, match="stop after builder"):
+                btc_sweep(
+                    wallet_name="sweep_builder",
+                    address="bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+                )
+
+        mock_builder.drain_to.assert_called_once()
+        mock_builder.drain_wallet.assert_called_once_with()
+        mock_builder.add_recipient.assert_not_called()
 
     def test_get_wallet_with_signer_loads_existing_persisted_wallet(self, isolated_managers):
         """Signer wallet path should load existing DB instead of recreating it."""

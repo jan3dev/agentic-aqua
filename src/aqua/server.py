@@ -209,6 +209,43 @@ TOOL_SCHEMAS = {
             "required": ["wallet_name", "address", "amount", "asset_id"],
         },
     },
+    "lw_sweep": {
+        "description": (
+            "Sweep the entire L-BTC balance (or full balance of a specific Liquid "
+            "asset) to one address. Fee is deducted from the inputs — leaves 0 "
+            "sats of the targeted balance in the wallet. Use this whenever the "
+            "user says 'send all', 'sweep', 'drain', 'empty wallet', or 'move "
+            "everything' on Liquid. Asset sweep note: with `asset_id` set, the "
+            "asset balance goes to 0 in one tx but L-BTC change may remain "
+            "because the fee was paid in L-BTC — call `lw_sweep` again without "
+            "`asset_id` to also empty L-BTC."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Name of the wallet",
+                },
+                "address": {
+                    "type": "string",
+                    "description": "Destination Liquid address",
+                },
+                "asset_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional asset ID (hex). Omit for an L-BTC sweep. "
+                        "Passing the L-BTC policy asset id is equivalent to omitting."
+                    ),
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Password to decrypt mnemonic (if encrypted at rest)",
+                },
+            },
+            "required": ["wallet_name", "address"],
+        },
+    },
     "lw_tx_status": {
         "description": "Get the status of a Liquid transaction. Accepts a txid or a Blockstream explorer URL (e.g. https://blockstream.info/liquid/tx/abc123...)",
         "inputSchema": {
@@ -337,6 +374,36 @@ TOOL_SCHEMAS = {
                 },
             },
             "required": ["wallet_name", "address", "amount"],
+        },
+    },
+    "btc_sweep": {
+        "description": (
+            "Sweep the entire Bitcoin balance to one address. Fee is deducted "
+            "from the inputs — leaves 0 sats in the wallet. Use this whenever "
+            "the user says 'send all', 'sweep', 'drain', 'empty wallet', or "
+            "'move everything' on Bitcoin."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Name of the wallet",
+                },
+                "address": {
+                    "type": "string",
+                    "description": "Destination Bitcoin address (bc1...)",
+                },
+                "fee_rate": {
+                    "type": "integer",
+                    "description": "Optional fee rate in Sat/vB",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Password to decrypt mnemonic (if encrypted at rest)",
+                },
+            },
+            "required": ["wallet_name", "address"],
         },
     },
     "btc_import_descriptor": {

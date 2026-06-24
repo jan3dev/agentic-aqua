@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.13,<3.14"
 authors = [
-    { name = "Andy", email = "andy@example.com" }
+    { name = "Andy", email = "andy@jan3.com" }
 ]
 keywords = ["liquid", "bitcoin", "wallet", "mcp", "ai", "lwk", "blockstream"]
 classifiers = [
@@ -26,7 +26,7 @@ dependencies = [
     "lwk>=0.18.0",
     "mcp>=1.0.0",
     "cryptography>=42.0.0",
-    "bdkpython>=2.2.0",
+    "bdkpython>=2.2.0,<3",
     "coincurve>=21.0.0",
     "python-dotenv>=1.0.0",
     "click>=8.1",
@@ -34,7 +34,7 @@ dependencies = [
     "pillow>=10.0",
     "zxing-cpp>=2.2",
     "qrcode[pil]>=7.0",
-    "wallycore>=1.5.3",
+    "wallycore>=1.5.4",
 ]
 
 [project.optional-dependencies]

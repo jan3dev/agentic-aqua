@@ -2,14 +2,17 @@
 
 import hashlib
 import json
+import ssl
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from aqua.boltz import (
+    BOLTZ_API,
     BoltzClient,
     BoltzSwapAlreadyExistsError,
     SwapInfo,
+    _build_tls_context,
     generate_keypair,
     verify_preimage,
 )
@@ -108,6 +111,39 @@ class TestVerifyPreimage:
         """Raises ValueError for invalid hex input."""
         with pytest.raises(ValueError):
             verify_preimage("xyz_not_hex", "aa" * 32)
+
+
+# ===========================================================================
+# TLS hardening (commit 32d7229)
+# ===========================================================================
+
+
+class TestTlsContext:
+    """Tests for the hardened TLS context used by BoltzClient."""
+
+    def test_build_tls_context_is_hardened(self):
+        """Guard against future weakening: TLS 1.2 floor + hostname + cert verification."""
+        ctx = _build_tls_context()
+        assert ctx.minimum_version >= ssl.TLSVersion.TLSv1_2
+        assert ctx.check_hostname is True
+        assert ctx.verify_mode == ssl.CERT_REQUIRED
+
+    def test_client_rejects_non_https_base_url(self, monkeypatch):
+        """Constructor refuses to talk to plaintext endpoints, even if config drifts."""
+        monkeypatch.setitem(BOLTZ_API, "mainnet", "http://api.boltz.exchange")
+        with pytest.raises(ValueError, match="must be https"):
+            BoltzClient(network="mainnet")
+
+    @patch("aqua.boltz.urllib.request.urlopen")
+    def test_api_request_passes_tls_context_to_urlopen(self, mock_urlopen):
+        """Injected context must reach urlopen — otherwise hardening is silent."""
+        mock_urlopen.return_value = _mock_response(MOCK_SUBMARINE_PAIRS)
+        custom = ssl.create_default_context()
+        client = BoltzClient(network="mainnet", tls_context=custom)
+
+        client.get_submarine_pairs()
+
+        assert mock_urlopen.call_args.kwargs.get("context") is custom
 
 
 # ===========================================================================
