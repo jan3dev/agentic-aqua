@@ -18,12 +18,14 @@ MCP server and CLI for managing **Bitcoin** and **Liquid Network** wallets throu
 > **Quickest way:** just ask your AI agent directly:
 >
 > ```
-> Install this MCP server: https://github.com/jan3dev/agentic-aqua
+> Install this MCP server: https://pypi.org/project/agentic-aqua/
 > ```
 
-### Recommended (uvx)
+> **Python 3.13 required.**
 
-If you don't have `uvx` installed:
+### Recommended (uv tool install)
+
+If you don't have `uv` installed:
 
 ```bash
 # macOS/Linux
@@ -33,27 +35,35 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-Configure Claude Desktop (`~/.claude/claude_desktop_config.json`):
+Install Agentic AQUA:
+
+```bash
+uv tool install --python 3.13 agentic-aqua
+```
+
+This creates a permanent `agentic-aqua` executable. Find its full path with:
+
+```bash
+which agentic-aqua
+# Example: /Users/yourname/.local/bin/agentic-aqua
+```
+
+Configure Claude Desktop (`~/.claude/claude_desktop_config.json`) using that path:
 
 ```json
 {
   "mcpServers": {
     "agentic-aqua": {
-      "command": "/full/path/to/uvx",
-      "args": ["agentic-aqua"]
+      "command": "/full/path/to/agentic-aqua",
+      "args": []
     }
   }
 }
 ```
 
-Find the full path to `uvx` with:
-
-```bash
-which uvx
-# Example: /Users/yourname/.local/bin/uvx
-```
-
 Restart Claude Desktop and you're ready to use Bitcoin and Liquid wallets.
+
+> **Updating / removing:** `uv tool upgrade agentic-aqua` to update, `uv tool uninstall agentic-aqua` to remove.
 
 ### For Developers
 
@@ -66,8 +76,6 @@ uv python install 3.13
 uv sync --python 3.13
 ```
 
-> **Why pin Python 3.13?** `bdkpython` currently publishes wheels for CPython 3.13, but not 3.14. If `uv sync` picks 3.14 automatically, installation fails on a clean machine.
-
 Configure Claude Desktop using the full path to `uv` (find with `which uv`):
 
 ```json
@@ -75,7 +83,7 @@ Configure Claude Desktop using the full path to `uv` (find with `which uv`):
   "mcpServers": {
     "agentic-aqua": {
       "command": "/full/path/to/uv",
-      "args": ["run", "--directory", "/absolute/path/to/agentic-aqua", "python", "-m", "aqua.server"]
+      "args": ["run", "--python", "3.13", "--directory", "/absolute/path/to/agentic-aqua", "python", "-m", "aqua.server"]
     }
   }
 }
