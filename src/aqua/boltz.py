@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import secrets
+import ssl
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -18,6 +19,23 @@ BOLTZ_API = {
 }
 
 logger = logging.getLogger(__name__)
+
+
+def _build_tls_context() -> ssl.SSLContext:
+    """Hardened TLS context for Boltz API calls.
+
+    TLS 1.2 floor; certificate and hostname verification are explicit so the
+    posture is visible in code and does not silently degrade if Python defaults
+    change.
+    """
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.check_hostname = True
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    return ctx
+
+
+_TLS_CONTEXT = _build_tls_context()
 
 # Client-side swap amount limits (satoshis)
 MIN_SWAP_AMOUNT_SATS = 100
@@ -57,9 +75,12 @@ class SwapInfo:
 class BoltzClient:
     """HTTP client for Boltz API v2."""
 
-    def __init__(self, network: str = "mainnet"):
+    def __init__(self, network: str = "mainnet", tls_context: ssl.SSLContext | None = None):
         self.base_url = BOLTZ_API[network]
         self.network = network
+        self._tls_context = tls_context or _TLS_CONTEXT
+        if not self.base_url.startswith("https://"):
+            raise ValueError(f"Boltz base URL must be https, got: {self.base_url}")
 
     def _api_request(self, method: str, path: str, body: dict | None = None) -> dict:
         """Make HTTP request to Boltz API."""
@@ -76,7 +97,7 @@ class BoltzClient:
         )
         logger.debug("Boltz request %s %s body=%s", method, path, body)
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=30, context=self._tls_context) as resp:
                 raw = resp.read().decode()
                 logger.debug(
                     "Boltz response %s %s status=%s body=%s",
