@@ -400,6 +400,39 @@ def lw_send_asset(
     }
 
 
+def lw_sweep(
+    wallet_name: str,
+    address: str,
+    asset_id: str | None = None,
+    password: str | None = None,
+) -> dict[str, Any]:
+    """
+    Sweep the entire L-BTC balance (or full balance of a Liquid asset) to one
+    address. Fee paid from the inputs; 0 sats of the targeted balance remain.
+
+    Args:
+        wallet_name: Name of the wallet
+        address: Destination Liquid address
+        asset_id: Optional asset id (hex). Omit for an L-BTC sweep.
+        password: Password to decrypt mnemonic (if encrypted at rest)
+
+    Returns:
+        txid: Transaction ID
+        address: Destination address
+        ticker: "L-BTC" or the resolved asset ticker
+        asset_id: Only set for asset sweeps
+    """
+    manager = get_manager()
+    txid = manager.sweep(wallet_name, address, asset_id, password)
+    result: dict[str, Any] = {"txid": txid, "address": address}
+    if asset_id:
+        result["asset_id"] = asset_id
+        result["ticker"] = resolve_asset_name(asset_id)
+    else:
+        result["ticker"] = "L-BTC"
+    return result
+
+
 def _parse_tx_input(tx_input: str) -> tuple[str, str]:
     """Parse a txid or Blockstream URL into (txid, network)."""
     # Try to match a Blockstream URL
@@ -652,6 +685,31 @@ def btc_send(
         "amount": amount,
         "address": address,
     }
+
+
+def btc_sweep(
+    wallet_name: str,
+    address: str,
+    fee_rate: int | None = None,
+    password: str | None = None,
+) -> dict[str, Any]:
+    """
+    Sweep the entire Bitcoin balance to one address. Fee paid from the inputs;
+    0 sats remain.
+
+    Args:
+        wallet_name: Name of the wallet
+        address: Destination Bitcoin address (bc1...)
+        fee_rate: Optional fee rate in sat/vB. Default: let BDK choose.
+        password: Password to decrypt mnemonic (if encrypted at rest)
+
+    Returns:
+        txid: Transaction ID
+        address: Destination address
+    """
+    btc = get_btc_manager()
+    txid = btc.sweep(wallet_name, address, fee_rate, password)
+    return {"txid": txid, "address": address}
 
 
 def unified_balance(wallet_name: str = "default") -> dict[str, Any]:
@@ -1806,6 +1864,7 @@ TOOLS = {
     "lw_transactions": lw_transactions,
     "lw_send": lw_send,
     "lw_send_asset": lw_send_asset,
+    "lw_sweep": lw_sweep,
     "lw_tx_status": lw_tx_status,
     "lw_list_wallets": lw_list_wallets,
     "lw_list_assets": lw_list_assets,
@@ -1814,6 +1873,7 @@ TOOLS = {
     "btc_address": btc_address,
     "btc_transactions": btc_transactions,
     "btc_send": btc_send,
+    "btc_sweep": btc_sweep,
     "btc_import_descriptor": btc_import_descriptor,
     "btc_export_descriptor": btc_export_descriptor,
     "unified_balance": unified_balance,

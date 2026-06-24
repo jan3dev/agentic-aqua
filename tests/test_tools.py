@@ -22,6 +22,7 @@ from aqua.tools import (
     get_manager,
     lw_address,
     lw_balance,
+    lw_sweep,
     lw_export_descriptor,
     lw_generate_mnemonic,
     lw_import_descriptor,
@@ -751,6 +752,178 @@ class TestSendAsset:
 
 
 # ---------------------------------------------------------------------------
+# lw_sweep  # Significance: 5 (Essential — prevents dust generation)
+# ---------------------------------------------------------------------------
+
+
+class TestSweep:
+    DEST_ADDRESS = "lq1qqvxk052kf3qtkxmrakx50a9gc3smqad2ync54hzntjt980kfej9kkfe0247rp5h4yzmdftsahhw64uy8pzfe7cpg4fgykm7cv"
+    FAKE_ASSET_ID = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+    # L-BTC policy asset on mainnet (matches WalletManager._get_policy_asset("mainnet"))
+    LBTC_POLICY_ASSET = "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d"
+
+    def _setup_sweep_mocks(self, isolated_manager, wallet_name, balance_map):
+        """Helper: set up mocks for sweep tests.
+
+        ``balance_map`` is the dict returned by the fake wollet.balance() —
+        keys are asset ids (hex), values are sat amounts.
+        """
+        mock_builder = MagicMock()
+        mock_pset = MagicMock()
+        mock_signed = MagicMock()
+        mock_tx = MagicMock()
+        mock_client = MagicMock()
+        mock_net = MagicMock()
+        mock_wollet = MagicMock()
+
+        mock_wollet.balance.return_value = balance_map
+        mock_net.tx_builder.return_value = mock_builder
+        # sweep() calls _get_policy_asset → str(net.policy_asset()); make
+        # str() yield the real L-BTC policy hex so the balance lookup hits.
+        mock_net.policy_asset.return_value = self.LBTC_POLICY_ASSET
+        mock_builder.finish.return_value = mock_pset
+        isolated_manager._signers[wallet_name].sign = MagicMock(return_value=mock_signed)
+        mock_signed.finalize.return_value = mock_tx
+        isolated_manager._wollets[wallet_name] = mock_wollet
+
+        return mock_builder, mock_client, mock_net, mock_wollet
+
+    def test_sweep_lbtc_calls_drain_lbtc_wallet_and_drain_lbtc_to(self, isolated_manager):
+        """L-BTC sweep uses LWK's native drain_lbtc_* APIs (not add_lbtc_recipient)."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="sweep_lbtc")
+        mock_builder, mock_client, mock_net, _ = self._setup_sweep_mocks(
+            isolated_manager, "sweep_lbtc", {self.LBTC_POLICY_ASSET: 50_000}
+        )
+        mock_client.broadcast.return_value = "sweep_lbtc_txid"
+
+        with (
+            patch.object(isolated_manager, "sync_wallet"),
+            patch.object(isolated_manager, "_get_network", return_value=mock_net),
+            patch.object(isolated_manager, "_get_client", return_value=mock_client),
+        ):
+            result = lw_sweep(wallet_name="sweep_lbtc", address=self.DEST_ADDRESS)
+
+        mock_builder.drain_lbtc_wallet.assert_called_once_with()
+        mock_builder.drain_lbtc_to.assert_called_once()
+        address_arg = mock_builder.drain_lbtc_to.call_args[0][0]
+        assert isinstance(address_arg, lwk.Address)
+        mock_builder.add_lbtc_recipient.assert_not_called()
+        mock_builder.add_recipient.assert_not_called()
+        assert result["txid"] == "sweep_lbtc_txid"
+        assert result["ticker"] == "L-BTC"
+        assert "asset_id" not in result
+
+    def test_sweep_asset_calls_add_recipient_with_full_balance(self, isolated_manager):
+        """Asset sweep sends the entire asset balance via add_recipient; the
+        L-BTC drain_lbtc_* primitives must NOT be called (L-BTC change is
+        intentionally left in the wallet for asset sweeps)."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="sweep_asset")
+        mock_builder, mock_client, mock_net, _ = self._setup_sweep_mocks(
+            isolated_manager,
+            "sweep_asset",
+            {self.LBTC_POLICY_ASSET: 5_000, self.FAKE_ASSET_ID: 12_345},
+        )
+        mock_client.broadcast.return_value = "sweep_asset_txid"
+
+        with (
+            patch.object(isolated_manager, "sync_wallet"),
+            patch.object(isolated_manager, "_get_network", return_value=mock_net),
+            patch.object(isolated_manager, "_get_client", return_value=mock_client),
+        ):
+            result = lw_sweep(
+                wallet_name="sweep_asset",
+                address=self.DEST_ADDRESS,
+                asset_id=self.FAKE_ASSET_ID,
+            )
+
+        mock_builder.add_recipient.assert_called_once()
+        call_args = mock_builder.add_recipient.call_args[0]
+        assert isinstance(call_args[0], lwk.Address)
+        assert call_args[1] == 12_345
+        assert call_args[2] == self.FAKE_ASSET_ID
+        mock_builder.drain_lbtc_wallet.assert_not_called()
+        mock_builder.drain_lbtc_to.assert_not_called()
+        assert result["asset_id"] == self.FAKE_ASSET_ID
+        assert result["txid"] == "sweep_asset_txid"
+
+    def test_sweep_normalizes_policy_asset_id_to_lbtc_path(self, isolated_manager):
+        """An explicit policy asset id is collapsed to the L-BTC sweep path."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="sweep_norm")
+        mock_builder, mock_client, mock_net, _ = self._setup_sweep_mocks(
+            isolated_manager, "sweep_norm", {self.LBTC_POLICY_ASSET: 1_000}
+        )
+        mock_client.broadcast.return_value = "ok"
+
+        with (
+            patch.object(isolated_manager, "sync_wallet"),
+            patch.object(isolated_manager, "_get_network", return_value=mock_net),
+            patch.object(isolated_manager, "_get_client", return_value=mock_client),
+        ):
+            lw_sweep(
+                wallet_name="sweep_norm",
+                address=self.DEST_ADDRESS,
+                asset_id=self.LBTC_POLICY_ASSET,
+            )
+
+        mock_builder.drain_lbtc_wallet.assert_called_once_with()
+        mock_builder.drain_lbtc_to.assert_called_once()
+        mock_builder.add_recipient.assert_not_called()
+
+    def test_sweep_zero_lbtc_balance_raises(self, isolated_manager):
+        """Empty L-BTC balance → cannot sweep."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="sweep_empty")
+        self._setup_sweep_mocks(isolated_manager, "sweep_empty", {self.LBTC_POLICY_ASSET: 0})
+
+        with patch.object(isolated_manager, "sync_wallet"):
+            with pytest.raises(ValueError, match="No L-BTC to sweep"):
+                lw_sweep(wallet_name="sweep_empty", address=self.DEST_ADDRESS)
+
+    def test_sweep_zero_asset_balance_raises(self, isolated_manager):
+        """Asset not present in wallet → cannot sweep that asset."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="sweep_no_asset")
+        self._setup_sweep_mocks(
+            isolated_manager, "sweep_no_asset", {self.LBTC_POLICY_ASSET: 10_000}
+        )
+
+        with patch.object(isolated_manager, "sync_wallet"):
+            with pytest.raises(ValueError, match="balance to sweep"):
+                lw_sweep(
+                    wallet_name="sweep_no_asset",
+                    address=self.DEST_ADDRESS,
+                    asset_id=self.FAKE_ASSET_ID,
+                )
+
+    def test_sweep_watch_only_raises(self, isolated_manager):
+        """Cannot sweep a watch-only wallet."""
+        net = lwk.Network.mainnet()
+        m = lwk.Mnemonic(TEST_MNEMONIC)
+        signer = lwk.Signer(m, net)
+        desc = str(signer.wpkh_slip77_descriptor())
+        lw_import_descriptor(descriptor=desc, wallet_name="wo_sweep")
+
+        with pytest.raises(ValueError, match="watch-only"):
+            lw_sweep(wallet_name="wo_sweep", address=self.DEST_ADDRESS)
+
+    def test_sweep_nonexistent_wallet_raises(self):
+        """Sweeping a non-existent wallet raises."""
+        with pytest.raises(ValueError, match="not found"):
+            lw_sweep(wallet_name="ghost", address=self.DEST_ADDRESS)
+
+    def test_sweep_encrypted_without_password_raises(self):
+        """Encrypted wallet without password → fail before reaching LWK."""
+        lw_import_mnemonic(
+            mnemonic=TEST_MNEMONIC,
+            wallet_name="sweep_enc",
+            password="pass123",
+        )
+        manager = get_manager()
+        manager._signers.pop("sweep_enc", None)
+
+        with pytest.raises(ValueError, match="[Pp]assword required"):
+            lw_sweep(wallet_name="sweep_enc", address=self.DEST_ADDRESS)
+
+
+# ---------------------------------------------------------------------------
 # WalletManager internal logic  # Significance: 4 (Important)
 # ---------------------------------------------------------------------------
 
@@ -823,6 +996,7 @@ class TestToolRegistry:
             "lw_transactions",
             "lw_send",
             "lw_send_asset",
+            "lw_sweep",
             "lw_list_wallets",
             "lw_list_assets",
             "lw_tx_status",
@@ -830,6 +1004,7 @@ class TestToolRegistry:
             "btc_address",
             "btc_transactions",
             "btc_send",
+            "btc_sweep",
             "unified_balance",
             "lightning_receive",
             "lightning_send",

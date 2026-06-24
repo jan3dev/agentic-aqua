@@ -34,7 +34,7 @@ dependencies = [
     "pillow>=10.0",
     "zxing-cpp>=2.2",
     "qrcode[pil]>=7.0",
-    "wallycore>=1.5.3",
+    "wallycore>=1.5.4",
 ]
 
 [project.optional-dependencies]

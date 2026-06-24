@@ -102,6 +102,8 @@ async def test_disabled_tool_unknown_on_call_tool():
 
 def test_cli_help_omits_disabled(temp_storage):
     """`aqua liquid --help` omits commands whose mapped MCP tool is disabled."""
+    import re
+
     enabled = dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)
     enabled["lw_balance"] = False
     temp_storage.save_config(Config(enabled_tools=enabled))
@@ -113,7 +115,10 @@ def test_cli_help_omits_disabled(temp_storage):
     runner = CliRunner()
     result = runner.invoke(fresh_cli, ["liquid", "--help"])
     assert result.exit_code == 0
-    assert "balance" not in result.output
+    # Match the Click-rendered command listing only (indented + whitespace
+    # after the name), so help text in OTHER commands' descriptions that
+    # happens to contain the word "balance" doesn't trip this check.
+    assert not re.search(r"^\s+balance\s", result.output, re.MULTILINE)
 
 
 def test_cli_disabled_command_exits_2(temp_storage):
