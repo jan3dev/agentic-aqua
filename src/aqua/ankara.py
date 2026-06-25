@@ -12,6 +12,7 @@ Single home for everything that talks to JAN3's backend (AQUA's Ankara host,
       imports ``wapupay`` (one-way dependency).
 """
 
+import base64
 import json
 import os
 import re
@@ -31,8 +32,12 @@ WAPUPAY_ACCOUNT_PATH = "/api/v1/wapupay/account/"
 USER_AGENT = "agentic-aqua"
 HTTP_TIMEOUT_SECONDS = 30.0
 
-# Bank-PII / secret fields that must never reach the logs. Shared by the JAN3
-# auth surface and (via import) WapuPay's business client.
+
+class SessionExpiredError(ValueError):
+    """Access or refresh JWT was rejected by Ankara (HTTP 401);
+    triggers token refresh and subclasses ValueError."""
+
+# Bank-PII / secret fields that must never reach the logs.
 _SENSITIVE_LOG_FIELDS = frozenset(
     {
         "alias",
@@ -176,12 +181,49 @@ def _extract_error_message(body: str) -> str:
             if isinstance(val, str) and val:
                 return _scrub_text(val[:200])
         # Redact nested validation errors before logging.
- 
+
         details = parsed.get("details")
         if details:
             return _scrub_text(json.dumps(_redact(details))[:200])
         return _scrub_text(json.dumps(_redact(parsed))[:200])
     return _scrub_text(str(parsed)[:200])
+
+
+# Treat an access token within this margin of its `exp` as already expired, to
+# cover clock skew and the latency of the call it is about to authorize.
+_JWT_EXP_SKEW_SECONDS = 30
+
+
+def _jwt_exp(token: str) -> Optional[int]:
+    """Best-effort read of a JWT's ``exp`` claim (no signature verification).
+
+    Returns the Unix expiry timestamp, or ``None`` if the token is malformed or
+    carries no ``exp`` (caller should then treat it as needing a live check).
+    """
+    try:
+        payload_b64 = token.split(".")[1]
+        padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+    except (AttributeError, IndexError, ValueError, TypeError):
+        return None
+    exp = payload.get("exp") if isinstance(payload, dict) else None
+    try:
+        return int(exp) if exp is not None else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _access_token_expired(token: str, *, now: Optional[float] = None) -> bool:
+    """Whether an access JWT is at/past its ``exp`` (with skew margin).
+
+    An unreadable token (no decodable ``exp``) is treated as expired so the
+    caller falls back to a live refresh rather than trusting it blindly.
+    """
+    exp = _jwt_exp(token)
+    if exp is None:
+        return True
+    current = now if now is not None else datetime.now(UTC).timestamp()
+    return exp <= current + _JWT_EXP_SKEW_SECONDS
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +269,7 @@ class JAN3AuthClient:
         access_token: Optional[str] = None,
     ) -> Any:
         """HTTP request, parse JSON. Raises ValueError on error."""
-   
+
         data = json.dumps(json_body).encode() if json_body is not None else None
         headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
         if data is not None:
@@ -255,6 +297,13 @@ class JAN3AuthClient:
             except Exception:
                 pass
             detail = _extract_error_message(body)
+            if e.code == 401:
+                # Token rejected — recoverable via refresh; raise the neutral
+                # signal so the manager can refresh-then-retry.
+                msg = "AQUA session token rejected (401)"
+                if detail:
+                    msg += f": {detail}"
+                raise SessionExpiredError(msg) from e
             msg = f"AQUA backend request failed ({e.code} {method})"
             if detail:
                 msg += f": {detail}"
@@ -280,12 +329,26 @@ class JAN3AuthClient:
             json_body={"email": email, "otp_code": otp_code},
         ) or {}
 
+    def refresh_token(self, refresh: str) -> dict:
+        """POST /auth/refresh/ — exchange a refresh JWT for a fresh ``{access}``.
+
+        Returns the backend payload, which always carries a new ``access`` and,
+        when token rotation is enabled, a new ``refresh``. A rejected/expired
+        refresh token surfaces as ``SessionExpiredError`` (401) from
+        ``_api_request``.
+        """
+        return self._api_request(
+            "POST",
+            f"{self.auth_base_url}/refresh/",
+            json_body={"refresh": refresh},
+        ) or {}
+
     def provision_wapupay_account(self, access_token: str) -> dict:
         """
         POST /api/v1/wapupay/account/ — creates a WapuPay user and returns its API key.
         Authenticates with AQUA JWT. Raises ValueError on error or unreachable backend.
         """
-   
+
         url = f"{self.aqua_backend_url}{WAPUPAY_ACCOUNT_PATH}"
         headers = {
             "User-Agent": USER_AGENT,
@@ -306,7 +369,11 @@ class JAN3AuthClient:
                     ) from e
         except urllib.error.HTTPError as e:
             if e.code == 401:
-                raise ValueError(
+                # Recoverable via refresh; raise the neutral signal so the
+                # manager can refresh-then-retry before telling the user to
+                # log in again. The message is only seen on a direct client
+                # call (no manager wrapping it).
+                raise SessionExpiredError(
                     "AQUA session invalid or expired — run aqua_login / aqua_verify again."
                 ) from e
             if e.code == 403:
@@ -396,15 +463,46 @@ class JAN3AccountManager:
         return {"logged_out": existed}
 
     def session_status(self) -> dict:
-        """Report whether a local AQUA session exists (no secrets returned)."""
+        """Report the AQUA session and its validity (no secrets returned).
+
+        Checks the access token's ``exp`` locally first; only if it has expired
+        does it hit the network to renew via the refresh token (which also
+        persists the fresh access). This keeps a status check cheap and avoids
+        minting a new access token on every call while the current one is still
+        good. ``valid``:
+
+        * ``True``  — access token still valid, or successfully refreshed.
+        * ``False`` — access expired and the refresh token was rejected; the
+          user must log in again.
+        * ``None``  — access expired but the backend was unreachable, so
+          validity could not be confirmed.
+        """
         session = self.storage.load_jan3_session()
         if not session:
             return {"logged_in": False}
-        return {
+        base = {
             "logged_in": True,
             "email": session.email,
             "created_at": session.created_at,
         }
+        if not _access_token_expired(session.access):
+            # Still valid — no network call, no token rotation.
+            return {**base, "valid": True}
+        # Access expired (or unreadable) — confirm the session can be renewed.
+        try:
+            self._refresh_session(session)
+            return {**base, "valid": True}
+        except SessionExpiredError:
+            return {
+                **base,
+                "valid": False,
+                "message": (
+                    "AQUA session expired — run aqua_login then aqua_verify again."
+                ),
+            }
+        except ValueError as e:
+            # Network/backend failure — don't claim the session is invalid.
+            return {**base, "valid": None, "message": f"Could not verify session: {e}"}
 
     def require_session(self) -> JAN3Session:
         """Return the stored AQUA session, or raise if the user is not logged in."""
@@ -415,15 +513,73 @@ class JAN3AccountManager:
             )
         return session
 
+    def _refresh_session(self, session: JAN3Session) -> JAN3Session:
+        """Mint a new access token from the stored refresh token; persist + return.
+
+        Rotation-aware: persists a new ``refresh`` token if the backend returns
+        one, otherwise keeps the existing one. Raises ``SessionExpiredError`` if
+        no refresh token is stored or the backend rejects it (so the caller can
+        fall through to a "log in again" message).
+        """
+        if not session.refresh:
+            raise SessionExpiredError("No refresh token stored for this AQUA session.")
+        tokens = self.client.refresh_token(session.refresh) or {}
+        new_access = tokens.get("access")
+        if not new_access or not str(new_access).strip():
+            raise SessionExpiredError(
+                "AQUA refresh did not return a new access token."
+            )
+        updated = JAN3Session(
+            email=session.email,
+            access=str(new_access).strip(),
+            # ROTATE_REFRESH_TOKENS may hand back a fresh refresh token; if not,
+            # the existing one stays valid.
+            refresh=str(tokens.get("refresh") or session.refresh),
+            created_at=session.created_at,
+        )
+        self.storage.save_jan3_session(updated)
+        return updated
+
+    def _with_auth_retry(self, call):
+        """Run ``call(access_token)``; on a 401, refresh once and retry once.
+
+        Centralizes the access-token fallback for every authenticated AQUA call:
+        attempt with the current access token, and if it is rejected
+        (``SessionExpiredError``) transparently refresh the JWT and retry a
+        single time. Only if the refresh itself fails (or the retry is still
+        rejected) does the user get a clear "log in again" ``ValueError``.
+        """
+        session = self.require_session()
+        try:
+            return call(session.access)
+        except SessionExpiredError:
+            try:
+                session = self._refresh_session(session)
+            except SessionExpiredError as e:
+                raise ValueError(
+                    "AQUA session expired and could not be refreshed — "
+                    "run aqua_login then aqua_verify again."
+                ) from e
+            try:
+                return call(session.access)
+            except SessionExpiredError as e:
+                raise ValueError(
+                    "AQUA session still invalid after refresh — "
+                    "run aqua_login then aqua_verify again."
+                ) from e
+
     def provision_wapupay_token(self) -> str:
         """Provision a fresh WapuPay API key from the AQUA backend and return it.
 
         Requires a prior AQUA login (``aqua_login`` → ``aqua_verify``): the call
-        is authorized with that JWT. The AQUA backend issues a fresh key on EVERY
-        call and invalidates any key previously issued for the account.
+        is authorized with that JWT, and a rejected access token is refreshed
+        transparently (see ``_with_auth_retry``). The AQUA backend issues a fresh
+        key on EVERY call and invalidates any key previously issued for the
+        account.
         """
-        session = self.require_session()
-        resp = self.client.provision_wapupay_account(session.access)
+        resp = self._with_auth_retry(
+            lambda access: self.client.provision_wapupay_account(access)
+        )
         token = (resp or {}).get("token")
         if not token or not str(token).strip():
             raise ValueError(

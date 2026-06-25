@@ -18,6 +18,9 @@ from aqua.ankara import (
     JAN3AccountManager,
     JAN3AuthClient,
     JAN3Session,
+    SessionExpiredError,
+    _access_token_expired,
+    _jwt_exp,
 )
 from aqua.storage import Storage
 from aqua.wallet import WalletManager
@@ -330,6 +333,10 @@ class FakeAuthClient:
     def _yield(self, name, *args):
         self.calls.append((name, args))
         val = self.responses.get(name)
+        # A list scripts a sequence of results across repeated calls (e.g. a 401
+        # then a success after refresh).
+        if isinstance(val, list):
+            val = val.pop(0)
         if isinstance(val, Exception):
             raise val
         return val if val is not None else {}
@@ -339,6 +346,9 @@ class FakeAuthClient:
 
     def verify(self, email, otp_code):
         return self._yield("verify", email, otp_code)
+
+    def refresh_token(self, refresh):
+        return self._yield("refresh_token", refresh)
 
     def provision_wapupay_account(self, access_token):
         return self._yield("provision_wapupay_account", access_token)
@@ -354,6 +364,16 @@ def logged_in(storage, email="user@example.com", access="acc.tok", refresh="ref.
     storage.save_jan3_session(
         JAN3Session(email=email, access=access, refresh=refresh, created_at="t0")
     )
+
+
+def _jwt_with_exp(exp):
+    """Build an unsigned JWT carrying the given ``exp`` claim (test fixture)."""
+    import base64
+
+    def seg(obj):
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+    return f"{seg({'alg': 'HS256', 'typ': 'JWT'})}.{seg({'exp': exp})}.sig"
 
 
 # ---------------------------------------------------------------------------
@@ -420,14 +440,81 @@ def test_verify_without_tokens_raises_and_saves_nothing(jan3_storage):
 
 
 def test_logout_and_session_status(jan3_storage):
-    m = make_jan3(jan3_storage, FakeAuthClient())
+    # session_status is a live check: it refreshes to confirm the session works.
+    fake = FakeAuthClient({"refresh_token": {"access": "fresh.acc"}})
+    m = make_jan3(jan3_storage, fake)
     assert m.session_status() == {"logged_in": False}
     logged_in(jan3_storage, email="x@y.com")
     st = m.session_status()
     assert st["logged_in"] is True and st["email"] == "x@y.com"
+    assert st["valid"] is True
     assert "access" not in st and "refresh" not in st  # no secrets leaked
     assert m.logout()["logged_out"] is True
     assert jan3_storage.load_jan3_session() is None
+
+
+def test_session_status_live_valid_persists_rotated_tokens(jan3_storage):
+    # A successful live check persists the rotated access/refresh.
+    fake = FakeAuthClient(
+        {"refresh_token": {"access": "rot.acc", "refresh": "rot.ref"}}
+    )
+    m = make_jan3(jan3_storage, fake)
+    logged_in(jan3_storage, access="old.acc", refresh="old.ref")
+    st = m.session_status()
+    assert st["valid"] is True
+    sess = jan3_storage.load_jan3_session()
+    assert sess.access == "rot.acc" and sess.refresh == "rot.ref"
+    assert fake.calls == [("refresh_token", ("old.ref",))]
+
+
+def test_session_status_expired_when_refresh_rejected(jan3_storage):
+    fake = FakeAuthClient({"refresh_token": SessionExpiredError("401")})
+    m = make_jan3(jan3_storage, fake)
+    logged_in(jan3_storage)
+    st = m.session_status()
+    assert st["logged_in"] is True and st["valid"] is False
+    assert "aqua_login" in st["message"]
+
+
+def test_session_status_unknown_on_network_error(jan3_storage):
+    fake = FakeAuthClient({"refresh_token": ValueError("AQUA backend unreachable")})
+    m = make_jan3(jan3_storage, fake)
+    logged_in(jan3_storage, access=_jwt_with_exp(1_000_000_000))  # long expired
+    st = m.session_status()
+    assert st["logged_in"] is True and st["valid"] is None
+    assert "Could not verify" in st["message"]
+
+
+def test_session_status_valid_access_skips_refresh(jan3_storage):
+    # A still-valid access token reports valid WITHOUT any network call/rotation.
+    fake = FakeAuthClient({"refresh_token": {"access": "should.not.be.used"}})
+    m = make_jan3(jan3_storage, fake)
+    logged_in(jan3_storage, access=_jwt_with_exp(9_999_999_999))  # far future
+    st = m.session_status()
+    assert st["valid"] is True
+    assert fake.calls == []  # exp checked locally, refresh never called
+
+
+# ---------------------------------------------------------------------------
+# JWT expiry helpers
+# ---------------------------------------------------------------------------
+
+
+def test_jwt_exp_reads_claim_and_handles_garbage():
+    assert _jwt_exp(_jwt_with_exp(1782677992)) == 1782677992
+    assert _jwt_exp("not-a-jwt") is None
+    assert _jwt_exp("only.two") is None  # missing payload segment is unreadable
+    assert _jwt_exp("") is None
+
+
+def test_access_token_expired_uses_skew():
+    now = 1_000_000.0
+    # Past exp -> expired; comfortably future -> not; within skew window -> expired.
+    assert _access_token_expired(_jwt_with_exp(999_000), now=now) is True
+    assert _access_token_expired(_jwt_with_exp(2_000_000), now=now) is False
+    assert _access_token_expired(_jwt_with_exp(int(now) + 10), now=now) is True
+    # Unreadable token is treated as expired (fall back to live refresh).
+    assert _access_token_expired("garbage", now=now) is True
 
 
 # ---------------------------------------------------------------------------
@@ -521,5 +608,121 @@ def test_provision_client_unreachable():
         with pytest.raises(ValueError) as ei:
             client.provision_wapupay_account("jwt")
     assert "unreachable" in str(ei.value).lower()
+
+
+def test_provision_client_401_is_session_expired():
+    # A 401 is a recoverable signal (SessionExpiredError), not a generic error,
+    # so the manager can refresh-then-retry. Still a ValueError subclass.
+    client = JAN3AuthClient(aqua_backend_url="http://h")
+    with patch(
+        "aqua.ankara.urllib.request.urlopen",
+        side_effect=_http_error(401, '{"detail": "expired"}'),
+    ):
+        with pytest.raises(SessionExpiredError):
+            client.provision_wapupay_account("expired")
+
+
+# ---------------------------------------------------------------------------
+# JAN3AuthClient: refresh token
+# ---------------------------------------------------------------------------
+
+
+def test_client_refresh_token_target():
+    # refresh hits the custom /api/v1/auth/refresh/ with the refresh token body.
+    client = JAN3AuthClient()
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["body"] = json.loads(req.data)
+        return _mock_resp({"access": "new.acc"})
+
+    with patch("aqua.ankara.urllib.request.urlopen", side_effect=fake_urlopen):
+        out = client.refresh_token("the.refresh.tok")
+    assert out == {"access": "new.acc"}
+    assert seen["url"] == f"{AUTH_BASE_URL}/refresh/"
+    assert seen["body"] == {"refresh": "the.refresh.tok"}
+
+
+def test_client_refresh_token_401_is_session_expired():
+    client = JAN3AuthClient()
+    with patch(
+        "aqua.ankara.urllib.request.urlopen",
+        side_effect=_http_error(401, '{"detail": "token not valid"}'),
+    ):
+        with pytest.raises(SessionExpiredError):
+            client.refresh_token("dead.refresh")
+
+
+# ---------------------------------------------------------------------------
+# JAN3AccountManager: refresh + auth-retry fallback
+# ---------------------------------------------------------------------------
+
+
+def test_refresh_session_keeps_old_refresh_when_not_rotated(jan3_storage):
+    # No rotated refresh in the response -> the stored one is preserved.
+    fake = FakeAuthClient({"refresh_token": {"access": "new.acc"}})
+    m = make_jan3(jan3_storage, fake)
+    logged_in(jan3_storage, access="old.acc", refresh="keep.ref")
+    updated = m._refresh_session(jan3_storage.load_jan3_session())
+    assert updated.access == "new.acc" and updated.refresh == "keep.ref"
+    assert jan3_storage.load_jan3_session().access == "new.acc"
+
+
+def test_refresh_session_no_refresh_token_raises(jan3_storage):
+    m = make_jan3(jan3_storage, FakeAuthClient())
+    sess = JAN3Session(email="x@y.com", access="a", refresh="", created_at="t0")
+    with pytest.raises(SessionExpiredError):
+        m._refresh_session(sess)
+
+
+def test_provision_token_refreshes_and_retries_on_401(jan3_storage):
+    # First provision call 401s; manager refreshes, then the retry succeeds with
+    # the new access token.
+    fake = FakeAuthClient(
+        {
+            "provision_wapupay_account": [
+                SessionExpiredError("401"),
+                {"token": "WapuKey_after_refresh"},
+            ],
+            "refresh_token": {"access": "fresh.acc", "refresh": "fresh.ref"},
+        }
+    )
+    m = make_jan3(jan3_storage, fake)
+    logged_in(jan3_storage, access="stale.acc", refresh="good.ref")
+    token = m.provision_wapupay_token()
+    assert token == "WapuKey_after_refresh"
+    # Order: stale access -> refresh -> retry with the fresh access.
+    assert fake.calls == [
+        ("provision_wapupay_account", ("stale.acc",)),
+        ("refresh_token", ("good.ref",)),
+        ("provision_wapupay_account", ("fresh.acc",)),
+    ]
+    # Rotated tokens persisted.
+    assert jan3_storage.load_jan3_session().access == "fresh.acc"
+
+
+def test_provision_token_relogin_when_refresh_fails(jan3_storage):
+    # Access rejected AND refresh rejected -> a clear "log in again" ValueError.
+    fake = FakeAuthClient(
+        {
+            "provision_wapupay_account": SessionExpiredError("401"),
+            "refresh_token": SessionExpiredError("401"),
+        }
+    )
+    m = make_jan3(jan3_storage, fake)
+    logged_in(jan3_storage)
+    with pytest.raises(ValueError) as ei:
+        m.provision_wapupay_token()
+    assert "aqua_login" in str(ei.value)
+
+
+def test_provision_token_no_retry_on_success(jan3_storage):
+    # Happy path never touches refresh.
+    fake = FakeAuthClient({"provision_wapupay_account": {"token": "k"}})
+    m = make_jan3(jan3_storage, fake)
+    logged_in(jan3_storage, access="good.acc")
+    assert m.provision_wapupay_token() == "k"
+    assert fake.calls == [("provision_wapupay_account", ("good.acc",))]
 
 
