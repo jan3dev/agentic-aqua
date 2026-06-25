@@ -333,8 +333,7 @@ class FakeAuthClient:
     def _yield(self, name, *args):
         self.calls.append((name, args))
         val = self.responses.get(name)
-        # A list scripts a sequence of results across repeated calls (e.g. a 401
-        # then a success after refresh).
+        # A list scripts a response sequence, e.g. a 401 then a success after refresh.
         if isinstance(val, list):
             val = val.pop(0)
         if isinstance(val, Exception):
@@ -611,8 +610,7 @@ def test_provision_client_unreachable():
 
 
 def test_provision_client_401_is_session_expired():
-    # A 401 is a recoverable signal (SessionExpiredError), not a generic error,
-    # so the manager can refresh-then-retry. Still a ValueError subclass.
+    # 401 → SessionExpiredError (recoverable, ValueError subclass) so the manager can retry.
     client = JAN3AuthClient(aqua_backend_url="http://h")
     with patch(
         "aqua.ankara.urllib.request.urlopen",
@@ -677,8 +675,7 @@ def test_refresh_session_no_refresh_token_raises(jan3_storage):
 
 
 def test_provision_token_refreshes_and_retries_on_401(jan3_storage):
-    # First provision call 401s; manager refreshes, then the retry succeeds with
-    # the new access token.
+    # First provision 401s; manager refreshes and retries with the fresh token.
     fake = FakeAuthClient(
         {
             "provision_wapupay_account": [
