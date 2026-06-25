@@ -1309,7 +1309,7 @@ def wapupay_exchange_rates() -> dict[str, Any]:
 
 def wapupay_quote(
     amount_ars: str,
-    type: str = "fiat_transfer",
+    type: str = "fast_fiat_transfer",
     alias: str | None = None,
 ) -> dict[str, Any]:
     """Preview the USDT cost, fee, and rate for an ARS payment (no order created).
@@ -1320,7 +1320,14 @@ def wapupay_quote(
 
     Args:
         amount_ars: amount to pay in Argentine pesos (decimal string, e.g. "10000").
-        type: "fiat_transfer" (standard) or "fast_fiat_transfer" (faster, higher fee).
+        type: transfer speed (default "fast_fiat_transfer"). Explain the trade-off
+            to the user:
+            - "fast_fiat_transfer" (default, higher fee): prioritized payment.
+              Completes in ~10 minutes to 1 hour during daytime. NOT instant.
+            - "fiat_transfer" (standard, lower fee): takes 3 to 12 hours. Recommend
+              this ONLY when there is no rush, or when paying at night or on
+              weekends — a payer will pick up the transaction the next
+              day anyway, so the speed premium buys nothing.
         alias: recipient bank alias / CBU / CVU (optional; enables alias validation).
 
     Returns:
@@ -1332,7 +1339,7 @@ def wapupay_quote(
 def wapupay_create_order(
     amount_ars: str,
     alias: str,
-    type: str = "fiat_transfer",
+    type: str = "fast_fiat_transfer",
     receiver_name: str | None = None,
     refund_address: str | None = None,
     wallet_name: str = "default",
@@ -1355,7 +1362,14 @@ def wapupay_create_order(
     Args:
         amount_ars: amount to pay in Argentine pesos (decimal string, e.g. "10000").
         alias: recipient bank alias / CBU / CVU.
-        type: "fiat_transfer" or "fast_fiat_transfer".
+        type: transfer speed (default "fast_fiat_transfer"). Explain the trade-off
+            to the user before creating the order:
+            - "fast_fiat_transfer" (default, higher fee): prioritized payment.
+              Completes in ~10 minutes to 1 hour during daytime. NOT instant.
+            - "fiat_transfer" (standard, lower fee): takes 3 to 12 hours. Recommend
+              this ONLY when there is no rush, or when paying at night or on
+              weekends — a payer will pick up the transaction the next
+              day anyway, so the speed premium buys nothing.
         receiver_name: recipient name (optional).
         refund_address: Liquid mainnet address (lq1…/ex1…/VJL…) for a refund if funding
             cannot execute (optional); validated before the order is created.
