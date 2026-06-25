@@ -1400,6 +1400,48 @@ TOOL_SCHEMAS = {
             "required": ["email"],
         },
     },
+    "jan3_purchase_ln_username": {
+        "description": (
+            "Purchase / update the Lightning username for a JAN3 account. "
+            "Requires an active session (jan3_login_start + jan3_login_complete "
+            "first). Creates a payment-request order, crafts and signs a Liquid "
+            "tx for the exact amount, and submits it. The server applies the "
+            "username update atomically with the broadcast."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "format": "email",
+                    "description": "JAN3 account email — session must already exist.",
+                },
+                "ln_username": {
+                    "type": "string",
+                    "description": (
+                        "Desired Lightning username. 4–64 chars, lowercase "
+                        "letters and digits, with at most one dot."
+                    ),
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Liquid wallet to pay from.",
+                    "default": "default",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Decrypts the wallet mnemonic if encrypted at rest.",
+                },
+                "asset": {
+                    "type": "string",
+                    "enum": ["L-BTC", "USDt"],
+                    "default": "L-BTC",
+                    "description": "Asset to pay the request with.",
+                },
+            },
+            "required": ["email", "ln_username"],
+        },
+    },
 }
 
 
