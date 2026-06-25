@@ -140,6 +140,7 @@ class Storage:
         self.wapupay_api_key_path = self.wapupay_dir / "api_key.json"
         self.jan3_dir = self.base_dir / "jan3"
         self.jan3_session_path = self.jan3_dir / "session.json"
+        self.jan3_accounts_dir = self.base_dir / "jan3_accounts"
         self.qr_dir = self.base_dir / "qr"
         self.config_path = self.base_dir / "config.json"
         self._ensure_dirs()
@@ -174,6 +175,8 @@ class Storage:
         restrict_permissions(self.wapupay_orders_dir, 0o700)
         self.jan3_dir.mkdir(exist_ok=True, mode=0o700)
         restrict_permissions(self.jan3_dir, 0o700)
+        self.jan3_accounts_dir.mkdir(exist_ok=True, mode=0o700)
+        restrict_permissions(self.jan3_accounts_dir, 0o700)
         self.qr_dir.mkdir(exist_ok=True, mode=0o700)
         restrict_permissions(self.qr_dir, 0o700)
 

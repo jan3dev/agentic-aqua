@@ -431,3 +431,62 @@ class WalletManager:
 
         txid = client.broadcast(tx)
         return str(txid)
+
+    def craft_raw_tx(
+        self,
+        wallet_name: str,
+        address: str,
+        amount: int,
+        asset_id: Optional[str] = None,
+        password: Optional[str] = None,
+    ) -> str:
+        """Build, sign, finalize a Liquid tx. Returns hex; does NOT broadcast.
+
+        Used when a third party (JAN3 Ankara backend, etc.) wants to broadcast
+        on our behalf. Branches on whether the destination address is
+        confidential (blinded) or explicit (unblinded), since LWK's tx builder
+        exposes different methods for each.
+        """
+        wallet = self.storage.load_wallet(wallet_name)
+        if not wallet:
+            raise ValueError(f"Wallet '{wallet_name}' not found")
+
+        if wallet.watch_only:
+            raise ValueError("Cannot sign with watch-only wallet")
+
+        if amount <= 0:
+            raise ValueError("Amount must be positive")
+
+        if wallet_name not in self._signers:
+            if not wallet.encrypted_mnemonic:
+                raise ValueError("No mnemonic available for signing")
+            needs_password = self.storage.requires_user_password(wallet.encrypted_mnemonic)
+            if needs_password and not password:
+                raise ValueError("Password required to decrypt mnemonic")
+            self.load_wallet(wallet_name, password)
+
+        signer = self._signers[wallet_name]
+        wollet = self._get_wollet(wallet_name)
+        net = self._get_network(wallet.network)
+        policy_asset_id = self._get_policy_asset(wallet.network)
+
+        self.sync_wallet(wallet_name)
+
+        builder = net.tx_builder()
+        lwk_address = lwk.Address(address)
+        effective_asset_id = asset_id or policy_asset_id
+
+        if lwk_address.is_blinded():
+            if effective_asset_id == policy_asset_id:
+                builder.add_lbtc_recipient(lwk_address, amount)
+            else:
+                builder.add_recipient(lwk_address, amount, effective_asset_id)
+        else:
+            builder.add_explicit_recipient(lwk_address, amount, effective_asset_id)
+
+        pset = builder.finish(wollet)
+        # Populate wallet-aware details (e.g. input/output values) so callers
+        # can introspect the PSET before handing the hex off.
+        pset = wollet.add_details(pset)
+        signed_pset = signer.sign(pset)
+        return str(signed_pset.finalize())
