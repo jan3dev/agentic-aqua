@@ -1497,6 +1497,26 @@ SIDESHIFT (custodial cross-chain swaps):
 - Memo networks (BNB Beacon, Stellar, etc.) require a memo on either
   the deposit or settle side — pass settle_memo / refund_memo when prompted.
 
+WAPUPAY (Argentine fiat payouts, funded with USDT on Liquid):
+- WHAT IT IS: WapuPay is NOT an exchange. It is an automated peer-to-peer (P2P)
+  platform — it finds a trusted P2P payer who settles the payment in Argentine
+  pesos (ARS) on the user's behalf (think "Uber for P2P"). The user funds with
+  USDT on Liquid; a matched payer pushes the pesos to the recipient's bank account.
+  If the user asks "what is WapuPay / what can I do with it", explain this; the full
+  blurb is the aqua://docs/wapupay resource.
+- FLOW: wapupay_quote (preview cost) → wapupay_create_order (returns a Liquid USDT
+  address + amount) → pay it with lw_send_asset → WapuPay settles the ARS payout.
+  This never auto-pays; always confirm the quote with the user first.
+  After the user pays the Liquid USDT address, WapuPay orchestrate the operation with a P2P payer that settles the ARS.
+  Offer the user to check the status of the order with `wapupay_order_status` and the executed_transaction_id with `wapupay_transaction`,
+  the executed_transaction cointain the details of the fiat transfer that the user wants to know about.
+- wapupay_exchange_rates is public (use USDT/ARS ignore the others rates, no key). The order/transaction tools
+  need a WapuPay API key (env WAPUPAY_API_KEY or wapupay_provision_account).
+- TRANSFER SPEED: type defaults to fast_fiat_transfer (prioritized, ~10 min–1 h in
+  daytime, higher fee — NOT instant). fiat_transfer is standard (3–12 h, lower fee);
+  recommend it only when there's no rush, or at night/weekends since a payer picks
+  it up the next day. Explain this trade-off to the user.
+
 WATCH-ONLY WALLETS:
 - For a Bitcoin-only watch wallet: btc_import_descriptor (BIP84 wpkh xpub).
 - For a Liquid-only watch wallet: lw_import_descriptor (CT descriptor).
@@ -2360,6 +2380,12 @@ Please:
                 description="How to safely manage wallets and private keys",
                 mimeType="text/markdown",
             ),
+            Resource(
+                uri="aqua://docs/wapupay",
+                name="What is WapuPay?",
+                description="WapuPay overview: automated P2P ARS payouts funded with USDT on Liquid",
+                mimeType="text/markdown",
+            ),
         ]
 
     @server.read_resource()
@@ -2550,6 +2576,10 @@ If you have:
 - ✅ Mnemonic (encrypted or plaintext) → Full recovery possible
 - ✅ Descriptor only → Watch-only monitoring
 - ❌ Nothing → **Funds are permanently lost**"""
+
+        elif uri == "aqua://docs/wapupay":
+            from .wapupay import WAPUPAY_ABOUT
+            return WAPUPAY_ABOUT
 
         raise ValueError(f"Unknown resource: {uri}")
 

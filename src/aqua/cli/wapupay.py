@@ -22,7 +22,7 @@ from ..tools import (
     wapupay_transaction,
     wapupay_transactions,
 )
-from ..wapupay import validate_liquid_refund_address
+from ..wapupay import WAPUPAY_ABOUT, validate_liquid_refund_address
 from .output import run_tool
 
 _TRANSFER_TYPE = click.Choice(["fiat_transfer", "fast_fiat_transfer"])
@@ -36,6 +36,12 @@ def wapupay():
     `create-order` returns a Liquid USDT address to fund — pay it with
     `aqua liquid send-asset` and WapuPay settles the pesos.
     """
+
+
+@wapupay.command("about")
+def about():
+    """Explain what WapuPay is and what you can do with it."""
+    click.echo(WAPUPAY_ABOUT)
 
 
 @wapupay.command("rates")

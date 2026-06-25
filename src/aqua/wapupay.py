@@ -81,6 +81,56 @@ CURRENCY_TAKEN_USDT = "USDT"
 # WapuPay direct-fiat transfer types the user can choose between.
 TRANSFER_TYPES = ("fiat_transfer", "fast_fiat_transfer")
 
+# Canonical user-facing explanation of what WapuPay is. Single source of truth:
+# reused by the MCP resource (aqua://docs/wapupay) and the CLI `wapupay about`
+# command so the agent can answer "what is WapuPay? / what can I do with it?"
+# with consistent wording across surfaces.
+WAPUPAY_ABOUT = """\
+# What is WapuPay?
+
+WapuPay lets you pay an Argentine bank account in **pesos (ARS)**, funding the
+payout with **USDT on the Liquid network**.
+
+**It is NOT an exchange.** WapuPay is an *automated peer-to-peer (P2P) platform*:
+it finds a trusted P2P payer who settles the payment in Argentine pesos on your
+behalf — think of it as an "Uber for P2P". You send USDT on Liquid; a matched
+payer pushes the pesos to the recipient's bank account.
+
+WapuPay operates as an escrow:
+Wapu can hold USDT during a transaction to ensure the exchange proceeds safely for
+both parties, preventing assets from being lost in the process.
+
+## What you can do
+
+- Check the USDT/ARS exchange rate (`wapupay_exchange_rates` / `aqua wapupay rates`).
+- Preview the cost of a payment without committing (`wapupay_quote` / `aqua wapupay quote`).
+- Create an order and get a Liquid USDT address to fund (`wapupay_create_order` /
+  `aqua wapupay create-order`); pay that address and WapuPay orchestrates the operation with a P2P payer that settles the ARS.
+- Track your orders/transactions and check your monthly spending limit.
+- Where can I send money? To a bank account, alias, CBU, CVU, MercadoPago, Wapu ID, or USDT address, depending on operational availability.
+- What countries does it work in? WapuPay is designed for Argentina. Available methods, processing times, and fees may vary depending on the transaction.
+- What is the spending limit? The spending limit varies by user and how long they have been operating on the platform — the more you transact, the higher your monthly limit grows. You can check your monthly limit with spending_limit. Currently, the starting limit for all new users is $1,000 USD per month.
+
+## Transfer speed
+
+- **fast_fiat_transfer** (default, higher fee): prioritized; completes in ~10 minutes
+  to 1 hour during daytime. Not instant.
+- **fiat_transfer** (standard, lower fee): takes 3 to 12 hours. Best when there is no
+  rush, or when paying at night or on weekends — a payer picks up the transaction the
+  next day anyway.
+
+## After funding
+
+After paying the Liquid USDT address, WapuPay orchestrates the operation with a P2P payer that settles the ARS.
+Check the status of the order often with order-status and take the executed_transaction_id to use it with `transaction --id`,
+the executed_transaction contain the details of the fiat transfer and the fiat transfer receipt.
+
+## What happens if the order fails?
+
+If the order fails, you will receive the funds back to the Liquid USDT address that you provided in the field refund_address after 24 hours.
+If you need support, you can contact WapuPay support at wapupay.com
+"""
+
 # Tentative status groupings.
 _FINAL_STATUSES = {"EXECUTED", "EXPIRED", "SETTLED_TO_BALANCE", "FAILED"}
 _SUCCESS_STATUSES = {"EXECUTED"}
