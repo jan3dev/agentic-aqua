@@ -1507,9 +1507,9 @@ WAPUPAY (Argentine fiat payouts, funded with USDT on Liquid):
 - FLOW: wapupay_quote (preview cost) → wapupay_create_order (returns a Liquid USDT
   address + amount) → pay it with lw_send_asset → WapuPay settles the ARS payout.
   This never auto-pays; always confirm the quote with the user first.
-  After the user pays the Liquid USDT address, WapuPay orchestrate the operation with a P2P payer that settles the ARS.
+  After the user pays the Liquid USDT address, WapuPay orchestrates the operation with a P2P payer that settles the ARS.
   Offer the user to check the status of the order with `wapupay_order_status` and the executed_transaction_id with `wapupay_transaction`,
-  the executed_transaction cointain the details of the fiat transfer that the user wants to know about.
+  the executed_transaction contain the details of the fiat transfer that the user wants to know about.
 - wapupay_exchange_rates is public (use USDT/ARS ignore the others rates, no key). The order/transaction tools
   need a WapuPay API key (env WAPUPAY_API_KEY or wapupay_provision_account).
 - TRANSFER SPEED: type defaults to fast_fiat_transfer (prioritized, ~10 min–1 h in
