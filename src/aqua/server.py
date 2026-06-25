@@ -1193,8 +1193,15 @@ TOOL_SCHEMAS = {
                 "type": {
                     "type": "string",
                     "enum": ["fiat_transfer", "fast_fiat_transfer"],
-                    "default": "fiat_transfer",
-                    "description": "Standard or instant (higher fee) transfer",
+                    "default": "fast_fiat_transfer",
+                    "description": (
+                        "Transfer speed. 'fast_fiat_transfer' show as 'Fast Transfer' for the user (default, higher fee): "
+                        "prioritized, completes in ~10 min to 1 hour during daytime "
+                        "(not instant). 'fiat_transfer' show as 'Normal Transfer' for the user (standard, lower fee): takes "
+                        "3 to 12 hours; recommend only when there is no rush, or when "
+                        "paying at night/weekends since usually a payer picks it up the next "
+                        "day. Explain this trade-off to the user."
+                    ),
                 },
                 "alias": {"type": "string", "description": "Recipient bank alias / CBU / CVU (optional; enables validation)"},
             },
@@ -1203,13 +1210,13 @@ TOOL_SCHEMAS = {
     },
     "wapupay_create_order": {
         "description": (
-            "Create a WapuPay direct-fiat order and get a Liquid USDT funding "
-            "address. Creates the tentative (freezing the quote) and issues "
+            "Create a WapuPay order and get a Liquid USDT funding address. "
+            "Creates the tentative (freezing the quote) and issues "
             "funding instructions. Returns address_destination (Liquid), asset_id "
             "(USDT), funding_amount_usdt, total_amount_usdt, "
             "total_funding_amount_base_units, funding_expires_at and a QR. Pay the "
             "TOTAL with lw_send_asset (amount = total_funding_amount_base_units); "
-            "WapuPay then settles ARS to the bank account. Does NOT broadcast the "
+            "WapuPay then makes a P2P payer settle ARS to the bank account. Does NOT broadcast the "
             "payment itself — confirm the quote with the user first via wapupay_quote."
         ),
         "inputSchema": {
@@ -1220,7 +1227,15 @@ TOOL_SCHEMAS = {
                 "type": {
                     "type": "string",
                     "enum": ["fiat_transfer", "fast_fiat_transfer"],
-                    "default": "fiat_transfer",
+                    "default": "fast_fiat_transfer",
+                    "description": (
+                        "Transfer speed. 'fast_fiat_transfer' name it 'Fast Transfer' for the user (default, higher fee): "
+                        "prioritized, completes in ~10 min to 1 hour during daytime "
+                        "(not instant). 'fiat_transfer' name it 'Normal Transfer' for the user (standard, lower fee): takes "
+                        "3 to 12 hours; recommend only when there is no rush, or when "
+                        "paying at night/weekends since usually a payer picks it up the next "
+                        "day. Explain this trade-off to the user."
+                    ),
                 },
                 "receiver_name": {"type": "string", "description": "Recipient name (optional)"},
                 "refund_address": {"type": "string", "description": "Liquid mainnet refund address (lq1…/ex1…) if funding cannot execute (optional); validated before the order is created"},
@@ -1245,9 +1260,10 @@ TOOL_SCHEMAS = {
     },
     "wapupay_order_status": {
         "description": (
-            "Check a WapuPay direct-fiat order's status (re-read from WapuPay). "
+            "Check a WapuPay P2P order's status (re-read from WapuPay). "
             "Returns is_final / is_success / is_failed. States: CREATED → "
             "FUNDING_ISSUED → EXECUTED. Terminals: EXPIRED, SETTLED_TO_BALANCE, FAILED."
+            "If it contains a `funding_transaction_id` or `executed_transaction_id` you can fetch the details with `wapupay_transaction` if user asks"
         ),
         "inputSchema": {
             "type": "object",
@@ -1272,7 +1288,7 @@ TOOL_SCHEMAS = {
         "inputSchema": {"type": "object", "properties": {}},
     },
     "wapupay_transaction": {
-        "description": "Get a single WapuPay transaction by id (UUID or numeric).",
+        "description": "Get a single WapuPay transaction by id (UUID or numeric). It can be a funding (crypto), an executed fiat transfer or a refund (crypto) transaction.",
         "inputSchema": {
             "type": "object",
             "properties": {

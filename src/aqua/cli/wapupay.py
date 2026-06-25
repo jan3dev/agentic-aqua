@@ -49,7 +49,9 @@ def rates(ctx):
 @click.option("--amount-ars", required=True, help="Amount in Argentine pesos (e.g. '10000').")
 @click.option(
     "--type", "transfer_type", type=_TRANSFER_TYPE,
-    default="fiat_transfer", show_default=True,
+    default="fast_fiat_transfer", show_default=True,
+    help="fast_fiat_transfer show as 'Fast Transfer' for the user (default, prioritized, ~10 min–1 h daytime, higher "
+         "fee) or fiat_transfer show as 'Normal Transfer' (standard, 3–12 h, lower fee).",
 )
 @click.option(
     "--alias", default=None,
@@ -69,7 +71,9 @@ def quote(ctx, amount_ars, transfer_type, alias):
 @click.option("--alias", required=True, help="Recipient bank alias / CBU / CVU.")
 @click.option(
     "--type", "transfer_type", type=_TRANSFER_TYPE,
-    default="fiat_transfer", show_default=True,
+    default="fast_fiat_transfer", show_default=True,
+    help="fast_fiat_transfer show as 'Fast Transfer' for the user (default, prioritized, ~10 min–1 h daytime, higher "
+         "fee) or fiat_transfer show as 'Normal Transfer' (standard, 3–12 h, lower fee).",
 )
 @click.option("--receiver-name", default=None, help="Recipient name (optional).")
 @click.option(
