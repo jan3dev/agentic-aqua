@@ -1225,6 +1225,7 @@ class TestToolRegistry:
             "jan3_session_info",
             "jan3_list_sessions",
             "jan3_logout",
+            "jan3_purchase_ln_username",
         }
         assert set(TOOLS.keys()) == expected
 

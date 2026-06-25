@@ -2239,6 +2239,43 @@ def jan3_logout(email: str) -> dict[str, Any]:
     return {"email": email, "deleted": deleted}
 
 
+def jan3_purchase_ln_username(
+    email: str,
+    ln_username: str,
+    wallet_name: str = "default",
+    password: str | None = None,
+    asset: str = "L-BTC",
+) -> dict[str, Any]:
+    """
+    Purchase / update the LN username for a JAN3 account.
+
+    Requires an existing session (run jan3_login_start + jan3_login_complete
+    first). Creates a payment-request order, crafts and signs a Liquid tx
+    paying the request, and submits it. The server applies the username
+    update atomically with the broadcast.
+
+    Args:
+        email: JAN3 account email (must already have a saved session).
+        ln_username: New Lightning username. 4–64 chars, lowercase letters
+            and digits, with at most one dot.
+        wallet_name: Liquid wallet to pay from.
+        password: Decrypts the wallet mnemonic if encrypted at rest.
+        asset: "L-BTC" or "USDt". Default "L-BTC".
+
+    Returns:
+        payment_id, status, txid (computed locally from the raw tx),
+        ln_username, amount_sats, asset_ticker, address, message.
+    """
+    manager = get_jan3_accounts_manager()
+    return manager.purchase_ln_username(
+        email=email,
+        ln_username=ln_username,
+        wallet_name=wallet_name,
+        password=password,
+        asset=asset,
+    )
+
+
 # Tool registry for MCP
 TOOLS = {
     "lw_generate_mnemonic": lw_generate_mnemonic,
@@ -2310,5 +2347,6 @@ TOOLS = {
     "jan3_session_info": jan3_session_info,
     "jan3_list_sessions": jan3_list_sessions,
     "jan3_logout": jan3_logout,
+    "jan3_purchase_ln_username": jan3_purchase_ln_username,
     "qr_decode": qr_decode,
 }

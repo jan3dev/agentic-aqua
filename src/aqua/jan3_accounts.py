@@ -1,4 +1,4 @@
-"""JAN3 Accounts integration: paid captchaless login.
+"""JAN3 Accounts integration: login + purchases.
 
 Talks to the AQUA Ankara production backend at ``https://ankara.aquabtc.com``.
 The base URL is hardcoded — staging is for internal use only and requires a
@@ -23,6 +23,16 @@ Surface (REST/JSON):
                                    → {access, refresh}
   POST /api/v1/auth/refresh/     {refresh} → {access}
 
+  POST /api/v1/liquid-wallet/payment-request/ln-username/   (JWT)
+       {asset, ln_username}
+       → {payment_id, status, product_type, asset_ticker, amount,
+          amount_base_units, address, expires_at, product_details}
+
+  POST /api/v1/liquid-wallet/payment/submit-raw-tx/         (JWT)
+       {payment_id, raw_tx}
+       → same shape as create; status flips to "ACCEPTED" on success.
+         txid is NOT in the response — compute locally from raw_tx.
+
 Sessions persist at ~/.aqua/jan3_accounts/{email}.json (0o600). Only
 ``complete_login`` writes the session — ``request_login`` is a
 non-mutating step that just dispatches the OTP email.
@@ -41,6 +51,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Optional
 
+import lwk
+
 from .assets import resolve_liquid_asset_id
 from .storage import Storage
 from .wallet import WalletManager
@@ -52,10 +64,16 @@ AQUA_ANKARA_API_URL = "https://ankara.aquabtc.com"
 USER_AGENT = "agentic-aqua"
 HTTP_TIMEOUT_SECONDS = 30.0
 
+PRODUCT_TYPE_LN_USERNAME = "LN_USERNAME_UPDATE"
 PRODUCT_TYPE_CAPTCHALESS_LOGIN = "CAPTCHALESS_LOGIN"
 
 ASSET_TICKER_LBTC = "L-BTC"
 ASSET_TICKER_USDT = "USDt"
+
+# 4–64 chars, lowercase letters/digits, at most one dot. Mirrors
+# common.constants.LN_USERNAME_REGEX in aqua-ankara so we fail fast
+# instead of letting the server 400.
+LN_USERNAME_REGEX = re.compile(r"^[a-z0-9]+(\.[a-z0-9]+)?$")
 
 # Minimal email syntax check — the server validates properly; this just
 # catches obvious mistakes before we make a network call.
@@ -119,6 +137,16 @@ def _validate_email(email: str) -> str:
     if not email or not _EMAIL_RE.match(email):
         raise ValueError(f"Invalid email address: {email!r}")
     return email.lower()
+
+
+def _validate_ln_username(username: str) -> str:
+    username = (username or "").strip().lower()
+    if not (4 <= len(username) <= 64) or not LN_USERNAME_REGEX.match(username):
+        raise ValueError(
+            f"Invalid ln_username {username!r}: must be 4–64 chars, "
+            "lowercase letters and digits, with at most one dot."
+        )
+    return username
 
 
 def _email_to_filename(email: str) -> str:
@@ -281,9 +309,29 @@ class Jan3AccountsClient:
             raise RuntimeError("AQUA refresh endpoint returned no access token")
         return access
 
+    # ─── authenticated endpoints ───────────────────────────────────────
+
+    def create_ln_username_payment_request(
+        self, asset: str, ln_username: str
+    ) -> dict:
+        return self._api_request(
+            "POST",
+            "/api/v1/liquid-wallet/payment-request/ln-username/",
+            body={"asset": asset, "ln_username": ln_username},
+            auth=True,
+        ) or {}
+
+    def submit_raw_tx(self, payment_id: str, raw_tx: str) -> dict:
+        return self._api_request(
+            "POST",
+            "/api/v1/liquid-wallet/payment/submit-raw-tx/",
+            body={"payment_id": payment_id, "raw_tx": raw_tx},
+            auth=True,
+        ) or {}
+
 
 # ---------------------------------------------------------------------------
-# Manager (login orchestration)
+# Manager (login + purchase orchestration)
 # ---------------------------------------------------------------------------
 
 
@@ -469,6 +517,17 @@ class Jan3AccountsManager:
             "access_token_preview": _token_preview(access),
         }
 
+    # ─── auth helpers ─────────────────────────────────────────────────
+
+    def _require_session(self, email: str) -> Jan3Session:
+        session = self.load_session(email)
+        if not session:
+            raise ValueError(
+                f"No JAN3 session for {email!r}. "
+                "Run jan3_login_start then jan3_login_complete first."
+            )
+        return session
+
     # ─── refresh-and-retry ────────────────────────────────────────────
 
     def _refresh_access_token(self, session: Jan3Session) -> Jan3Session:
@@ -519,3 +578,71 @@ class Jan3AccountsManager:
             except Jan3UnauthorizedError:
                 self.delete_session(session.email)
                 raise
+
+    # ─── purchase flow ────────────────────────────────────────────────
+
+    def purchase_ln_username(
+        self,
+        email: str,
+        ln_username: str,
+        wallet_name: str = "default",
+        password: Optional[str] = None,
+        asset: str = ASSET_TICKER_LBTC,
+    ) -> dict:
+        """Create + pay an LN_USERNAME_UPDATE payment request.
+
+        On a 401 we refresh the access token once and retry once. A second
+        401 (or a 401 on the refresh) deletes the local session and raises
+        :class:`Jan3UnauthorizedError`.
+        """
+        email = _validate_email(email)
+        ln_username = _validate_ln_username(ln_username)
+        session = self._require_session(email)
+
+        order = self._with_refresh_retry(
+            session,
+            lambda c: c.create_ln_username_payment_request(asset, ln_username),
+        )
+
+        payment_id = order.get("payment_id")
+        address = order.get("address")
+        amount_sats = int(order.get("amount_base_units") or 0)
+        asset_ticker = order.get("asset_ticker") or asset
+        if not payment_id or not address or amount_sats <= 0:
+            raise RuntimeError(
+                "AQUA payment-request response is missing fields "
+                f"(payment_id/address/amount): {order!r}"
+            )
+
+        asset_id = self._resolve_asset_id(wallet_name, asset_ticker)
+        raw_tx = self.wallet_manager.craft_raw_tx(
+            wallet_name=wallet_name,
+            address=address,
+            amount=amount_sats,
+            asset_id=asset_id,
+            password=password,
+        )
+
+        # The API response does not include the txid; compute it locally
+        # from the finalized raw tx so the caller has something to track
+        # on a block explorer.
+        txid = str(lwk.Transaction(raw_tx).txid())
+
+        result = self._with_refresh_retry(
+            session,
+            lambda c: c.submit_raw_tx(payment_id=payment_id, raw_tx=raw_tx),
+        )
+
+        return {
+            "payment_id": payment_id,
+            "status": result.get("status"),
+            "txid": txid,
+            "ln_username": ln_username,
+            "amount_sats": amount_sats,
+            "asset_ticker": asset_ticker,
+            "address": address,
+            "message": (
+                f"Submitted raw_tx for {ln_username!r}. Server reports "
+                f"{result.get('status', 'UNKNOWN')}."
+            ),
+        }

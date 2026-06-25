@@ -142,6 +142,7 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("jan3", "session-info"): "jan3_session_info",
     ("jan3", "list-sessions"): "jan3_list_sessions",
     ("jan3", "logout"): "jan3_logout",
+    ("jan3", "purchase-ln-username"): "jan3_purchase_ln_username",
 }
 
 
