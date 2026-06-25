@@ -38,6 +38,7 @@ _sideswap_peg_manager: "SideSwapPegManager | None" = None
 _sideswap_swap_manager: "SideSwapSwapManager | None" = None
 _wapupay_manager: "WapuPayManager | None" = None
 _jan3_manager: "JAN3AccountManager | None" = None
+_jan3_accounts_manager: "Jan3AccountsManager | None" = None
 
 
 def get_manager() -> WalletManager:
@@ -162,6 +163,24 @@ def get_wapupay_manager() -> "WapuPayManager":
             jan3_manager=get_jan3_manager(),
         )
     return _wapupay_manager
+
+
+def get_jan3_accounts_manager() -> "Jan3AccountsManager":
+    """Get or create JAN3 Accounts manager (shares storage + wallet manager).
+
+    Owns the paid captchaless-login flow and on-chain LN-username purchases
+    surfaced as the ``jan3_*`` tools (separate from the email-OTP ``aqua_*``
+    surface in [[get_jan3_manager]]).
+    """
+    global _jan3_accounts_manager
+    if _jan3_accounts_manager is None:
+        from .jan3_accounts import Jan3AccountsManager
+
+        _jan3_accounts_manager = Jan3AccountsManager(
+            storage=get_manager().storage,
+            wallet_manager=get_manager(),
+        )
+    return _jan3_accounts_manager
 
 
 # Tool implementations
@@ -2107,6 +2126,119 @@ def qr_decode(image_path: str) -> dict[str, Any]:
     return {"content": content}
 
 
+# ---------------------------------------------------------------------------
+# JAN3 Accounts (login + purchases)
+# ---------------------------------------------------------------------------
+
+
+def jan3_login_start(
+    email: str,
+    wallet_name: str = "default",
+    password: str | None = None,
+    language: str = "en",
+) -> dict[str, Any]:
+    """
+    Step 1 of the JAN3 paid captchaless login.
+
+    Fetches the AQUA vault payment address and the CAPTCHALESS_LOGIN price,
+    crafts a signed L-BTC tx funding the vault for that exact amount, and
+    POSTs it to /api/v2/auth/login/. The server broadcasts the tx and emails
+    an OTP to ``email``. After receiving the OTP, call ``jan3_login_complete``.
+
+    Args:
+        email: JAN3 account email (will receive the OTP).
+        wallet_name: Liquid wallet used to fund the captchaless login payment.
+        password: Decrypts the wallet mnemonic if encrypted at rest.
+        language: 2-letter language code for the OTP email (default "en").
+
+    Returns:
+        message, payment_address, amount_sats, asset_ticker, otp_sent_to,
+        otp_code (only when server has EMAIL_BASED_OTP off — dev/test),
+        next_step.
+    """
+    manager = get_jan3_accounts_manager()
+    return manager.request_login(
+        email=email,
+        wallet_name=wallet_name,
+        password=password,
+        language=language,
+    )
+
+
+def jan3_login_complete(
+    email: str,
+    otp_code: str,
+    fingerprint: str | None = None,
+) -> dict[str, Any]:
+    """
+    Step 2 of the JAN3 login. Exchanges the OTP for JWT tokens and persists
+    the session to ``~/.aqua/jan3_accounts/{email}.json`` (0o600).
+
+    Args:
+        email: JAN3 account email (must match the one used in jan3_login_start).
+        otp_code: The 6-digit OTP from the verification email.
+        fingerprint: Optional device fingerprint string.
+
+    Returns:
+        email, captcha_exempt (always true after a paid login), message,
+        access_token_preview. Full tokens are NEVER echoed (and the
+        refresh token isn't previewed at all — it's the long-lived
+        secret and shouldn't appear in transcripts).
+    """
+    manager = get_jan3_accounts_manager()
+    return manager.complete_login(
+        email=email, otp_code=otp_code, fingerprint=fingerprint
+    )
+
+
+def jan3_session_info(email: str) -> dict[str, Any]:
+    """
+    Return non-sensitive information about a persisted JAN3 session.
+
+    Does NOT echo full tokens — only metadata and preview strings.
+    """
+    manager = get_jan3_accounts_manager()
+    session = manager.load_session(email)
+    if not session:
+        return {"email": email, "has_session": False}
+    from .jan3_accounts import _token_preview
+
+    return {
+        "email": session.email,
+        "has_session": True,
+        "base_url": session.base_url,
+        "created_at": session.created_at,
+        "refreshed_at": session.refreshed_at,
+        "captcha_exempt": session.captcha_exempt,
+        "access_token_preview": _token_preview(session.access_token),
+    }
+
+
+def jan3_list_sessions() -> dict[str, Any]:
+    """List all persisted JAN3 sessions (metadata only — no tokens)."""
+    manager = get_jan3_accounts_manager()
+    sessions = manager.list_sessions()
+    return {
+        "sessions": [
+            {
+                "email": s.email,
+                "base_url": s.base_url,
+                "created_at": s.created_at,
+                "refreshed_at": s.refreshed_at,
+                "captcha_exempt": s.captcha_exempt,
+            }
+            for s in sessions
+        ]
+    }
+
+
+def jan3_logout(email: str) -> dict[str, Any]:
+    """Delete a persisted JAN3 session. Idempotent."""
+    manager = get_jan3_accounts_manager()
+    deleted = manager.delete_session(email)
+    return {"email": email, "deleted": deleted}
+
+
 # Tool registry for MCP
 TOOLS = {
     "lw_generate_mnemonic": lw_generate_mnemonic,
@@ -2173,5 +2305,10 @@ TOOLS = {
     "wapupay_transaction": wapupay_transaction,
     "wapupay_spending_limit": wapupay_spending_limit,
     "wapupay_provision_account": wapupay_provision_account,
+    "jan3_login_start": jan3_login_start,
+    "jan3_login_complete": jan3_login_complete,
+    "jan3_session_info": jan3_session_info,
+    "jan3_list_sessions": jan3_list_sessions,
+    "jan3_logout": jan3_logout,
     "qr_decode": qr_decode,
 }

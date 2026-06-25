@@ -1313,6 +1313,92 @@ TOOL_SCHEMAS = {
             "required": ["image_path"],
         },
     },
+    "jan3_login_start": {
+        "description": (
+            "Step 1 of paid captchaless login into a JAN3 Account. Crafts a "
+            "signed L-BTC tx funding AQUA's vault for the CAPTCHALESS_LOGIN "
+            "price, POSTs it to /api/v2/auth/login/, and the server emails "
+            "an OTP. Then call jan3_login_complete."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "format": "email",
+                    "description": "JAN3 account email — will receive the OTP.",
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Liquid wallet used to fund the login payment.",
+                    "default": "default",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Decrypts the wallet mnemonic if encrypted at rest.",
+                },
+                "language": {
+                    "type": "string",
+                    "description": "2-letter language code for the OTP email.",
+                    "default": "en",
+                },
+            },
+            "required": ["email"],
+        },
+    },
+    "jan3_login_complete": {
+        "description": (
+            "Step 2 of JAN3 login. Exchanges the OTP for JWT tokens and saves "
+            "the session to ~/.aqua/jan3_accounts/{email}.json (0o600). Only "
+            "token previews are echoed back — never the full tokens."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "format": "email",
+                    "description": "Must match the email used in jan3_login_start.",
+                },
+                "otp_code": {
+                    "type": "string",
+                    "description": "OTP code from the verification email.",
+                },
+                "fingerprint": {
+                    "type": "string",
+                    "description": "Optional device fingerprint string.",
+                },
+            },
+            "required": ["email", "otp_code"],
+        },
+    },
+    "jan3_session_info": {
+        "description": (
+            "Return non-sensitive info about a persisted JAN3 session "
+            "(base_url, created_at, captcha_exempt, token previews)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "format": "email"},
+            },
+            "required": ["email"],
+        },
+    },
+    "jan3_list_sessions": {
+        "description": "List all persisted JAN3 sessions (metadata only, no tokens).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "jan3_logout": {
+        "description": "Delete a persisted JAN3 session file. Idempotent.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "format": "email"},
+            },
+            "required": ["email"],
+        },
+    },
 }
 
 
