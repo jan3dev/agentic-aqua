@@ -115,6 +115,24 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("sideswap", "swap"): "sideswap_execute_swap",
     ("sideswap", "swap-status"): "sideswap_swap_status",
 
+    # auth group (cli/auth.py) — AQUA account login (used by WapuPay)
+    ("auth", "login"): "aqua_login",
+    ("auth", "verify"): "aqua_verify",
+    ("auth", "logout"): "aqua_logout",
+    ("auth", "session"): "aqua_session",
+
+    # wapupay group (cli/wapupay.py)
+    ("wapupay", "rates"): "wapupay_exchange_rates",
+    ("wapupay", "quote"): "wapupay_quote",
+    ("wapupay", "create-order"): "wapupay_create_order",
+    ("wapupay", "fund-order"): "wapupay_fund_order",
+    ("wapupay", "order-status"): "wapupay_order_status",
+    ("wapupay", "orders"): "wapupay_orders",
+    ("wapupay", "transactions"): "wapupay_transactions",
+    ("wapupay", "transaction"): "wapupay_transaction",
+    ("wapupay", "spending-limit"): "wapupay_spending_limit",
+    ("wapupay", "provision-account"): "wapupay_provision_account",
+
     # qr group (cli/qr.py)
     ("qr", "decode"): "qr_decode",
 }

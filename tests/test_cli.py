@@ -1983,3 +1983,225 @@ class TestErrorHandling:
         )
         assert result.exit_code == 1
         assert "Error" in result.output
+
+
+# ---------------------------------------------------------------------------
+# WapuPay CLI (dark-launched — re-register the CLI with the group enabled)
+# ---------------------------------------------------------------------------
+
+
+class _FakeJAN3Manager:
+    """Stand-in for JAN3AccountManager — records calls, returns canned responses.
+
+    The `aqua_*` auth tools route through `tools._jan3_manager`, so the auth CLI
+    tests inject this (not the WapuPay manager)."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+
+    def login(self, email, language="en"):
+        self.calls.append(("login", {"email": email, "language": language}))
+        return {"email": email, "message": "OTP sent", "next_step": "verify"}
+
+    def verify(self, email, otp_code):
+        self.calls.append(("verify", {"email": email, "otp_code": otp_code}))
+        return {"email": email, "logged_in": True, "message": "ok"}
+
+    def logout(self):
+        self.calls.append(("logout", {}))
+        return {"logged_out": True}
+
+    def session_status(self):
+        self.calls.append(("session_status", {}))
+        return {"logged_in": True, "email": "u@e.com", "created_at": "t0"}
+
+
+class _FakeWapuPayManager:
+    """Stand-in for WapuPayManager — records calls, returns canned responses."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+
+    def quote(self, amount_ars, transfer_type, alias=None):
+        self.calls.append(("quote", {
+            "amount_ars": amount_ars, "type": transfer_type, "alias": alias,
+        }))
+        return {"usdt_amount": 6.99, "fee": 0.14, "total_amount": 7.13,
+                "exchange_rate": 1432.5, "valid_cbu_alias": True}
+
+    def create_order(self, **kwargs):
+        self.calls.append(("create_order", kwargs))
+        return {
+            "tentative_id": "7f4b8b8d-39a4-4f80-8e89-44d1f8dff111",
+            "status": "FUNDING_ISSUED",
+            "address_destination": "lq1qqfunding0address",
+            "asset_id": "ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2",
+            "funding_amount_usdt": 6.99,
+            "total_amount_usdt": 7.13,
+            "total_funding_amount_base_units": 713000000,
+            "funded": True,
+        }
+
+    def provision_account(self):
+        self.calls.append(("provision_account", {}))
+        return {
+            "provisioned": True,
+            "key_preview": "Wapu…uY8e",
+            "message": "WapuPay API key provisioned and stored locally.",
+            "warning": "AQUA's backend rotates on every call, invalidating the previous key.",
+        }
+
+
+@pytest.fixture
+def wapupay_cli():
+    """Re-register the CLI with WapuPay enabled and inject a fake manager.
+
+    WapuPay is enabled by default; we re-register here only to swap in a fake
+    manager for the duration of the test, then restore the default registration.
+    """
+    import aqua.tools as tools_module
+    from aqua.cli.commands import register_commands
+    from aqua.features import SHIPPED_DEFAULTS_ENABLED_TOOLS
+    from aqua.storage import Config
+
+    enabled = dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)
+    for k in enabled:
+        if k.startswith("wapupay_"):
+            enabled[k] = True
+    register_commands(cli, Config(enabled_tools=enabled))
+
+    fake = _FakeWapuPayManager()
+    saved = tools_module._wapupay_manager
+    tools_module._wapupay_manager = fake
+    try:
+        yield fake
+    finally:
+        tools_module._wapupay_manager = saved
+        # Restore the default (wapupay-hidden) registration deterministically,
+        # without touching ~/.aqua via load_config_with_merge().
+        register_commands(cli, Config(enabled_tools=dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)))
+
+
+@pytest.fixture
+def auth_cli():
+    """Re-register the CLI with the AQUA auth tools enabled + a fake manager.
+
+    The `aqua_*` auth tools are enabled by default; we re-register here only to
+    swap in a fake manager, then restore the default registration.
+    The `aqua_login`/`aqua_verify` tools route through `tools._jan3_manager`,
+    so the `_FakeJAN3Manager` stand-in records the calls.
+    """
+    import aqua.tools as tools_module
+    from aqua.cli.commands import register_commands
+    from aqua.features import SHIPPED_DEFAULTS_ENABLED_TOOLS
+    from aqua.storage import Config
+
+    enabled = dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)
+    for k in enabled:
+        if k.startswith("aqua_"):
+            enabled[k] = True
+    register_commands(cli, Config(enabled_tools=enabled))
+
+    fake = _FakeJAN3Manager()
+    saved = tools_module._jan3_manager
+    tools_module._jan3_manager = fake
+    try:
+        yield fake
+    finally:
+        tools_module._jan3_manager = saved
+        register_commands(cli, Config(enabled_tools=dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)))
+
+
+class TestWapuPayCli:
+    def test_groups_present_by_default(self):
+        """The `wapupay` and `auth` groups are now enabled by default, so both
+        are present in the command registry. Asserted against the registry (not
+        the help text) — "auth" is a substring of unrelated words."""
+        from aqua.cli.commands import register_commands
+        from aqua.features import SHIPPED_DEFAULTS_ENABLED_TOOLS
+        from aqua.storage import Config
+
+        register_commands(cli, Config(enabled_tools=dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)))
+        assert "wapupay" in cli.commands
+        assert "auth" in cli.commands
+
+    def test_login(self, runner, auth_cli):
+        result = runner.invoke(
+            cli, ["--format", "json", "auth", "login", "--email", "u@e.com"]
+        )
+        assert result.exit_code == 0
+        assert json.loads(result.output)["message"] == "OTP sent"
+        assert auth_cli.calls[-1] == ("login", {"email": "u@e.com", "language": "en"})
+
+    def test_verify_reads_otp_arg(self, runner, auth_cli):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "auth", "verify", "--email", "u@e.com", "--otp-code", "123456"],
+        )
+        assert result.exit_code == 0
+        assert json.loads(result.output)["logged_in"] is True
+        assert auth_cli.calls[-1][1]["otp_code"] == "123456"
+
+    def test_create_order_with_yes_skips_confirm(self, runner, wapupay_cli):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "wapupay", "create-order",
+             "--amount-ars", "10000", "--alias", "al.cbu", "--yes"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["address_destination"] == "lq1qqfunding0address"
+        assert data["total_funding_amount_base_units"] == 713000000
+        call = next(c for c in wapupay_cli.calls if c[0] == "create_order")
+        assert call[1]["amount_ars"] == "10000"
+        assert call[1]["alias"] == "al.cbu"
+
+    def test_create_order_rejects_invalid_refund_address(self, runner, wapupay_cli):
+        """A bad --refund-address fails fast: before the quote fetch and before
+        any manager call (no order is created)."""
+        result = runner.invoke(
+            cli,
+            ["wapupay", "create-order", "--amount-ars", "10000", "--alias", "al.cbu",
+             "--refund-address", "lq12341234", "--yes"],
+        )
+        assert result.exit_code != 0
+        assert "not a valid Liquid address" in result.output
+        assert not any(c[0] == "create_order" for c in wapupay_cli.calls)
+
+    def test_create_order_confirm_flow_quotes_first(self, runner, wapupay_cli):
+        """Without --yes, a quote is fetched and the user confirms."""
+        result = runner.invoke(
+            cli,
+            ["wapupay", "create-order", "--amount-ars", "10000", "--alias", "al.cbu"],
+            input="y\n",
+        )
+        assert result.exit_code == 0
+        assert any(c[0] == "quote" for c in wapupay_cli.calls)
+        assert any(c[0] == "create_order" for c in wapupay_cli.calls)
+
+    def test_quote(self, runner, wapupay_cli):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "wapupay", "quote", "--amount-ars", "10000",
+             "--alias", "al.cbu"],
+        )
+        assert result.exit_code == 0
+        assert json.loads(result.output)["valid_cbu_alias"] is True
+
+    def test_provision_account(self, runner, wapupay_cli):
+        result = runner.invoke(
+            cli, ["--format", "json", "wapupay", "provision-account"]
+        )
+        assert result.exit_code == 0
+        assert json.loads(result.output)["provisioned"] is True
+        assert wapupay_cli.calls[-1] == ("provision_account", {})
+
+    def test_provision_account_present_by_default(self):
+        """WapuPay is enabled by default, so `provision-account` is registered."""
+        from aqua.cli.commands import register_commands
+        from aqua.features import SHIPPED_DEFAULTS_ENABLED_TOOLS
+        from aqua.storage import Config
+
+        register_commands(cli, Config(enabled_tools=dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)))
+        assert "wapupay" in cli.commands
+        assert "provision-account" in cli.commands["wapupay"].commands

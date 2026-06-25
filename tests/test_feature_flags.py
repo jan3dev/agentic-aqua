@@ -214,7 +214,11 @@ def test_enabled_tools_invalid_types_are_coerced(caplog):
 
 
 def test_sideswap_and_pix_disabled_by_default():
-    """SideSwap + PIX tools ship disabled-by-default (manual opt-in)."""
+    """Only SideSwap + PIX tools ship disabled-by-default (manual opt-in).
+
+    WapuPay and the AQUA account login (`aqua_*`) are now enabled by default;
+    business calls still require WAPUPAY_API_KEY (env or provisioned).
+    """
     expected_disabled = {
         "pix_receive", "pix_status",
         "sideswap_server_status", "sideswap_recommend",

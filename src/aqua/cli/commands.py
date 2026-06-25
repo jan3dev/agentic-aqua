@@ -30,6 +30,7 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
     if config is None:
         config = load_config_with_merge()
 
+    from .auth import auth
     from .btc import btc
     from .changelly import changelly
     from .lightning import lightning
@@ -39,11 +40,13 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
     from .sideshift import sideshift
     from .sideswap import sideswap
     from .wallet import wallet
+    from .wapupay import wapupay
 
     # Reset root.
     cli.commands.clear()
 
     groups: list[tuple[str, click.Group]] = [
+        ("auth", auth),
         ("wallet", wallet),
         ("liquid", liquid),
         ("btc", btc),
@@ -51,6 +54,7 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
         ("changelly", changelly),
         ("sideshift", sideshift),
         ("sideswap", sideswap),
+        ("wapupay", wapupay),
         ("qr", qr),
     ]
 

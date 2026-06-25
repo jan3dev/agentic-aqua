@@ -135,6 +135,11 @@ class Storage:
         self.sideshift_shifts_dir = self.base_dir / "sideshift_shifts"
         self.sideswap_pegs_dir = self.base_dir / "sideswap_pegs"
         self.sideswap_swaps_dir = self.base_dir / "sideswap_swaps"
+        self.wapupay_dir = self.base_dir / "wapupay"
+        self.wapupay_orders_dir = self.wapupay_dir / "orders"
+        self.wapupay_api_key_path = self.wapupay_dir / "api_key.json"
+        self.jan3_dir = self.base_dir / "jan3"
+        self.jan3_session_path = self.jan3_dir / "session.json"
         self.qr_dir = self.base_dir / "qr"
         self.config_path = self.base_dir / "config.json"
         self._ensure_dirs()
@@ -163,6 +168,12 @@ class Storage:
         restrict_permissions(self.sideswap_pegs_dir, 0o700)
         self.sideswap_swaps_dir.mkdir(exist_ok=True, mode=0o700)
         restrict_permissions(self.sideswap_swaps_dir, 0o700)
+        self.wapupay_dir.mkdir(exist_ok=True, mode=0o700)
+        restrict_permissions(self.wapupay_dir, 0o700)
+        self.wapupay_orders_dir.mkdir(exist_ok=True, mode=0o700)
+        restrict_permissions(self.wapupay_orders_dir, 0o700)
+        self.jan3_dir.mkdir(exist_ok=True, mode=0o700)
+        restrict_permissions(self.jan3_dir, 0o700)
         self.qr_dir.mkdir(exist_ok=True, mode=0o700)
         restrict_permissions(self.qr_dir, 0o700)
 
@@ -660,6 +671,93 @@ class Storage:
                 except OSError:
                     pass
         return removed
+
+    # JAN3 / AQUA account operations
+
+    def save_jan3_session(self, session) -> None:
+        """Persist the JAN3 / AQUA account session (Ankara JWT pair)."""
+        self._atomic_write_json(self.jan3_session_path, session.to_dict())
+
+    def load_jan3_session(self):
+        """Load the JAN3 / AQUA account session. Returns JAN3Session or None."""
+        from .ankara import JAN3Session
+
+        if not self.jan3_session_path.exists():
+            return None
+        with open(self.jan3_session_path) as f:
+            return JAN3Session.from_dict(json.load(f))
+
+    def delete_jan3_session(self) -> None:
+        """Remove the persisted JAN3 / AQUA session (idempotent)."""
+        try:
+            self.jan3_session_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    # WapuPay operations
+
+    def save_wapupay_api_key(self, api_key) -> None:
+        """Persist the provisioned WapuPay API key."""
+        self._atomic_write_json(self.wapupay_api_key_path, api_key.to_dict())
+
+    def load_wapupay_api_key(self):
+        """Load WapuPay API key; return None and log warning if unreadable or invalid."""
+
+        from .wapupay import WapuPayApiKey
+
+        if not self.wapupay_api_key_path.exists():
+            return None
+        try:
+            with open(self.wapupay_api_key_path) as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("api_key.json is not a JSON object")
+            return WapuPayApiKey.from_dict(data)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            logger.warning(
+                "Ignoring unreadable WapuPay API key file: %s",
+                self.wapupay_api_key_path,
+            )
+            return None
+
+    def delete_wapupay_api_key(self) -> None:
+        """Remove the persisted WapuPay API key (idempotent)."""
+        try:
+            self.wapupay_api_key_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def _wapupay_order_path(self, tentative_id: str) -> Path:
+        """Get path to a WapuPay order file, validating the ID against traversal."""
+        if not SWAP_ID_PATTERN.fullmatch(tentative_id):
+            raise ValueError(
+                f"Invalid WapuPay tentative ID '{tentative_id}'. "
+                "Use only letters, numbers, hyphens and underscores (max 128 chars)."
+            )
+        return self.wapupay_orders_dir / f"{tentative_id}.json"
+
+    def save_wapupay_order(self, order) -> None:
+        """Save a WapuPay order record for recovery."""
+        path = self._wapupay_order_path(order.tentative_id)
+        self._atomic_write_json(path, order.to_dict())
+
+    def load_wapupay_order(self, tentative_id: str):
+        """Load a WapuPay order record. Returns WapuPayOrder or None."""
+        from .wapupay import WapuPayOrder
+
+        path = self._wapupay_order_path(tentative_id)
+        if not path.exists():
+            return None
+        with open(path) as f:
+            return WapuPayOrder.from_dict(json.load(f))
+
+    def list_wapupay_orders(self) -> list[str]:
+        """List all WapuPay order (tentative) IDs."""
+        return [
+            p.stem
+            for p in self.wapupay_orders_dir.glob("*.json")
+            if SWAP_ID_PATTERN.fullmatch(p.stem)
+        ]
 
     # Cache operations
 

@@ -698,3 +698,46 @@ class TestDefaultPasswordEncryption:
         reloaded = temp_storage.load_wallet("btc_plain")
         assert reloaded.encrypted_mnemonic.startswith(f"default:{_DEFAULT_PWD_VERSION}:")
         assert temp_storage.retrieve_mnemonic(reloaded.encrypted_mnemonic, None) == TEST_MNEMONIC
+
+
+class TestWapuPayApiKeyStorage:
+    """Persistence of the WapuPay API key provisioned via the AQUA backend."""
+
+    def _make_key(self):
+        from aqua.wapupay import WapuPayApiKey
+
+        return WapuPayApiKey(token="WapuKey_secret_123", created_at="2026-06-15T00:00:00+00:00")
+
+    def test_save_load_roundtrip(self, temp_storage):
+        temp_storage.save_wapupay_api_key(self._make_key())
+        loaded = temp_storage.load_wapupay_api_key()
+        assert loaded is not None
+        assert loaded.token == "WapuKey_secret_123"
+        assert loaded.created_at == "2026-06-15T00:00:00+00:00"
+
+    def test_load_missing_returns_none(self, temp_storage):
+        assert temp_storage.load_wapupay_api_key() is None
+
+    def test_delete_is_idempotent(self, temp_storage):
+        temp_storage.save_wapupay_api_key(self._make_key())
+        temp_storage.delete_wapupay_api_key()
+        assert temp_storage.load_wapupay_api_key() is None
+        temp_storage.delete_wapupay_api_key()  # no error second time
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix mode bits")
+    def test_api_key_file_permissions(self, temp_storage):
+        temp_storage.save_wapupay_api_key(self._make_key())
+        mode = stat.S_IMODE(os.stat(temp_storage.wapupay_api_key_path).st_mode)
+        assert mode == 0o600, f"Expected 0600, got {oct(mode)}"
+
+    def test_delete_session_keeps_api_key(self, temp_storage):
+        """The API key is decoupled from the AQUA session — logout must not drop it."""
+        from aqua.ankara import JAN3Session
+
+        temp_storage.save_jan3_session(
+            JAN3Session(email="a@b.com", access="acc", refresh="ref", created_at="t0")
+        )
+        temp_storage.save_wapupay_api_key(self._make_key())
+        temp_storage.delete_jan3_session()
+        assert temp_storage.load_jan3_session() is None
+        assert temp_storage.load_wapupay_api_key().token == "WapuKey_secret_123"

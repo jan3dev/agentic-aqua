@@ -1134,6 +1134,172 @@ TOOL_SCHEMAS = {
             "required": ["from_coin", "from_network", "to_coin", "to_network"],
         },
     },
+    "aqua_login": {
+        "description": (
+            "Start AQUA account login: JAN3's Ankara backend emails a 6-digit "
+            "OTP to the user's address. Follow up with aqua_verify."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "description": "User's AQUA account email address"},
+                "language": {
+                    "type": "string",
+                    "enum": ["en", "es", "pt"],
+                    "default": "en",
+                    "description": "OTP email language",
+                },
+            },
+            "required": ["email"],
+        },
+    },
+    "aqua_verify": {
+        "description": (
+            "Verify the OTP emailed by aqua_login and store the AQUA session "
+            "locally. Ask the user for the 6-digit code from their email."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "description": "Same email used in aqua_login"},
+                "otp_code": {"type": "string", "description": "6-digit code from the email"},
+            },
+            "required": ["email", "otp_code"],
+        },
+    },
+    "aqua_logout": {
+        "description": "Forget the local AQUA session (does not revoke the token server-side).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "aqua_session": {
+        "description": "Report whether an AQUA session is active (no secrets returned).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "wapupay_exchange_rates": {
+        "description": "Get WapuPay's current exchange rates (e.g. USDT/ARS). Public — no login or API key.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "wapupay_quote": {
+        "description": (
+            "Preview the USDT cost, fee, and exchange rate for an ARS payment "
+            "without creating an order. Call BEFORE wapupay_create_order to "
+            "confirm the price. Pass alias to validate the bank alias/CBU/CVU "
+            "(see valid_cbu_alias in the response)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "amount_ars": {"type": "string", "description": "Amount in Argentine pesos (decimal string, e.g. '10000')"},
+                "type": {
+                    "type": "string",
+                    "enum": ["fiat_transfer", "fast_fiat_transfer"],
+                    "default": "fiat_transfer",
+                    "description": "Standard or instant (higher fee) transfer",
+                },
+                "alias": {"type": "string", "description": "Recipient bank alias / CBU / CVU (optional; enables validation)"},
+            },
+            "required": ["amount_ars"],
+        },
+    },
+    "wapupay_create_order": {
+        "description": (
+            "Create a WapuPay direct-fiat order and get a Liquid USDT funding "
+            "address. Creates the tentative (freezing the quote) and issues "
+            "funding instructions. Returns address_destination (Liquid), asset_id "
+            "(USDT), funding_amount_usdt, total_amount_usdt, "
+            "total_funding_amount_base_units, funding_expires_at and a QR. Pay the "
+            "TOTAL with lw_send_asset (amount = total_funding_amount_base_units); "
+            "WapuPay then settles ARS to the bank account. Does NOT broadcast the "
+            "payment itself — confirm the quote with the user first via wapupay_quote."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "amount_ars": {"type": "string", "description": "Amount in Argentine pesos (decimal string, e.g. '10000')"},
+                "alias": {"type": "string", "description": "Recipient bank alias / CBU / CVU"},
+                "type": {
+                    "type": "string",
+                    "enum": ["fiat_transfer", "fast_fiat_transfer"],
+                    "default": "fiat_transfer",
+                },
+                "receiver_name": {"type": "string", "description": "Recipient name (optional)"},
+                "refund_address": {"type": "string", "description": "Liquid mainnet refund address (lq1…/ex1…) if funding cannot execute (optional); validated before the order is created"},
+                "wallet_name": {"type": "string", "default": "default", "description": "Wallet you intend to fund from (recorded for tracking)"},
+            },
+            "required": ["amount_ars", "alias"],
+        },
+    },
+    "wapupay_fund_order": {
+        "description": (
+            "Issue (or re-issue) Liquid USDT funding instructions for an existing "
+            "order. Use to recover an order created without funding, or to refresh "
+            "the funding address before it expires. Returns the funding address + QR."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tentative_id": {"type": "string", "description": "Order id from wapupay_create_order"},
+            },
+            "required": ["tentative_id"],
+        },
+    },
+    "wapupay_order_status": {
+        "description": (
+            "Check a WapuPay direct-fiat order's status (re-read from WapuPay). "
+            "Returns is_final / is_success / is_failed. States: CREATED → "
+            "FUNDING_ISSUED → EXECUTED. Terminals: EXPIRED, SETTLED_TO_BALANCE, FAILED."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tentative_id": {"type": "string", "description": "Order id from wapupay_create_order"},
+            },
+            "required": ["tentative_id"],
+        },
+    },
+    "wapupay_orders": {
+        "description": (
+            "List locally-tracked WapuPay direct-fiat orders (recovery records "
+            "on this device), most recent first — distinct from "
+            "wapupay_transactions (WapuPay's server-side view). Each record "
+            "carries the orchestrated swap's txids (funding/executed) and status "
+            "for local tracking."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "wapupay_transactions": {
+        "description": "List WapuPay transactions (scoped to the WapuPay account/key).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "wapupay_transaction": {
+        "description": "Get a single WapuPay transaction by id (UUID or numeric).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "WapuPay transaction id (uuid or numeric)"},
+            },
+            "required": ["id"],
+        },
+    },
+    "wapupay_spending_limit": {
+        "description": "Get the WapuPay account/key's monthly spending limit (USDT), based on KYC tier.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "wapupay_provision_account": {
+        "description": (
+            "Provision a WapuPay API key via the user's AQUA account so the other "
+            "WapuPay tools work. Use when the user wants WapuPay but has no API key "
+            "set. Requires a prior AQUA login (aqua_login then aqua_verify); calls "
+            "the AQUA backend with that session, then stores the returned key "
+            "locally (0o600) for all wapupay_* tools — the raw key is never "
+            "returned, only a masked preview. The AQUA backend issues a fresh key "
+            "on every call and invalidates the previous one (no grace period), so "
+            "this only calls the backend when no key is configured yet: if one "
+            "already exists (env var or stored) it is a no-op "
+            "(already_configured=true) and never invalidates a working key."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
     "qr_decode": {
         "description": "Decode a QR code from an image file and return the raw string content. Supports Bitcoin addresses, Liquid addresses, Lightning invoices (BOLT11), and Lightning addresses.",
         "inputSchema": {
