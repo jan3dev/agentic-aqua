@@ -21,6 +21,7 @@ Surface (REST/JSON):
 
   POST /api/v1/auth/verify/      {email, otp_code, fingerprint?}
                                    → {access, refresh}
+  POST /api/v1/auth/refresh/     {refresh} → {access}
 
 Sessions persist at ~/.aqua/jan3_accounts/{email}.json (0o600). Only
 ``complete_login`` writes the session — ``request_login`` is a
@@ -271,6 +272,15 @@ class Jan3AccountsClient:
             body["fingerprint"] = fingerprint
         return self._api_request("POST", "/api/v1/auth/verify/", body=body) or {}
 
+    def refresh_access_token(self, refresh_token: str) -> str:
+        result = self._api_request(
+            "POST", "/api/v1/auth/refresh/", body={"refresh": refresh_token}
+        ) or {}
+        access = result.get("access")
+        if not access:
+            raise RuntimeError("AQUA refresh endpoint returned no access token")
+        return access
+
 
 # ---------------------------------------------------------------------------
 # Manager (login orchestration)
@@ -458,3 +468,54 @@ class Jan3AccountsManager:
             ),
             "access_token_preview": _token_preview(access),
         }
+
+    # ─── refresh-and-retry ────────────────────────────────────────────
+
+    def _refresh_access_token(self, session: Jan3Session) -> Jan3Session:
+        """Try to mint a new access token. Deletes the session on failure.
+
+        Mutates ``session`` in place and returns it. Not safe under
+        concurrent calls for the same email (last write wins) — fine for
+        single-user CLI / MCP usage, would need a lock if invoked from
+        parallel workers.
+        """
+        client = Jan3AccountsClient(base_url=session.base_url)
+        try:
+            new_access = client.refresh_access_token(session.refresh_token)
+        except Jan3UnauthorizedError:
+            # Refresh token is gone too — wipe the local session so the
+            # user is forced to re-login rather than retrying forever.
+            self.delete_session(session.email)
+            raise
+        session.access_token = new_access
+        session.refreshed_at = _now_iso()
+        self.save_session(session)
+        return session
+
+    def _with_refresh_retry(self, session: Jan3Session, call):
+        """Run an authed API call; on 401, refresh access token and retry once.
+
+        If the retry *also* 401s, the session is dead at the server (e.g.,
+        user revoked, account banned) — wipe the local copy so we don't
+        keep a poisoned bearer on disk. ``_refresh_access_token`` already
+        handles the case where the refresh endpoint itself rejects us.
+
+        ``session`` is mutated in place by ``_refresh_access_token``, so
+        callers holding the same reference see the new ``access_token``
+        after this returns.
+        """
+        client = Jan3AccountsClient(
+            base_url=session.base_url, access_token=session.access_token
+        )
+        try:
+            return call(client)
+        except Jan3UnauthorizedError:
+            session = self._refresh_access_token(session)
+            client = Jan3AccountsClient(
+                base_url=session.base_url, access_token=session.access_token
+            )
+            try:
+                return call(client)
+            except Jan3UnauthorizedError:
+                self.delete_session(session.email)
+                raise

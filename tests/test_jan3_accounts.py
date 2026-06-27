@@ -464,3 +464,149 @@ class TestSessionManagement:
         path = mgr._session_path("me@example.com")
         path.write_text('{"email": "me@example.com"}')
         assert mgr.load_session("me@example.com") is None
+
+
+# ---------------------------------------------------------------------------
+# Refresh-token flow: expired access token → refresh → retry
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshFlow:
+    """End-to-end verification of the access-token refresh contract.
+
+    Documents that the implementation:
+      1. Persists BOTH access_token and refresh_token after login.
+      2. Detects access-token expiry (HTTP 401) on any authed call.
+      3. Calls /api/v1/auth/refresh/ with the STORED refresh_token
+         (and no Authorization header — the bearer has just expired).
+      4. Persists the new access_token while preserving refresh_token.
+      5. Retries the original authed call with the new bearer.
+    """
+
+    @patch("urllib.request.urlopen")
+    def test_refresh_endpoint_wire_shape(self, mock_urlopen):
+        """The refresh call hits /api/v1/auth/refresh/ with ``{"refresh": …}``
+        and no Authorization header (the access token has just expired,
+        so presenting it would be useless or worse)."""
+        mock_urlopen.return_value = _mock_response({"access": "new-tok"})
+        client = Jan3AccountsClient(
+            base_url="https://ankara.aquabtc.com",
+            access_token="expired-tok",
+        )
+
+        assert client.refresh_access_token("the-refresh-token") == "new-tok"
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_method() == "POST"
+        assert req.full_url.endswith("/api/v1/auth/refresh/")
+        assert req.get_header("Authorization") is None
+        assert json.loads(req.data.decode()) == {"refresh": "the-refresh-token"}
+
+    @patch("urllib.request.urlopen")
+    def test_refresh_endpoint_missing_access_field_raises(self, mock_urlopen):
+        """A 200 OK with no ``access`` field is a server bug — surface it
+        as a clear RuntimeError rather than silently storing ``None``."""
+        mock_urlopen.return_value = _mock_response({})
+        client = Jan3AccountsClient(base_url="https://ankara.aquabtc.com")
+        with pytest.raises(RuntimeError, match="no access token"):
+            client.refresh_access_token("the-refresh-token")
+
+    def test_with_refresh_retry_refreshes_on_401(self, storage):
+        """First authed call 401s → refresh → retry succeeds with new bearer."""
+        mgr = _manager(storage)
+        session = _seed_session(mgr, "me@example.com")
+
+        tokens_seen: list[str | None] = []
+        calls = {"n": 0}
+
+        def authed_call(client):
+            tokens_seen.append(client.access_token)
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise Jan3UnauthorizedError("expired")
+            return {"ok": True}
+
+        with patch.object(
+            Jan3AccountsClient,
+            "refresh_access_token",
+            return_value="new-access",
+        ) as mock_refresh:
+            result = mgr._with_refresh_retry(session, authed_call)
+
+        assert result == {"ok": True}
+        mock_refresh.assert_called_once_with("refresh-token-xyz")
+        # First attempt got the stale token, retry got the refreshed one.
+        assert tokens_seen == ["initial-access", "new-access"]
+
+        reloaded = mgr.load_session("me@example.com")
+        assert reloaded.access_token == "new-access"
+        assert reloaded.refreshed_at is not None
+        # Server's refresh response only carries ``access`` — refresh_token
+        # must be preserved locally.
+        assert reloaded.refresh_token == "refresh-token-xyz"
+
+    def test_with_refresh_retry_post_refresh_401_wipes_session(self, storage):
+        """Call 401 → refresh OK → call 401 again → session deleted.
+
+        Server-side revocation (account banned, key rotated, etc.) gives
+        us a successful refresh but the next authed call still 401s. The
+        local session is poisoned — wipe it so the user is forced to
+        re-login rather than retrying forever."""
+        mgr = _manager(storage)
+        session = _seed_session(mgr, "me@example.com")
+
+        def authed_call(client):
+            raise Jan3UnauthorizedError("server says no")
+
+        with patch.object(
+            Jan3AccountsClient,
+            "refresh_access_token",
+            return_value="new-access",
+        ):
+            with pytest.raises(Jan3UnauthorizedError):
+                mgr._with_refresh_retry(session, authed_call)
+
+        assert mgr.load_session("me@example.com") is None
+
+    def test_with_refresh_retry_double_401_wipes_session(self, storage):
+        """Call 401 → refresh itself 401s → session deleted.
+
+        ``_refresh_access_token`` is responsible for wiping when the
+        refresh endpoint rejects us; this test guards that path."""
+        mgr = _manager(storage)
+        session = _seed_session(mgr, "me@example.com")
+
+        def authed_call(client):
+            raise Jan3UnauthorizedError("expired")
+
+        with patch.object(
+            Jan3AccountsClient,
+            "refresh_access_token",
+            side_effect=Jan3UnauthorizedError("refresh also expired"),
+        ):
+            with pytest.raises(Jan3UnauthorizedError):
+                mgr._with_refresh_retry(session, authed_call)
+
+        assert mgr.load_session("me@example.com") is None
+
+    def test_with_refresh_retry_first_call_success_no_refresh(self, storage):
+        """If the first call succeeds, refresh must NOT be invoked."""
+        mgr = _manager(storage)
+        session = _seed_session(mgr, "me@example.com")
+
+        def authed_call(client):
+            return {"ok": True, "seen": client.access_token}
+
+        with patch.object(
+            Jan3AccountsClient,
+            "refresh_access_token",
+        ) as mock_refresh:
+            result = mgr._with_refresh_retry(session, authed_call)
+
+        assert result == {"ok": True, "seen": "initial-access"}
+        mock_refresh.assert_not_called()
+
+        # Session is unchanged.
+        reloaded = mgr.load_session("me@example.com")
+        assert reloaded.access_token == "initial-access"
+        assert reloaded.refreshed_at is None
