@@ -265,13 +265,100 @@ class WalletManager:
         wallet_name: str,
         index: Optional[int] = None,
     ) -> Address:
-        """Get receive address."""
+        """Get a receive address.
+
+        With no ``index``, hands out the next previously-unhanded-out address
+        and bumps the wallet's persisted ``next_address_index`` counter so two
+        flows never share an address. lwk's own "next-unused" tip only advances
+        after the chain observes usage, which is too slow for off-chain
+        handouts (LN-address registration, Boltz claim addresses, …) — so we
+        max it against our own counter.
+
+        With an explicit ``index``, returns that exact address without
+        advancing the counter. Callers asserting a specific index are assumed
+        to know what they're doing.
+
+        Note: the no-arg path is NOT idempotent — each call writes to disk and
+        consumes an index. Callers that need to peek without committing should
+        pass an explicit ``index``.
+        """
         wollet = self._get_wollet(wallet_name)
+        if index is None:
+            wallet_record = self.storage.load_wallet(wallet_name)
+            if wallet_record is None:
+                raise ValueError(f"Wallet {wallet_name!r} not found")
+            lwk_tip = wollet.address(None).index()
+            effective = max(lwk_tip, wallet_record.next_address_index)
+            addr = wollet.address(effective)
+            wallet_record.next_address_index = effective + 1
+            self.storage.save_wallet(wallet_record)
+            return Address(address=str(addr.address()), index=addr.index())
         addr = wollet.address(index)
-        return Address(
-            address=str(addr.address()),
-            index=addr.index(),
-        )
+        return Address(address=str(addr.address()), index=addr.index())
+
+    def reserve_addresses(
+        self,
+        wallet_name: str,
+        count: int,
+    ) -> list[Address]:
+        """Hand out ``count`` fresh receive addresses in one shot.
+
+        Same semantics as calling ``get_address(name)`` ``count`` times — each
+        address is distinct and the persisted counter is advanced past all of
+        them — but batched into a single load + save of the wallet record. Use
+        when minting many addresses at once (e.g. for LN-address registration).
+        """
+        if count <= 0:
+            raise ValueError("count must be positive")
+        wollet = self._get_wollet(wallet_name)
+        wallet_record = self.storage.load_wallet(wallet_name)
+        if wallet_record is None:
+            raise ValueError(f"Wallet {wallet_name!r} not found")
+        lwk_tip = wollet.address(None).index()
+        start = max(lwk_tip, wallet_record.next_address_index)
+        addresses: list[Address] = []
+        for offset in range(count):
+            addr = wollet.address(start + offset)
+            addresses.append(Address(address=str(addr.address()), index=addr.index()))
+        wallet_record.next_address_index = start + count
+        self.storage.save_wallet(wallet_record)
+        return addresses
+
+    def fingerprint(
+        self,
+        wallet_name: str,
+        password: Optional[str] = None,
+    ) -> str:
+        """Return the BIP32 master fingerprint (8 hex chars) for ``wallet_name``.
+
+        Format matches the AQUA Ankara backend's ``fingerprint`` field on
+        ``UserResponse`` / ``UserLiquidAddressesUpsert``: ``HASH160(master xpub)[:4]``
+        in hex. For hot wallets this comes straight from the LWK signer; for
+        watch-only wallets we parse the embedded ``[fp/derivation]`` block from
+        the stored descriptor.
+        """
+        if wallet_name in self._signers:
+            return self._signers[wallet_name].fingerprint()
+
+        # ``load_wallet`` decrypts the mnemonic (if needed) and caches the
+        # resulting lwk.Signer in ``self._signers`` as a side effect — so for
+        # hot wallets the next check succeeds and we get the canonical
+        # BIP32-master fingerprint straight from the signer.
+        wallet = self.load_wallet(wallet_name, password=password)
+        if wallet_name in self._signers:
+            return self._signers[wallet_name].fingerprint()
+
+        # Watch-only: best-effort parse of the [fp/derivation]xpub block.
+        from .bitcoin import _extract_xpub_metadata
+
+        meta = _extract_xpub_metadata(wallet.descriptor)
+        fp = meta.get("fingerprint")
+        if not fp:
+            raise ValueError(
+                f"Cannot determine fingerprint for watch-only wallet {wallet_name!r}: "
+                "descriptor has no [fingerprint/derivation] block."
+            )
+        return fp
 
     def get_transactions(
         self,

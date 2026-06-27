@@ -1175,6 +1175,88 @@ TOOL_SCHEMAS = {
         "description": "Report whether an AQUA session is active (no secrets returned).",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    "aqua_get_user": {
+        "description": (
+            "Get the AQUA account profile (email, ln_username, fingerprint, "
+            "feature flags). Use this to read the user's Lightning Address "
+            "(<ln_username>@aquabtc.com) and the state the other LN-address "
+            "tools depend on: ln_address_toggled, new_addresses_needed, and "
+            "the server-side wallet fingerprint. Requires aqua_login first."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "aqua_ln_address_toggle": {
+        "description": (
+            "Enable or disable the LN-address feature on the AQUA account. "
+            "Toggling back on does NOT auto-refill the unused-address pool — "
+            "if aqua_get_user.new_addresses_needed > 0, follow up with "
+            "aqua_register_ln_addresses."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean", "description": "True to enable, false to disable."},
+            },
+            "required": ["enabled"],
+        },
+    },
+    "aqua_ln_username_check_available": {
+        "description": (
+            "Check whether a desired LN username is free to claim. Call BEFORE "
+            "jan3_purchase_ln_username to avoid paying L-BTC on a username that's "
+            "already taken or invalid. Note: the live AQUA deployment requires a "
+            "JWT despite the OpenAPI schema marking this anonymous — if a local "
+            "AQUA session exists, the lookup IS account-linked."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ln_username": {"type": "string", "description": "Desired LN username (the part before @aquabtc.com)."},
+            },
+            "required": ["ln_username"],
+        },
+    },
+    "aqua_register_ln_addresses": {
+        "description": (
+            "Upload a batch of unused Liquid receive addresses so the AQUA "
+            "backend can deliver inbound LN payments to <ln_username>@aquabtc.com. "
+            "Without a healthy unused-address pool, the LN address feature "
+            "CANNOT receive — the server hands out one address per invoice. "
+            "Call when aqua_get_user.new_addresses_needed > 0. Refuses on "
+            "fingerprint mismatch unless override_fingerprint=true (which "
+            "re-binds the account and disables delivery for the previously-bound wallet). "
+            "Returns {requested_count, pool_size, fingerprint, addresses} — pool_size "
+            "is the server's authoritative post-call unused-pool size (it dedupes "
+            "against existing state, so trust pool_size over requested_count)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wallet_name": {"type": "string", "default": "default", "description": "Liquid wallet whose addresses get uploaded."},
+                "count": {"type": "integer", "description": "How many addresses to register. Defaults to the server's new_addresses_needed, falling back to 5. Capped at 15."},
+                "override_fingerprint": {"type": "boolean", "default": False, "description": "Re-bind the account to this wallet's fingerprint. Also flips ln_address_toggled to true server-side. Use only for intentional rebind."},
+                "password": {"type": "string", "description": "Decrypts the wallet mnemonic if encrypted at rest."},
+            },
+        },
+    },
+    "aqua_ensure_ln_pool": {
+        "description": (
+            "Idempotent LN-address pool refill — top up only if "
+            "aqua_get_user.new_addresses_needed > 0. Safe to call at any time. "
+            "Skips silently with a reason field when conditions don't allow "
+            "auto-refill (no_ln_username / ln_address_disabled / pool_full / "
+            "fingerprint_mismatch). This is also what runs automatically after "
+            "a JWT refresh — agents don't need to call it explicitly during "
+            "normal operation, but it's exposed for cold-start / recovery flows."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wallet_name": {"type": "string", "default": "default", "description": "Liquid wallet to source addresses from."},
+                "password": {"type": "string", "description": "Decrypts the wallet mnemonic if encrypted at rest."},
+            },
+        },
+    },
     "wapupay_exchange_rates": {
         "description": "Get WapuPay's current exchange rates (e.g. USDT/ARS). Public — no login or API key.",
         "inputSchema": {"type": "object", "properties": {}},
