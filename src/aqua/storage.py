@@ -58,16 +58,37 @@ class WalletData:
     encrypted_mnemonic: Optional[str] = None  # Encrypted, if full wallet
     watch_only: bool = False
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    # Monotonically-increasing counter of receive addresses handed out via
+    # ``WalletManager.get_address(name, index=None)``. lwk's "next-unused" tip
+    # only advances after the chain observes usage, which doesn't help for
+    # off-chain handouts (LN-address registration, Boltz claim addresses,
+    # Changelly refunds, etc.). Every call to the no-arg ``get_address`` bumps
+    # this counter so two flows never share the same address.
+    #
+    # Single-writer assumption: the MCP server processes one tool call at a
+    # time, so the load → compute → save dance in ``get_address`` is safe
+    # without a lock. Adding a file lock around ``save_wallet`` would be
+    # required if multiple processes (or threads) start mutating this counter
+    # concurrently.
+    next_address_index: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "WalletData":
-        # Backward compatibility: old wallet files may not have btc_* fields
         data = {**data}
+        # Backward compatibility: older wallet files may not have btc_* fields.
         data.setdefault("btc_descriptor", None)
         data.setdefault("btc_change_descriptor", None)
+        # The counter used to be named ``ln_addr_next_index`` when it only tracked
+        # LN-address registrations. Migrate the legacy key in-place so existing
+        # wallets keep their burned-index history; the legacy key is dropped on
+        # the next save.
+        legacy = data.pop("ln_addr_next_index", None)
+        if "next_address_index" not in data and legacy is not None:
+            data["next_address_index"] = legacy
+        data.setdefault("next_address_index", 0)
         return cls(**data)
 
 
