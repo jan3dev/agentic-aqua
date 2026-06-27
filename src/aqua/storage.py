@@ -7,7 +7,7 @@ import os
 import re
 import shutil
 import sys
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
@@ -68,6 +68,11 @@ class WalletData:
         data = {**data}
         data.setdefault("btc_descriptor", None)
         data.setdefault("btc_change_descriptor", None)
+        # Forward compatibility: drop unknown keys written by other branches
+        # (e.g. next_address_index from an in-flight PR) so this branch can
+        # still load the wallet file.
+        known = {f.name for f in fields(cls)}
+        data = {k: v for k, v in data.items() if k in known}
         return cls(**data)
 
 
