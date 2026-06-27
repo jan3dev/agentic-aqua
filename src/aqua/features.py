@@ -135,6 +135,13 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
 
     # qr group (cli/qr.py)
     ("qr", "decode"): "qr_decode",
+
+    # jan3 group (cli/jan3.py)
+    ("jan3", "login-start"): "jan3_login_start",
+    ("jan3", "login-complete"): "jan3_login_complete",
+    ("jan3", "session-info"): "jan3_session_info",
+    ("jan3", "list-sessions"): "jan3_list_sessions",
+    ("jan3", "logout"): "jan3_logout",
 }
 
 
