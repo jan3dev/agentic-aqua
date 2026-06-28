@@ -142,13 +142,22 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("jan3", "session-info"): "jan3_session_info",
     ("jan3", "list-sessions"): "jan3_list_sessions",
     ("jan3", "logout"): "jan3_logout",
+    ("jan3", "purchase-ln-username"): "jan3_purchase_ln_username",
 }
 
 
 # Tools available only via MCP — no Click command in `src/aqua/cli/`.
 # The PIX endpoints are agent-only by design (Brazilian instant-pay flows
 # triggered from chat); intentionally not exposed in the CLI.
-MCP_ONLY_TOOLS: frozenset[str] = frozenset({"pix_receive", "pix_status"})
+MCP_ONLY_TOOLS: frozenset[str] = frozenset({
+    "pix_receive",
+    "pix_status",
+    "aqua_get_user",
+    "aqua_ln_address_toggle",
+    "aqua_ln_username_check_available",
+    "aqua_register_ln_addresses",
+    "aqua_ensure_ln_pool",
+})
 
 
 def is_tool_enabled(name: str, config: Config) -> bool:

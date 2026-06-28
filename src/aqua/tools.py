@@ -147,7 +147,12 @@ def get_jan3_manager() -> "JAN3AccountManager":
     if _jan3_manager is None:
         from .ankara import JAN3AccountManager
 
-        _jan3_manager = JAN3AccountManager(storage=get_manager().storage)
+        # Pass ``get_manager`` (not a resolved instance) so the WalletManager
+        # is only constructed if/when the opportunistic LN-pool top-up fires.
+        _jan3_manager = JAN3AccountManager(
+            storage=get_manager().storage,
+            wallet_manager_factory=get_manager,
+        )
     return _jan3_manager
 
 
@@ -1317,6 +1322,118 @@ def aqua_session() -> dict[str, Any]:
     return get_jan3_manager().session_status()
 
 
+def aqua_get_user() -> dict[str, Any]:
+    """Get the AQUA account profile (email, LN username, fingerprint, feature flags).
+
+    Use this to answer "what's my Lightning Address?" (`<ln_username>@aquabtc.com`)
+    and to read state the other LN-address tools depend on: `ln_address_toggled`,
+    `new_addresses_needed`, and the server-side wallet `fingerprint`.
+
+    Requires a prior `aqua_login` + `aqua_verify`. Auto-refreshes the access
+    token on 401.
+    """
+    return get_jan3_manager().get_user()
+
+
+def aqua_ln_address_toggle(enabled: bool) -> dict[str, Any]:
+    """Enable or disable the LN-address feature on the AQUA account.
+
+    When disabled, the server stops uploading invoices that route to this user.
+    Toggling back on does NOT automatically refill the unused-address pool —
+    follow up with `aqua_register_ln_addresses` if `aqua_get_user` reports
+    `new_addresses_needed > 0`.
+    """
+    return get_jan3_manager().ln_address_toggle(enabled)
+
+
+def aqua_ln_username_check_available(ln_username: str) -> dict[str, Any]:
+    """Check whether an LN username is free before paying to purchase it.
+
+    Returns `{is_available, reason}` so the agent can validate a desired
+    username cheaply before invoking `jan3_purchase_ln_username` (which costs
+    L-BTC).
+
+    Privacy note: the OpenAPI schema marks this endpoint anonymous, but the
+    live AQUA deployment requires a JWT. If a local session exists we forward
+    it, so the lookup is account-linked. Callers that need an unattributed
+    check should `aqua_logout` first.
+    """
+    return get_jan3_manager().ln_username_available(ln_username)
+
+
+def aqua_register_ln_addresses(
+    wallet_name: str = "default",
+    count: int | None = None,
+    override_fingerprint: bool = False,
+    password: str | None = None,
+) -> dict[str, Any]:
+    """Upload a batch of unused Liquid receive addresses for LN-address delivery.
+
+    The AQUA backend hands these out one-by-one as the user's
+    `<ln_username>@aquabtc.com` receives invoices. Without a healthy pool,
+    inbound LN payments CANNOT be delivered — call this whenever
+    `aqua_get_user` reports `new_addresses_needed > 0`.
+
+    Refuses with a clear error if `ln_username` is unset, `ln_address_toggled`
+    is false, or the server's stored `fingerprint` doesn't match this wallet
+    (unless `override_fingerprint=true`, which intentionally re-binds the
+    account and disables delivery for the previously-bound wallet).
+
+    Args:
+        wallet_name: Liquid wallet whose addresses get uploaded. Default: "default".
+        count: how many addresses to register. If omitted, uses the server's
+            `new_addresses_needed`, falling back to 5. Capped at
+            `MAX_ADDRESSES_PER_REGISTRATION` (15 per the OpenAPI schema).
+        override_fingerprint: re-bind the account to this wallet's fingerprint
+            (also flips `ln_address_toggled` to true server-side). Use only for
+            intentional rebind flows.
+        password: decrypts the wallet's mnemonic if it's encrypted at rest.
+
+    Returns:
+        `{requested_count, pool_size, fingerprint, addresses}`. `requested_count`
+        is how many addresses we sent; `pool_size` is the server's authoritative
+        active-unused-pool size after this call (the server dedupes against its
+        own state, so `pool_size` is the trustworthy "did this work?" signal).
+        `addresses` is the full active/unused pool the server now knows about.
+    """
+    return get_jan3_manager().register_ln_addresses(
+        wallet_manager=get_manager(),
+        wallet_name=wallet_name,
+        count=count,
+        override_fingerprint=override_fingerprint,
+        password=password,
+    )
+
+
+def aqua_ensure_ln_pool(
+    wallet_name: str = "default",
+    password: str | None = None,
+) -> dict[str, Any]:
+    """Idempotent LN-address pool refill — top up if the server says it's needed.
+
+    Reads `aqua_get_user` and only POSTs new addresses if
+    `new_addresses_needed > 0`. Skips silently when conditions don't allow
+    auto-refill (no LN username, LN address toggle off, server bound to a
+    different wallet fingerprint) and returns a `reason` field explaining the
+    no-op. Safe to call at any time — this is what runs automatically after a
+    JWT refresh.
+
+    Args:
+        wallet_name: Liquid wallet to source addresses from. Default: "default".
+        password: decrypts the wallet's mnemonic if encrypted at rest.
+
+    Returns:
+        `{refilled: bool, ...}`. On refill: `requested_count`, `pool_size`,
+        `fingerprint`. On no-op: `reason` is one of `no_ln_username`,
+        `ln_address_disabled`, `pool_full`, `fingerprint_mismatch`.
+    """
+    return get_jan3_manager().ensure_ln_pool(
+        wallet_manager=get_manager(),
+        wallet_name=wallet_name,
+        password=password,
+    )
+
+
 # ---------------------------------------------------------------------------
 # WapuPay (Argentine direct-fiat payments)
 # ---------------------------------------------------------------------------
@@ -2239,6 +2356,43 @@ def jan3_logout(email: str) -> dict[str, Any]:
     return {"email": email, "deleted": deleted}
 
 
+def jan3_purchase_ln_username(
+    email: str,
+    ln_username: str,
+    wallet_name: str = "default",
+    password: str | None = None,
+    asset: str = "L-BTC",
+) -> dict[str, Any]:
+    """
+    Purchase / update the LN username for a JAN3 account.
+
+    Requires an existing session (run jan3_login_start + jan3_login_complete
+    first). Creates a payment-request order, crafts and signs a Liquid tx
+    paying the request, and submits it. The server applies the username
+    update atomically with the broadcast.
+
+    Args:
+        email: JAN3 account email (must already have a saved session).
+        ln_username: New Lightning username. 4–64 chars, lowercase letters
+            and digits, with at most one dot.
+        wallet_name: Liquid wallet to pay from.
+        password: Decrypts the wallet mnemonic if encrypted at rest.
+        asset: "L-BTC" or "USDt". Default "L-BTC".
+
+    Returns:
+        payment_id, status, txid (computed locally from the raw tx),
+        ln_username, amount_sats, asset_ticker, address, message.
+    """
+    manager = get_jan3_accounts_manager()
+    return manager.purchase_ln_username(
+        email=email,
+        ln_username=ln_username,
+        wallet_name=wallet_name,
+        password=password,
+        asset=asset,
+    )
+
+
 # Tool registry for MCP
 TOOLS = {
     "lw_generate_mnemonic": lw_generate_mnemonic,
@@ -2295,6 +2449,11 @@ TOOLS = {
     "aqua_verify": aqua_verify,
     "aqua_logout": aqua_logout,
     "aqua_session": aqua_session,
+    "aqua_get_user": aqua_get_user,
+    "aqua_ln_address_toggle": aqua_ln_address_toggle,
+    "aqua_ln_username_check_available": aqua_ln_username_check_available,
+    "aqua_register_ln_addresses": aqua_register_ln_addresses,
+    "aqua_ensure_ln_pool": aqua_ensure_ln_pool,
     "wapupay_exchange_rates": wapupay_exchange_rates,
     "wapupay_quote": wapupay_quote,
     "wapupay_create_order": wapupay_create_order,
@@ -2310,5 +2469,6 @@ TOOLS = {
     "jan3_session_info": jan3_session_info,
     "jan3_list_sessions": jan3_list_sessions,
     "jan3_logout": jan3_logout,
+    "jan3_purchase_ln_username": jan3_purchase_ln_username,
     "qr_decode": qr_decode,
 }

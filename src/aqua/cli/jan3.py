@@ -1,4 +1,4 @@
-"""JAN3 Accounts CLI — paid captchaless login."""
+"""JAN3 Accounts CLI — paid captchaless login + on-chain purchases."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from ..tools import (
     jan3_login_complete,
     jan3_login_start,
     jan3_logout,
+    jan3_purchase_ln_username,
     jan3_session_info,
 )
 from .output import run_tool
@@ -27,13 +28,15 @@ _PASSWORD_HELP = (
 
 @click.group()
 def jan3():
-    """JAN3 Accounts — paid captchaless login.
+    """JAN3 Accounts — paid captchaless login + on-chain purchases.
 
     The flow:
 
       1. `aqua jan3 login-start --email …` pays the captchaless-login fee
          in L-BTC; the server emails an OTP.
       2. `aqua jan3 login-complete --email … --otp …` saves the session.
+      3. Authenticated purchases (e.g. `purchase-ln-username`) use that
+         session and pay each purchase on chain.
     """
 
 
@@ -98,3 +101,39 @@ def list_sessions(ctx):
 def logout(ctx, email):
     """Delete a persisted JAN3 session."""
     run_tool(ctx, lambda: jan3_logout(email))
+
+
+@jan3.command("purchase-ln-username")
+@click.option("--email", required=True, help="JAN3 account email — session must already exist.")
+@click.option(
+    "--ln-username", "ln_username", required=True,
+    help="Desired Lightning username (4–64 chars, lowercase + digits, at most one dot).",
+)
+@click.option("--wallet-name", default="default", show_default=True)
+@click.option(
+    "--asset", default="L-BTC", show_default=True,
+    type=click.Choice(["L-BTC", "USDt"]),
+    help="Asset used to pay the purchase.",
+)
+@click.option(
+    "--password-stdin", "password_stdin", is_flag=True, default=False, help=_PASSWORD_HELP
+)
+@click.pass_obj
+def purchase_ln_username(ctx, email, ln_username, wallet_name, asset, password_stdin):
+    """Update / purchase the LN username for the logged-in JAN3 account."""
+    password = resolve_secret(
+        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+    )
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            jan3_purchase_ln_username,
+            {
+                "email": email,
+                "ln_username": ln_username,
+                "wallet_name": wallet_name,
+                "password": password,
+                "asset": asset,
+            },
+        ),
+    )

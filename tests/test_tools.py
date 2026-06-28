@@ -276,6 +276,120 @@ class TestAddress:
         with pytest.raises(ValueError, match="not found"):
             lw_address(wallet_name="nope")
 
+    def test_no_arg_advances_counter_so_indices_are_distinct(self, isolated_manager):
+        """Consecutive no-arg ``get_address`` calls hand back distinct indices.
+
+        Regression for the LN-address-vs-direct-receive collision: lwk's
+        "next-unused" tip only advances after on-chain observation, so before
+        the counter rework every call returned the same index until something
+        settled on chain.
+        """
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="advance_test")
+        first = isolated_manager.get_address("advance_test")
+        second = isolated_manager.get_address("advance_test")
+        third = isolated_manager.get_address("advance_test")
+        assert {first.index, second.index, third.index} == {first.index, first.index + 1, first.index + 2}
+        assert len({first.address, second.address, third.address}) == 3
+
+    def test_counter_persists_across_wallet_manager_instances(self, isolated_manager):
+        """Reopening the wallet picks up where the counter left off."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="persist_test")
+        a = isolated_manager.get_address("persist_test")
+        b = isolated_manager.get_address("persist_test")
+        # Simulate a fresh process by instantiating a new manager on the same storage.
+        fresh = WalletManager(storage=isolated_manager.storage)
+        c = fresh.get_address("persist_test")
+        assert c.index == b.index + 1
+        assert c.address not in {a.address, b.address}
+
+    def test_explicit_index_does_not_advance_counter(self, isolated_manager):
+        """Asking for index=N is a query, not a handout — counter stays put."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="explicit_test")
+        before = isolated_manager.storage.load_wallet("explicit_test").next_address_index
+        isolated_manager.get_address("explicit_test", index=42)
+        isolated_manager.get_address("explicit_test", index=43)
+        after = isolated_manager.storage.load_wallet("explicit_test").next_address_index
+        assert before == after
+
+    def test_counter_promoted_when_lwk_tip_is_higher(self, isolated_manager):
+        """If lwk has observed on-chain activity past our counter, jump to its tip."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="tip_test")
+        record = isolated_manager.storage.load_wallet("tip_test")
+        # Stash an artificially-stale counter; nothing else has touched this wallet so
+        # lwk's tip is whatever lwk says (typically 0 for a fresh wallet) — but the
+        # contract we care about is: handed-out index is ``>= persisted counter``,
+        # and the counter advances past it.
+        record.next_address_index = 100
+        isolated_manager.storage.save_wallet(record)
+        out = isolated_manager.get_address("tip_test")
+        assert out.index >= 100
+        after = isolated_manager.storage.load_wallet("tip_test").next_address_index
+        assert after == out.index + 1
+
+    def test_legacy_ln_addr_next_index_key_is_migrated(self, isolated_manager):
+        """Wallets persisted before the rename keep their burned-index history."""
+        from aqua.storage import WalletData
+
+        raw = {
+            "name": "legacy",
+            "network": "mainnet",
+            "descriptor": "ct(slip77(deadbeef),elwpkh([deadbeef/84'/1776'/0']xpub.../<0;1>/*))#0",
+            "btc_descriptor": None,
+            "btc_change_descriptor": None,
+            "encrypted_mnemonic": None,
+            "watch_only": True,
+            "created_at": "2026-06-26T00:00:00+00:00",
+            "ln_addr_next_index": 7,
+        }
+        wallet = WalletData.from_dict(raw)
+        assert wallet.next_address_index == 7
+        assert not hasattr(wallet, "ln_addr_next_index")
+
+    def test_aqua_register_ln_addresses_does_not_collide_with_lw_address(self, isolated_manager):
+        """Cross-flow collision regression: after LN registration burns indices,
+        ``lw_address`` MUST return an index strictly past those — the bug that
+        triggered the receive-address rework."""
+        import aqua.tools as tools_module
+        from aqua.ankara import JAN3AccountManager, JAN3Session
+
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="default")
+
+        # Fake AQUA client so register_ln_addresses doesn't touch the network.
+        fake_client = MagicMock()
+        fake_client.get_user.return_value = {
+            "ln_username": "alice",
+            "ln_address_toggled": True,
+            "fingerprint": isolated_manager.fingerprint("default"),
+            "new_addresses_needed": 3,
+        }
+        fake_client.register_addresses.return_value = {"addresses": []}
+
+        mgr = JAN3AccountManager(storage=isolated_manager.storage)
+        mgr._client = fake_client
+        isolated_manager.storage.save_jan3_session(
+            JAN3Session(email="u@e.com", access="ACC", refresh="REF", created_at="t0")
+        )
+        tools_module._jan3_manager = mgr
+
+        from aqua.tools import aqua_register_ln_addresses
+
+        registered = aqua_register_ln_addresses(wallet_name="default", count=3)
+        assert registered["requested_count"] == 3
+        # The addresses actually sent to the server (via fake_client).
+        sent_addresses = fake_client.register_addresses.call_args[0][2]
+        sent_indices = {
+            isolated_manager.get_address("default", index=i).index: addr
+            for i, addr in enumerate(sent_addresses)
+        }
+        # `lw_address` AFTER registration must return an index past the last
+        # one we burned. Pre-rework this returned the same lwk tip as the first
+        # registered address.
+        next_receive = lw_address(wallet_name="default")
+        burned_max = isolated_manager.storage.load_wallet("default").next_address_index - 1
+        assert next_receive["index"] > burned_max - 3  # past all 3 burned
+        # And every sent address differs from the new receive address.
+        assert next_receive["address"] not in sent_addresses
+
 
 # ---------------------------------------------------------------------------
 # Deposit-address QR codes (issue #69)  # Significance: 4
@@ -1210,6 +1324,11 @@ class TestToolRegistry:
             "aqua_verify",
             "aqua_logout",
             "aqua_session",
+            "aqua_get_user",
+            "aqua_ln_address_toggle",
+            "aqua_ln_username_check_available",
+            "aqua_register_ln_addresses",
+            "aqua_ensure_ln_pool",
             "wapupay_exchange_rates",
             "wapupay_quote",
             "wapupay_create_order",
@@ -1225,6 +1344,7 @@ class TestToolRegistry:
             "jan3_session_info",
             "jan3_list_sessions",
             "jan3_logout",
+            "jan3_purchase_ln_username",
         }
         assert set(TOOLS.keys()) == expected
 
