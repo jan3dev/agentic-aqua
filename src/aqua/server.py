@@ -1172,7 +1172,11 @@ TOOL_SCHEMAS = {
         "inputSchema": {"type": "object", "properties": {}},
     },
     "aqua_session": {
-        "description": "Report whether an AQUA session is active (no secrets returned).",
+        "description": (
+            "Report whether an AQUA session is active and still valid (no secrets "
+            "returned). Checks the token expiry locally and only renews against "
+            "Jan3 if it has expired."
+        ),
         "inputSchema": {"type": "object", "properties": {}},
     },
     "wapupay_exchange_rates": {

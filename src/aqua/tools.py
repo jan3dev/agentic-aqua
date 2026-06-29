@@ -1294,7 +1294,9 @@ def aqua_logout() -> dict[str, Any]:
 
 
 def aqua_session() -> dict[str, Any]:
-    """Report whether an AQUA session is active (no secrets returned)."""
+    """Check if AQUA session is active and valid.
+
+    Refreshes token if needed. Returns login and validity status."""
     return get_jan3_manager().session_status()
 
 
