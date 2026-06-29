@@ -107,6 +107,9 @@ class FakeClient:
     def verify(self, email, otp_code):
         return self._yield("verify", email, otp_code)
 
+    def refresh_token(self, refresh):
+        return self._yield("refresh_token", refresh)
+
     def provision_wapupay_account(self, access_token):
         return self._yield("provision_wapupay_account", access_token)
 

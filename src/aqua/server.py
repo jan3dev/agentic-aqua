@@ -1172,7 +1172,11 @@ TOOL_SCHEMAS = {
         "inputSchema": {"type": "object", "properties": {}},
     },
     "aqua_session": {
-        "description": "Report whether an AQUA session is active (no secrets returned).",
+        "description": (
+            "Report whether an AQUA session is active and still valid (no secrets "
+            "returned). Checks the token expiry locally and only renews against "
+            "Jan3 if it has expired."
+        ),
         "inputSchema": {"type": "object", "properties": {}},
     },
     "wapupay_exchange_rates": {
@@ -1193,8 +1197,15 @@ TOOL_SCHEMAS = {
                 "type": {
                     "type": "string",
                     "enum": ["fiat_transfer", "fast_fiat_transfer"],
-                    "default": "fiat_transfer",
-                    "description": "Standard or instant (higher fee) transfer",
+                    "default": "fast_fiat_transfer",
+                    "description": (
+                        "Transfer speed. 'fast_fiat_transfer' show as 'Fast Transfer' for the user (default, higher fee): "
+                        "prioritized, completes in ~10 min to 1 hour during daytime "
+                        "(not instant). 'fiat_transfer' show as 'Normal Transfer' for the user (standard, lower fee): takes "
+                        "3 to 12 hours; recommend only when there is no rush, or when "
+                        "paying at night/weekends since usually a payer picks it up the next "
+                        "day. Explain this trade-off to the user."
+                    ),
                 },
                 "alias": {"type": "string", "description": "Recipient bank alias / CBU / CVU (optional; enables validation)"},
             },
@@ -1203,13 +1214,13 @@ TOOL_SCHEMAS = {
     },
     "wapupay_create_order": {
         "description": (
-            "Create a WapuPay direct-fiat order and get a Liquid USDT funding "
-            "address. Creates the tentative (freezing the quote) and issues "
+            "Create a WapuPay order and get a Liquid USDT funding address. "
+            "Creates the tentative (freezing the quote) and issues "
             "funding instructions. Returns address_destination (Liquid), asset_id "
             "(USDT), funding_amount_usdt, total_amount_usdt, "
             "total_funding_amount_base_units, funding_expires_at and a QR. Pay the "
             "TOTAL with lw_send_asset (amount = total_funding_amount_base_units); "
-            "WapuPay then settles ARS to the bank account. Does NOT broadcast the "
+            "WapuPay then makes a P2P payer settle ARS to the bank account. Does NOT broadcast the "
             "payment itself — confirm the quote with the user first via wapupay_quote."
         ),
         "inputSchema": {
@@ -1220,7 +1231,15 @@ TOOL_SCHEMAS = {
                 "type": {
                     "type": "string",
                     "enum": ["fiat_transfer", "fast_fiat_transfer"],
-                    "default": "fiat_transfer",
+                    "default": "fast_fiat_transfer",
+                    "description": (
+                        "Transfer speed. 'fast_fiat_transfer' name it 'Fast Transfer' for the user (default, higher fee): "
+                        "prioritized, completes in ~10 min to 1 hour during daytime "
+                        "(not instant). 'fiat_transfer' name it 'Normal Transfer' for the user (standard, lower fee): takes "
+                        "3 to 12 hours; recommend only when there is no rush, or when "
+                        "paying at night/weekends since usually a payer picks it up the next "
+                        "day. Explain this trade-off to the user."
+                    ),
                 },
                 "receiver_name": {"type": "string", "description": "Recipient name (optional)"},
                 "refund_address": {"type": "string", "description": "Liquid mainnet refund address (lq1…/ex1…) if funding cannot execute (optional); validated before the order is created"},
@@ -1245,9 +1264,10 @@ TOOL_SCHEMAS = {
     },
     "wapupay_order_status": {
         "description": (
-            "Check a WapuPay direct-fiat order's status (re-read from WapuPay). "
+            "Check a WapuPay P2P order's status (re-read from WapuPay). "
             "Returns is_final / is_success / is_failed. States: CREATED → "
             "FUNDING_ISSUED → EXECUTED. Terminals: EXPIRED, SETTLED_TO_BALANCE, FAILED."
+            "If it contains a `funding_transaction_id` or `executed_transaction_id` you can fetch the details with `wapupay_transaction` if user asks"
         ),
         "inputSchema": {
             "type": "object",
@@ -1272,7 +1292,7 @@ TOOL_SCHEMAS = {
         "inputSchema": {"type": "object", "properties": {}},
     },
     "wapupay_transaction": {
-        "description": "Get a single WapuPay transaction by id (UUID or numeric).",
+        "description": "Get a single WapuPay transaction by id (UUID or numeric). It can be a funding (crypto), an executed fiat transfer or a refund (crypto) transaction.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1566,6 +1586,26 @@ SIDESHIFT (custodial cross-chain swaps):
   Lightning (Boltz submarine, atomic). Communicate this trade-off to the user.
 - Memo networks (BNB Beacon, Stellar, etc.) require a memo on either
   the deposit or settle side — pass settle_memo / refund_memo when prompted.
+
+WAPUPAY (Argentine fiat payouts, funded with USDT on Liquid):
+- WHAT IT IS: WapuPay is NOT an exchange. It is an automated peer-to-peer (P2P)
+  platform — it finds a trusted P2P payer who settles the payment in Argentine
+  pesos (ARS) on the user's behalf (think "Uber for P2P"). The user funds with
+  USDT on Liquid; a matched payer pushes the pesos to the recipient's bank account.
+  If the user asks "what is WapuPay / what can I do with it", explain this; the full
+  blurb is the aqua://docs/wapupay resource.
+- FLOW: wapupay_quote (preview cost) → wapupay_create_order (returns a Liquid USDT
+  address + amount) → pay it with lw_send_asset → WapuPay settles the ARS payout.
+  This never auto-pays; always confirm the quote with the user first.
+  After the user pays the Liquid USDT address, WapuPay orchestrates the operation with a P2P payer that settles the ARS.
+  Offer the user to check the status of the order with `wapupay_order_status` and the executed_transaction_id with `wapupay_transaction`,
+  the executed_transaction contain the details of the fiat transfer that the user wants to know about.
+- wapupay_exchange_rates is public (use USDT/ARS ignore the others rates, no key). The order/transaction tools
+  need a WapuPay API key (env WAPUPAY_API_KEY or wapupay_provision_account).
+- TRANSFER SPEED: type defaults to fast_fiat_transfer (prioritized, ~10 min–1 h in
+  daytime, higher fee — NOT instant). fiat_transfer is standard (3–12 h, lower fee);
+  recommend it only when there's no rush, or at night/weekends since a payer picks
+  it up the next day. Explain this trade-off to the user.
 
 WATCH-ONLY WALLETS:
 - For a Bitcoin-only watch wallet: btc_import_descriptor (BIP84 wpkh xpub).
@@ -2430,6 +2470,12 @@ Please:
                 description="How to safely manage wallets and private keys",
                 mimeType="text/markdown",
             ),
+            Resource(
+                uri="aqua://docs/wapupay",
+                name="What is WapuPay?",
+                description="WapuPay overview: automated P2P ARS payouts funded with USDT on Liquid",
+                mimeType="text/markdown",
+            ),
         ]
 
     @server.read_resource()
@@ -2620,6 +2666,10 @@ If you have:
 - ✅ Mnemonic (encrypted or plaintext) → Full recovery possible
 - ✅ Descriptor only → Watch-only monitoring
 - ❌ Nothing → **Funds are permanently lost**"""
+
+        elif uri == "aqua://docs/wapupay":
+            from .wapupay import WAPUPAY_ABOUT
+            return WAPUPAY_ABOUT
 
         raise ValueError(f"Unknown resource: {uri}")
 
