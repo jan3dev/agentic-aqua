@@ -39,7 +39,7 @@ VAULT_ADDR = (
     "lq1qqvxk052kf3qtkxmrakx50a9gc3smqad2ync54hzntjt980kfej9kkfe"
     "0247rp5h4yzmdftsahhw64uy8pzfe7cpg4fgykm7cv"
 )
-# Mirror the env-configured backend so the legacy-migration test (which records
+# Mirror the env-configured backend so persisted sessions (which record
 # base_url=ANKARA_API_URL) and the manager agree on the host.
 BASE_URL = ANKARA_API_URL
 
@@ -600,11 +600,12 @@ class TestSessionManagement:
         emails = {s.email for s in mgr.list_sessions()}
         assert emails == {"a@example.com", "b@example.com"}
 
-    def test_list_sessions_ignores_legacy_session_json(self, storage):
+    def test_list_sessions_skips_unreadable_file(self, storage):
         mgr = _manager(storage)
         _seed_session(mgr, "a@example.com")
-        # A stray legacy single-session file must not be listed as an account.
-        (storage.jan3_dir / "session.json").write_text("{}")
+        # A stray unreadable/invalid .json in jan3_dir must not break listing
+        # nor be surfaced as an account.
+        (storage.jan3_dir / "garbage.json").write_text("{not valid json")
         emails = {s.email for s in mgr.list_sessions()}
         assert emails == {"a@example.com"}
 

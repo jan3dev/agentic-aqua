@@ -144,7 +144,6 @@ class Storage:
         self.wapupay_orders_dir = self.wapupay_dir / "orders"
         self.wapupay_api_key_path = self.wapupay_dir / "api_key.json"
         self.jan3_dir = self.base_dir / "jan3"
-        self.jan3_session_path = self.jan3_dir / "session.json"
         self.qr_dir = self.base_dir / "qr"
         self.config_path = self.base_dir / "config.json"
         self._ensure_dirs()
@@ -679,7 +678,7 @@ class Storage:
 
     # JAN3 / AQUA account sessions are managed (multi-account, per-email) by
     # Jan3AccountsManager in jan3_accounts.py, which reads/writes files directly
-    # under jan3_dir. Storage only exposes the directory + legacy path.
+    # under jan3_dir. Storage only exposes the directory.
 
     # WapuPay operations
 

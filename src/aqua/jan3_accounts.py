@@ -64,8 +64,6 @@ ASSET_TICKER_USDT = "USDt"
 # catches obvious mistakes before we make a network call.
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-_LEGACY_SESSION_FILENAME = "session.json"
-
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
@@ -325,7 +323,6 @@ class Jan3AccountsManager:
         self.storage = storage
         self.wallet_manager = wallet_manager
         self.base_url = (base_url or ANKARA_API_URL).rstrip("/")
-        self._migrate_legacy_session()
 
     # ─── session persistence ───────────────────────────────────────────
 
@@ -359,8 +356,6 @@ class Jan3AccountsManager:
     def list_sessions(self) -> list[Jan3Session]:
         sessions: list[Jan3Session] = []
         for path in self.storage.jan3_dir.glob("*.json"):
-            if path.name == _LEGACY_SESSION_FILENAME:
-                continue  # legacy single-session file, not a per-email session
             try:
                 with open(path) as f:
                     sessions.append(Jan3Session.from_dict(json.load(f)))
@@ -368,37 +363,6 @@ class Jan3AccountsManager:
                 logger.warning("Skipping unreadable JAN3 session file: %s", path)
         sessions.sort(key=lambda s: s.created_at, reverse=True)
         return sessions
-
-    def _migrate_legacy_session(self) -> None:
-        """Convert a pre-multi-account ``jan3/session.json`` to ``jan3/{email}.json``.
-
-        The legacy schema was ``{email, access, refresh, created_at}``. Idempotent:
-        migrates once (skipping if a per-email file already exists) then deletes
-        the legacy file. An unreadable legacy file is left untouched and logged.
-        """
-        legacy = self.storage.jan3_session_path
-        if not legacy.exists():
-            return
-        try:
-            with open(legacy) as f:
-                data = json.load(f)
-            email = _validate_email(data["email"])
-            target = self._session_path(email)
-            if not target.exists():
-                session = Jan3Session(
-                    email=email,
-                    base_url=self.base_url,
-                    access_token=data.get("access", ""),
-                    refresh_token=data.get("refresh", ""),
-                    created_at=data.get("created_at") or _now_iso(),
-                    refreshed_at=None,
-                    captcha_exempt=False,
-                )
-                self.save_session(session)
-                logger.info("Migrated legacy JAN3 session → %s", target)
-            legacy.unlink()
-        except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
-            logger.warning("Could not migrate legacy JAN3 session (%s); leaving as-is", e)
 
     # ─── asset resolution ─────────────────────────────────────────────
 

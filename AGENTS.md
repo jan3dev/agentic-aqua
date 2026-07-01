@@ -190,8 +190,7 @@ lives in `wapupay.py`.
   `features._SHIPPED_DISABLED`). Business calls still need a key — env var or
   provisioned via `wapupay_provision_account`.
 - **Rail pinned** to Liquid USDT; WapuPay rejects any other funding rail (400).
-- JAN3 sessions persist per-email at `~/.aqua/jan3/{email}.json` (a legacy single
-  `~/.aqua/jan3/session.json` is auto-migrated on first use, then deleted); the
+- JAN3 sessions persist per-email at `~/.aqua/jan3/{email}.json`; the
   provisioned API key and order records persist under `~/.aqua/wapupay/` — all at
   `0o600`. Bank PII + tokens + API key are never logged (see `ankara._redact` /
   `_SENSITIVE_LOG_FIELDS`, which includes `token`).
