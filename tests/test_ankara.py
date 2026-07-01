@@ -20,7 +20,6 @@ from aqua.ankara import (
     JAN3Session,
     SessionExpiredError,
     _access_token_expired,
-    _AuthExpired,
     _jwt_exp,
 )
 from aqua.storage import Storage
@@ -352,9 +351,6 @@ class FakeAuthClient:
 
     def provision_wapupay_account(self, access_token):
         return self._yield("provision_wapupay_account", access_token)
-
-    def refresh_access(self, refresh_token):
-        return self._yield("refresh_access", refresh_token)
 
     def get_user(self, access_token):
         return self._yield("get_user", access_token)
@@ -706,32 +702,15 @@ def test_client_register_addresses_query_string_for_override():
     assert captured["body"] == {"fingerprint": "deadbeef", "addresses": ["lq1qfoo", "lq1qbar"]}
 
 
-def test_client_refresh_access_returns_new_access():
-    client = JAN3AuthClient()
-    with patch(
-        "aqua.ankara.urllib.request.urlopen",
-        side_effect=lambda req, timeout=None: _mock_resp({"access": "ACC2"}),
-    ):
-        assert client.refresh_access("REF") == "ACC2"
-
-
-def test_client_refresh_access_raises_when_response_missing_access():
-    client = JAN3AuthClient()
-    with patch(
-        "aqua.ankara.urllib.request.urlopen",
-        side_effect=lambda req, timeout=None: _mock_resp({}),
-    ):
-        with pytest.raises(ValueError):
-            client.refresh_access("REF")
-
-
-def test_client_401_with_token_raises_auth_expired():
+def test_client_401_with_token_raises_session_expired():
+    # An authed call whose access token 401s raises SessionExpiredError so the
+    # manager's _with_auth_retry can refresh-then-retry.
     client = JAN3AuthClient()
     with patch(
         "aqua.ankara.urllib.request.urlopen",
         side_effect=_http_error(401, '{"detail": "expired"}'),
     ):
-        with pytest.raises(_AuthExpired):
+        with pytest.raises(SessionExpiredError):
             client.get_user("expired.jwt")
 
 
@@ -762,13 +741,11 @@ def test_manager_get_user_returns_profile(jan3_storage):
 
 
 def test_manager_get_user_refreshes_on_401_and_retries(jan3_storage):
-    from aqua.ankara import _AuthExpired
-
     profile = {"ln_username": "alice"}
-    # First get_user call: 401. Refresh returns "ACC2". Retry succeeds.
+    # First get_user call: 401. Refresh returns a new access token. Retry succeeds.
     responses = {
-        "get_user": [_AuthExpired(), profile],
-        "refresh_access": "ACC2",
+        "get_user": [SessionExpiredError("401"), profile],
+        "refresh_token": {"access": "ACC2"},
     }
     fake = FakeAuthClient()
 
@@ -779,19 +756,19 @@ def test_manager_get_user_refreshes_on_401_and_retries(jan3_storage):
             raise val
         return val
 
-    def refresh_access(refresh):
-        fake.calls.append(("refresh_access", (refresh,)))
-        return responses["refresh_access"]
+    def refresh_token(refresh):
+        fake.calls.append(("refresh_token", (refresh,)))
+        return responses["refresh_token"]
 
     fake.get_user = get_user
-    fake.refresh_access = refresh_access
+    fake.refresh_token = refresh_token
 
     m = make_jan3(jan3_storage, fake)
     logged_in(jan3_storage, access="OLD", refresh="REF")
     out = m.get_user()
     assert out == profile
     # Sequence: 401 → refresh → retry with new token.
-    assert [c[0] for c in fake.calls] == ["get_user", "refresh_access", "get_user"]
+    assert [c[0] for c in fake.calls] == ["get_user", "refresh_token", "get_user"]
     assert fake.calls[0][1] == ("OLD",)
     assert fake.calls[2][1] == ("ACC2",)
     # Persisted session was updated.
@@ -799,11 +776,9 @@ def test_manager_get_user_refreshes_on_401_and_retries(jan3_storage):
 
 
 def test_manager_get_user_refresh_failure_points_to_relogin(jan3_storage):
-    from aqua.ankara import _AuthExpired
-
     fake = FakeAuthClient({
-        "get_user": _AuthExpired(),
-        "refresh_access": ValueError("refresh dead"),
+        "get_user": SessionExpiredError("401"),
+        "refresh_token": SessionExpiredError("refresh dead"),
     })
     m = make_jan3(jan3_storage, fake)
     logged_in(jan3_storage)
@@ -1115,12 +1090,48 @@ def test_ensure_ln_pool_caps_at_max(jan3_storage):
     wm.reserve_addresses.assert_called_once_with("default", MAX_ADDRESSES_PER_REGISTRATION)
 
 
+def test_ensure_ln_pool_on_expired_token_refills_once(jan3_storage):
+    """Regression: a token refresh during the pool op's own profile fetch must
+    NOT fire a second, opportunistic refill. ensure_ln_pool fetches its profile
+    via _with_auth_retry *without* the top-up hook, so exactly one refill runs."""
+    profile = {
+        "ln_username": "alice",
+        "ln_address_toggled": True,
+        "fingerprint": "deadbeef",
+        "new_addresses_needed": 2,
+    }
+    # ensure_ln_pool's profile fetch: 401 then (after refresh) the profile.
+    get_user_responses = [SessionExpiredError("401"), profile]
+    fake = FakeAuthClient()
+
+    def get_user(access):
+        fake.calls.append(("get_user", (access,)))
+        val = get_user_responses.pop(0)
+        if isinstance(val, Exception):
+            raise val
+        return val
+
+    fake.get_user = get_user
+    fake.refresh_token = lambda r: {"access": "ACC2"}
+
+    wm = _wm_stub("deadbeef")
+    m = JAN3AccountManager(storage=jan3_storage, wallet_manager_factory=lambda: wm)
+    m._client = fake
+    logged_in(jan3_storage, access="OLD", refresh="REF")
+
+    out = m.ensure_ln_pool(wallet_manager=wm, wallet_name="default")
+    assert out["refilled"] is True
+    # Exactly one mint + one register — the refresh did not double-refill.
+    wm.reserve_addresses.assert_called_once()
+    assert sum(1 for c in fake.calls if c[0] == "register_addresses") == 1
+
+
 # ---------------------------------------------------------------------------
-# _authed_call — opportunistic LN-pool top-up after refresh
+# Opportunistic LN-pool top-up after a token refresh (via _with_auth_retry)
 # ---------------------------------------------------------------------------
 
 
-def test_authed_call_tops_up_after_refresh(jan3_storage):
+def test_top_up_after_refresh(jan3_storage):
     """Successful 401 → refresh → retry triggers an opportunistic top-up."""
     profile = {
         "ln_username": "alice",
@@ -1131,7 +1142,7 @@ def test_authed_call_tops_up_after_refresh(jan3_storage):
     # First get_user (the caller's): 401. Retry: profile. Top-up's single
     # fetch with the new token: profile. ensure_ln_pool + register_ln_addresses
     # reuse that profile, so no more get_user calls.
-    get_user_responses = [_AuthExpired(), profile, profile]
+    get_user_responses = [SessionExpiredError("401"), profile, profile]
     fake = FakeAuthClient()
 
     def get_user(access):
@@ -1141,16 +1152,16 @@ def test_authed_call_tops_up_after_refresh(jan3_storage):
             raise val
         return val
 
-    def refresh_access(refresh):
-        fake.calls.append(("refresh_access", (refresh,)))
-        return "ACC2"
+    def refresh_token(refresh):
+        fake.calls.append(("refresh_token", (refresh,)))
+        return {"access": "ACC2"}
 
     def register_addresses(access, fp, addrs, override_fingerprint=False):
         fake.calls.append(("register_addresses", (access, fp, list(addrs), override_fingerprint)))
         return {"addresses": ["lq1qa", "lq1qb"]}
 
     fake.get_user = get_user
-    fake.refresh_access = refresh_access
+    fake.refresh_token = refresh_token
     fake.register_addresses = register_addresses
 
     wm = _wm_stub("deadbeef")
@@ -1170,7 +1181,7 @@ def test_authed_call_tops_up_after_refresh(jan3_storage):
     methods = [c[0] for c in fake.calls]
     assert methods == [
         "get_user",
-        "refresh_access",
+        "refresh_token",
         "get_user",
         "get_user",          # _opportunistic_top_up's single fetch
         "register_addresses",
@@ -1179,7 +1190,7 @@ def test_authed_call_tops_up_after_refresh(jan3_storage):
     assert fake.calls[-1][1][0] == "ACC2"
 
 
-def test_authed_call_swallows_top_up_errors(jan3_storage):
+def test_top_up_errors_swallowed(jan3_storage):
     """A failing top-up never breaks the caller's actual operation."""
     profile = {
         "ln_username": "alice",
@@ -1187,7 +1198,7 @@ def test_authed_call_swallows_top_up_errors(jan3_storage):
         "fingerprint": "deadbeef",
         "new_addresses_needed": 2,
     }
-    get_user_responses = [_AuthExpired(), profile, ValueError("top-up boom")]
+    get_user_responses = [SessionExpiredError("401"), profile, ValueError("top-up boom")]
     fake = FakeAuthClient()
 
     def get_user(access):
@@ -1198,7 +1209,7 @@ def test_authed_call_swallows_top_up_errors(jan3_storage):
         return val
 
     fake.get_user = get_user
-    fake.refresh_access = lambda r: "ACC2"
+    fake.refresh_token = lambda r: {"access": "ACC2"}
 
     wm = _wm_stub("deadbeef")
     m = JAN3AccountManager(storage=jan3_storage, wallet_manager_factory=lambda: wm)
@@ -1209,10 +1220,10 @@ def test_authed_call_swallows_top_up_errors(jan3_storage):
     assert m.get_user() == profile
 
 
-def test_authed_call_no_factory_no_top_up(jan3_storage):
+def test_no_factory_no_top_up(jan3_storage):
     """Managers constructed without a wallet_manager_factory skip the top-up."""
     profile = {"ln_username": "alice", "ln_address_toggled": True, "new_addresses_needed": 2}
-    get_user_responses = [_AuthExpired(), profile]
+    get_user_responses = [SessionExpiredError("401"), profile]
     fake = FakeAuthClient()
 
     def get_user(access):
@@ -1223,13 +1234,14 @@ def test_authed_call_no_factory_no_top_up(jan3_storage):
         return val
 
     fake.get_user = get_user
-    fake.refresh_access = lambda r: "ACC2"
+    fake.refresh_token = lambda r: {"access": "ACC2"}
 
     m = JAN3AccountManager(storage=jan3_storage)  # no factory
     m._client = fake
     logged_in(jan3_storage, access="OLD", refresh="REF")
     m.get_user()
-    # Only the caller's two get_user calls + the refresh — no top-up get_user.
+    # Only the caller's two get_user calls — no top-up get_user (the refresh_token
+    # lambda doesn't record itself).
     assert [c[0] for c in fake.calls] == ["get_user", "get_user"]
 
 

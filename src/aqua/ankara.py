@@ -24,10 +24,6 @@ from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from typing import Any, Callable, Optional
 
-
-class _AuthExpired(Exception):
-    """Signals the access token was rejected (401). Caught by the manager to retry with a refreshed token."""
-
 # API URL with environment variable override
 ANKARA_API_URL = os.environ.get("ANKARA_API_URL", "https://ankara.aquabtc.com")
 
@@ -302,8 +298,6 @@ class JAN3AuthClient:
                 body = e.read().decode()
             except Exception:
                 pass
-            if e.code == 401 and access_token:
-                raise _AuthExpired() from e
             detail = _extract_error_message(body)
             if e.code == 401:
                 # Recoverable — raise the typed signal so the manager can refresh-then-retry.
@@ -335,18 +329,6 @@ class JAN3AuthClient:
             f"{self.auth_base_url}/verify/",
             json_body={"email": email, "otp_code": otp_code},
         ) or {}
-
-    def refresh_access(self, refresh_token: str) -> str:
-        """POST /auth/refresh/ — exchange the refresh JWT for a new access JWT."""
-        resp = self._api_request(
-            "POST",
-            f"{self.auth_base_url}/refresh/",
-            json_body={"refresh": refresh_token},
-        ) or {}
-        access = resp.get("access")
-        if not access:
-            raise ValueError("AQUA refresh did not return a new access token.")
-        return access
 
     def get_user(self, access_token: str) -> dict:
         """GET /auth/user/ — current user profile (email, ln_username, fingerprint, …)."""
@@ -574,47 +556,13 @@ class JAN3AccountManager:
             )
         return session
 
-    def _authed_call(self, fn: Callable[[str], Any]) -> Any:
-        """Run ``fn(access_token)``; on 401, refresh the access token once and retry.
-
-        Both the refresh and the original error surfaces are mapped to the
-        "session invalid or expired" message so callers see a single recovery
-        hint regardless of which leg failed.
-
-        After a successful refresh, we opportunistically top up the LN-address
-        pool — refresh is the natural "we just touched the session" checkpoint,
-        and the AQUA app's ``LnAddressRegistrationNotifier`` re-runs on the
-        equivalent provider rebuild. The top-up never breaks the caller's call:
-        any error is swallowed and logged at DEBUG.
-        """
-        session = self.require_session()
-        try:
-            return fn(session.access)
-        except _AuthExpired:
-            try:
-                new_access = self.client.refresh_access(session.refresh)
-            except ValueError as refresh_err:
-                raise ValueError(
-                    "AQUA session expired and refresh failed — run aqua_login / aqua_verify again."
-                ) from refresh_err
-            session.access = new_access
-            self.storage.save_jan3_session(session)
-            try:
-                result = fn(new_access)
-            except _AuthExpired as second_401:
-                raise ValueError(
-                    "AQUA session invalid after refresh — run aqua_login / aqua_verify again."
-                ) from second_401
-            self._opportunistic_top_up(new_access)
-            return result
-
     def _opportunistic_top_up(self, access_token: str) -> None:
-        """Fire-and-forget LN-address pool refill after a successful token refresh.
-
-        Fetches the user profile once with the just-refreshed token and threads
-        it through ``ensure_ln_pool`` → ``register_ln_addresses`` so the whole
-        opportunistic-top-up path costs at most a single ``get_user`` round trip.
+        """After refreshing a session, refill the LN-address pool in the background.
+        
+        Used as on_refresh with _with_auth_retry after a 401. 
+        Errors are silently logged and never interrupt the caller.
         """
+   
         if self._wallet_manager_factory is None:
             return
         try:
@@ -626,11 +574,16 @@ class JAN3AccountManager:
 
     def get_user(self) -> dict:
         """Return the current user profile from /auth/user/."""
-        return self._authed_call(self.client.get_user)
+        return self._with_auth_retry(
+            self.client.get_user, on_refresh=self._opportunistic_top_up
+        )
 
     def ln_address_toggle(self, enabled: bool) -> dict:
         """Enable or disable the LN-address feature on the account."""
-        return self._authed_call(lambda access: self.client.ln_address_toggle(access, enabled))
+        return self._with_auth_retry(
+            lambda access: self.client.ln_address_toggle(access, enabled),
+            on_refresh=self._opportunistic_top_up,
+        )
 
     def ln_username_available(self, username: str) -> dict:
         """Check whether an LN username is free to claim.
@@ -645,8 +598,9 @@ class JAN3AccountManager:
             raise ValueError("ln_username is required")
         session = self.storage.load_jan3_session()
         if session and session.access:
-            return self._authed_call(
-                lambda access: self.client.ln_username_available(username, access)
+            return self._with_auth_retry(
+                lambda access: self.client.ln_username_available(username, access),
+                on_refresh=self._opportunistic_top_up,
             )
         return self.client.ln_username_available(username)
 
@@ -683,7 +637,8 @@ class JAN3AccountManager:
             ``{registered_count, fingerprint, addresses}`` where ``addresses`` is
             the full active/unused pool the server now knows about.
         """
-        user = profile if profile is not None else self.get_user()
+        # Register new unused Liquid receive addresses, optionally rebinding fingerprint
+        user = profile if profile is not None else self._with_auth_retry(self.client.get_user)
         ln_username = user.get("ln_username")
         if not ln_username:
             raise ValueError(
@@ -725,7 +680,7 @@ class JAN3AccountManager:
         # lightning_receive, …) collides with these.
         addresses = [a.address for a in wallet_manager.reserve_addresses(wallet_name, count)]
 
-        resp = self._authed_call(
+        resp = self._with_auth_retry(
             lambda access: self.client.register_addresses(
                 access, local_fp, addresses, override_fingerprint=override_fingerprint
             )
@@ -757,38 +712,29 @@ class JAN3AccountManager:
         token refresh) it's reused instead of fetching one — saving a round
         trip on the auto-refill path.
         """
-        user = profile if profile is not None else self.get_user()
+        def _skip(reason: str, **extra) -> dict:
+            return {"refilled": False, "reason": reason, **extra}
+
+        user = profile if profile is not None else self._with_auth_retry(self.client.get_user)
         ln_username = user.get("ln_username")
         if not ln_username:
-            return {
-                "refilled": False,
-                "reason": "no_ln_username",
-                "fingerprint": user.get("fingerprint"),
-            }
+            return _skip("no_ln_username", fingerprint=user.get("fingerprint"))
         if not user.get("ln_address_toggled"):
-            return {
-                "refilled": False,
-                "reason": "ln_address_disabled",
-                "fingerprint": user.get("fingerprint"),
-            }
+            return _skip("ln_address_disabled", fingerprint=user.get("fingerprint"))
         needed = user.get("new_addresses_needed") or 0
         if needed <= 0:
-            return {
-                "refilled": False,
-                "reason": "pool_full",
-                "fingerprint": user.get("fingerprint"),
-                "new_addresses_needed": 0,
-            }
+            return _skip(
+                "pool_full", fingerprint=user.get("fingerprint"), new_addresses_needed=0
+            )
 
         server_fp = user.get("fingerprint")
         local_fp = wallet_manager.fingerprint(wallet_name, password=password)
         if server_fp and server_fp != local_fp:
-            return {
-                "refilled": False,
-                "reason": "fingerprint_mismatch",
-                "server_fingerprint": server_fp,
-                "local_fingerprint": local_fp,
-            }
+            return _skip(
+                "fingerprint_mismatch",
+                server_fingerprint=server_fp,
+                local_fingerprint=local_fp,
+            )
 
         result = self.register_ln_addresses(
             wallet_manager=wallet_manager,
@@ -826,9 +772,13 @@ class JAN3AccountManager:
         self.storage.save_jan3_session(updated)
         return updated
 
-    def _with_auth_retry(self, call):
+    def _with_auth_retry(self, call, on_refresh: Optional[Callable[[str], Any]] = None):
         """Call ``call(access_token)``; on ``SessionExpiredError`` refresh once and retry.
-        Raises ``ValueError`` only when refresh itself fails or the retry is still rejected."""
+        Raises ``ValueError`` only when refresh itself fails or the retry is still rejected.
+
+        ``on_refresh`` (if given) runs with the fresh access token *after* a
+        successful refresh-and-retry — used to opportunistically top up the
+        LN-address pool once the session has just been renewed."""
         session = self.require_session()
         try:
             return call(session.access)
@@ -841,12 +791,15 @@ class JAN3AccountManager:
                     "run aqua_login then aqua_verify again."
                 ) from e
             try:
-                return call(session.access)
+                result = call(session.access)
             except SessionExpiredError as e:
                 raise ValueError(
                     "AQUA session still invalid after refresh — "
                     "run aqua_login then aqua_verify again."
                 ) from e
+            if on_refresh is not None:
+                on_refresh(session.access)
+            return result
 
     def provision_wapupay_token(self) -> str:
         """Provision a fresh WapuPay API key via the AQUA backend (requires prior login).

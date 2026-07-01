@@ -282,17 +282,11 @@ class WalletManager:
         consumes an index. Callers that need to peek without committing should
         pass an explicit ``index``.
         """
-        wollet = self._get_wollet(wallet_name)
         if index is None:
-            wallet_record = self.storage.load_wallet(wallet_name)
-            if wallet_record is None:
-                raise ValueError(f"Wallet {wallet_name!r} not found")
-            lwk_tip = wollet.address(None).index()
-            effective = max(lwk_tip, wallet_record.next_address_index)
-            addr = wollet.address(effective)
-            wallet_record.next_address_index = effective + 1
-            self.storage.save_wallet(wallet_record)
-            return Address(address=str(addr.address()), index=addr.index())
+            # Same load → max(lwk_tip, counter) → derive → advance → save
+            # sequence lives once, in reserve_addresses.
+            return self.reserve_addresses(wallet_name, 1)[0]
+        wollet = self._get_wollet(wallet_name)
         addr = wollet.address(index)
         return Address(address=str(addr.address()), index=addr.index())
 
