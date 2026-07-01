@@ -549,9 +549,9 @@ class WapuPayManager:
     """Wallet-aware orchestration of WapuPay direct-fiat orders.
 
     Order persistence goes through ``Storage``; the wallet manager resolves a
-    Liquid refund address when one isn't supplied. AQUA-account auth (login /
+    Liquid refund address when one isn't supplied. JAN3-account auth (login /
     session) and the WapuPay-key provisioning call are delegated to the injected
-    ``ankara.JAN3AccountManager`` (``self.jan3``).
+    ``jan3_accounts.Jan3AccountsManager`` (``self.jan3``).
     """
 
     def __init__(self, storage, wallet_manager, jan3_manager) -> None:
@@ -568,13 +568,14 @@ class WapuPayManager:
 
     # -- Account provisioning ------------------------------------------------
 
-    def provision_account(self) -> dict:
+    def provision_account(self, email: str) -> dict:
         """Provision a WapuPay API key via the AQUA backend and store it locally.
 
-        Requires a prior AQUA login (``aqua_login`` → ``aqua_verify``): the call
-        is authorized with that JWT. The returned key is persisted to
-        ``~/.aqua/wapupay/api_key.json`` (0o600) so every ``wapupay_*``
-        tool can use it without an env var — the raw key is never returned.
+        Requires a prior JAN3 login for ``email`` (either flow — ``jan3_login`` →
+        ``jan3_verify`` or ``jan3_login_start`` → ``jan3_login_complete``): the
+        call is authorized with that account's JWT. The returned key is persisted
+        to ``~/.aqua/wapupay/api_key.json`` (0o600) so every ``wapupay_*`` tool
+        can use it without an env var — the raw key is never returned.
 
         The AQUA backend issues a fresh key on EVERY call and invalidates any key
         previously issued for the account (no grace period).
@@ -605,7 +606,7 @@ class WapuPayManager:
 
         # Session lookup + the authenticated AQUA-backend call live in the JAN3
         # account manager; WapuPay only resolves/stores the resulting key.
-        token = self.jan3.provision_wapupay_token()
+        token = self.jan3.provision_wapupay_token(email)
         record = WapuPayApiKey(token=token, created_at=datetime.now(UTC).isoformat())
         self.storage.save_wapupay_api_key(record)
         return {
@@ -656,7 +657,7 @@ class WapuPayManager:
             return key
         raise ValueError(
             f"WapuPay API key not configured. Set {WAPUPAY_API_KEY_ENV} in your "
-            "environment, or run wapupay_provision_account (after aqua_login) to "
+            "environment, or run wapupay_provision_account (after jan3_login) to "
             "provision and store one."
         )
 

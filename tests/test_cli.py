@@ -1991,9 +1991,9 @@ class TestErrorHandling:
 
 
 class _FakeJAN3Manager:
-    """Stand-in for JAN3AccountManager — records calls, returns canned responses.
+    """Stand-in for Jan3AccountsManager — records calls, returns canned responses.
 
-    The `aqua_*` auth tools route through `tools._jan3_manager`, so the auth CLI
+    The `jan3_*` tools route through `tools._jan3_manager`, so the `jan3` CLI
     tests inject this (not the WapuPay manager)."""
 
     def __init__(self):
@@ -2003,17 +2003,25 @@ class _FakeJAN3Manager:
         self.calls.append(("login", {"email": email, "language": language}))
         return {"email": email, "message": "OTP sent", "next_step": "verify"}
 
-    def verify(self, email, otp_code):
-        self.calls.append(("verify", {"email": email, "otp_code": otp_code}))
+    def verify(self, email, otp_code, fingerprint=None, captcha_exempt=False):
+        self.calls.append((
+            "verify",
+            {
+                "email": email,
+                "otp_code": otp_code,
+                "fingerprint": fingerprint,
+                "captcha_exempt": captcha_exempt,
+            },
+        ))
         return {"email": email, "logged_in": True, "message": "ok"}
 
-    def logout(self):
-        self.calls.append(("logout", {}))
-        return {"logged_out": True}
+    def logout(self, email):
+        self.calls.append(("logout", {"email": email}))
+        return {"email": email, "logged_out": True}
 
-    def session_status(self):
-        self.calls.append(("session_status", {}))
-        return {"logged_in": True, "email": "u@e.com", "created_at": "t0"}
+    def session_status(self, email):
+        self.calls.append(("session_status", {"email": email}))
+        return {"logged_in": True, "email": email, "created_at": "t0"}
 
 
 class _FakeWapuPayManager:
@@ -2042,8 +2050,8 @@ class _FakeWapuPayManager:
             "funded": True,
         }
 
-    def provision_account(self):
-        self.calls.append(("provision_account", {}))
+    def provision_account(self, email):
+        self.calls.append(("provision_account", {"email": email}))
         return {
             "provisioned": True,
             "key_preview": "Wapu…uY8e",
@@ -2084,12 +2092,12 @@ def wapupay_cli():
 
 @pytest.fixture
 def auth_cli():
-    """Re-register the CLI with the AQUA auth tools enabled + a fake manager.
+    """Re-register the CLI with the JAN3 account tools enabled + a fake manager.
 
-    The `aqua_*` auth tools are enabled by default; we re-register here only to
-    swap in a fake manager, then restore the default registration.
-    The `aqua_login`/`aqua_verify` tools route through `tools._jan3_manager`,
-    so the `_FakeJAN3Manager` stand-in records the calls.
+    The `jan3_*` tools are enabled by default; we re-register here only to swap
+    in a fake manager, then restore the default registration. The `jan3_login`/
+    `jan3_verify` tools route through `tools._jan3_manager`, so the
+    `_FakeJAN3Manager` stand-in records the calls.
     """
     import aqua.tools as tools_module
     from aqua.cli.commands import register_commands
@@ -2098,7 +2106,7 @@ def auth_cli():
 
     enabled = dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)
     for k in enabled:
-        if k.startswith("aqua_"):
+        if k.startswith("jan3_"):
             enabled[k] = True
     register_commands(cli, Config(enabled_tools=enabled))
 
@@ -2114,20 +2122,19 @@ def auth_cli():
 
 class TestWapuPayCli:
     def test_groups_present_by_default(self):
-        """The `wapupay` and `auth` groups are now enabled by default, so both
-        are present in the command registry. Asserted against the registry (not
-        the help text) — "auth" is a substring of unrelated words."""
+        """The `wapupay` and `jan3` groups are enabled by default, so both are
+        present in the command registry."""
         from aqua.cli.commands import register_commands
         from aqua.features import SHIPPED_DEFAULTS_ENABLED_TOOLS
         from aqua.storage import Config
 
         register_commands(cli, Config(enabled_tools=dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)))
         assert "wapupay" in cli.commands
-        assert "auth" in cli.commands
+        assert "jan3" in cli.commands
 
     def test_login(self, runner, auth_cli):
         result = runner.invoke(
-            cli, ["--format", "json", "auth", "login", "--email", "u@e.com"]
+            cli, ["--format", "json", "jan3", "login", "--email", "u@e.com"]
         )
         assert result.exit_code == 0
         assert json.loads(result.output)["message"] == "OTP sent"
@@ -2136,7 +2143,7 @@ class TestWapuPayCli:
     def test_verify_reads_otp_arg(self, runner, auth_cli):
         result = runner.invoke(
             cli,
-            ["--format", "json", "auth", "verify", "--email", "u@e.com", "--otp-code", "123456"],
+            ["--format", "json", "jan3", "verify", "--email", "u@e.com", "--otp", "123456"],
         )
         assert result.exit_code == 0
         assert json.loads(result.output)["logged_in"] is True
@@ -2190,11 +2197,12 @@ class TestWapuPayCli:
 
     def test_provision_account(self, runner, wapupay_cli):
         result = runner.invoke(
-            cli, ["--format", "json", "wapupay", "provision-account"]
+            cli,
+            ["--format", "json", "wapupay", "provision-account", "--email", "u@e.com"],
         )
         assert result.exit_code == 0
         assert json.loads(result.output)["provisioned"] is True
-        assert wapupay_cli.calls[-1] == ("provision_account", {})
+        assert wapupay_cli.calls[-1] == ("provision_account", {"email": "u@e.com"})
 
     def test_provision_account_present_by_default(self):
         """WapuPay is enabled by default, so `provision-account` is registered."""

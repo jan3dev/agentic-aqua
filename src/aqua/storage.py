@@ -7,7 +7,7 @@ import os
 import re
 import shutil
 import sys
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
@@ -68,6 +68,11 @@ class WalletData:
         data = {**data}
         data.setdefault("btc_descriptor", None)
         data.setdefault("btc_change_descriptor", None)
+        # Forward compatibility: drop unknown keys written by other branches
+        # (e.g. next_address_index from an in-flight PR) so this branch can
+        # still load the wallet file.
+        known = {f.name for f in fields(cls)}
+        data = {k: v for k, v in data.items() if k in known}
         return cls(**data)
 
 
@@ -139,7 +144,6 @@ class Storage:
         self.wapupay_orders_dir = self.wapupay_dir / "orders"
         self.wapupay_api_key_path = self.wapupay_dir / "api_key.json"
         self.jan3_dir = self.base_dir / "jan3"
-        self.jan3_session_path = self.jan3_dir / "session.json"
         self.qr_dir = self.base_dir / "qr"
         self.config_path = self.base_dir / "config.json"
         self._ensure_dirs()
@@ -672,27 +676,9 @@ class Storage:
                     pass
         return removed
 
-    # JAN3 / AQUA account operations
-
-    def save_jan3_session(self, session) -> None:
-        """Persist the JAN3 / AQUA account session (Ankara JWT pair)."""
-        self._atomic_write_json(self.jan3_session_path, session.to_dict())
-
-    def load_jan3_session(self):
-        """Load the JAN3 / AQUA account session. Returns JAN3Session or None."""
-        from .ankara import JAN3Session
-
-        if not self.jan3_session_path.exists():
-            return None
-        with open(self.jan3_session_path) as f:
-            return JAN3Session.from_dict(json.load(f))
-
-    def delete_jan3_session(self) -> None:
-        """Remove the persisted JAN3 / AQUA session (idempotent)."""
-        try:
-            self.jan3_session_path.unlink()
-        except FileNotFoundError:
-            pass
+    # JAN3 / AQUA account sessions are managed (multi-account, per-email) by
+    # Jan3AccountsManager in jan3_accounts.py, which reads/writes files directly
+    # under jan3_dir. Storage only exposes the directory.
 
     # WapuPay operations
 

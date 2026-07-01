@@ -49,11 +49,13 @@ def isolated_manager():
         tools_module._btc_manager = None  # so get_btc_manager() uses same storage
         tools_module._lightning_manager = None
         tools_module._pix_manager = None
+        tools_module._jan3_manager = None
         yield manager
         tools_module._manager = None
         tools_module._btc_manager = None
         tools_module._lightning_manager = None
         tools_module._pix_manager = None
+        tools_module._jan3_manager = None
 
 
 # ---------------------------------------------------------------------------
@@ -924,6 +926,172 @@ class TestSweep:
 
 
 # ---------------------------------------------------------------------------
+# craft_raw_tx (build-without-broadcast)  # Significance: 5 (Essential)
+# ---------------------------------------------------------------------------
+
+
+class TestCraftRawTx:
+    """`craft_raw_tx` returns a hex tx and never broadcasts."""
+
+    DEST_BLINDED = (
+        "lq1qqvxk052kf3qtkxmrakx50a9gc3smqad2ync54hzntjt980kfej9kkfe"
+        "0247rp5h4yzmdftsahhw64uy8pzfe7cpg4fgykm7cv"
+    )
+
+    def _setup(self, manager, wallet_name):
+        builder = MagicMock()
+        pset = MagicMock()
+        detailed_pset = MagicMock()
+        signed = MagicMock()
+        finalized = MagicMock()
+        finalized.__str__ = lambda self: "0200000001deadbeef00"
+        wollet = MagicMock()
+        net = MagicMock()
+
+        net.tx_builder.return_value = builder
+        builder.finish.return_value = pset
+        wollet.add_details.return_value = detailed_pset
+        manager._signers[wallet_name].sign = MagicMock(return_value=signed)
+        signed.finalize.return_value = finalized
+        manager._wollets[wallet_name] = wollet
+        return builder, wollet, net, finalized
+
+    def test_lbtc_blinded_uses_add_lbtc_recipient(self, isolated_manager):
+        """Confidential dest + L-BTC → add_lbtc_recipient, NOT add_recipient."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="craft_lbtc")
+        builder, wollet, net, _ = self._setup(isolated_manager, "craft_lbtc")
+
+        with (
+            patch.object(isolated_manager, "sync_wallet"),
+            patch.object(isolated_manager, "_get_network", return_value=net),
+        ):
+            raw = isolated_manager.craft_raw_tx(
+                wallet_name="craft_lbtc",
+                address=self.DEST_BLINDED,
+                amount=100,
+            )
+
+        assert raw == "0200000001deadbeef00"
+        builder.add_lbtc_recipient.assert_called_once()
+        builder.add_recipient.assert_not_called()
+        builder.add_explicit_recipient.assert_not_called()
+        # The PSET is passed through wollet.add_details before signing.
+        wollet.add_details.assert_called_once()
+
+    def test_blinded_non_lbtc_uses_add_recipient(self, isolated_manager):
+        """Confidential dest + non-policy asset → add_recipient(amount, asset)."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="craft_asset")
+        builder, wollet, net, _ = self._setup(isolated_manager, "craft_asset")
+        other_asset = "abcdef" * 10 + "abcd"  # arbitrary 64-hex-char id
+
+        with (
+            patch.object(isolated_manager, "sync_wallet"),
+            patch.object(isolated_manager, "_get_network", return_value=net),
+        ):
+            isolated_manager.craft_raw_tx(
+                wallet_name="craft_asset",
+                address=self.DEST_BLINDED,
+                amount=42,
+                asset_id=other_asset,
+            )
+
+        builder.add_recipient.assert_called_once()
+        args = builder.add_recipient.call_args[0]
+        assert args[1] == 42
+        assert args[2] == other_asset
+        builder.add_lbtc_recipient.assert_not_called()
+        builder.add_explicit_recipient.assert_not_called()
+
+    def test_unblinded_uses_add_explicit_recipient(self, isolated_manager):
+        """Unblinded (explicit) dest → add_explicit_recipient with asset id resolved."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="craft_expl")
+        builder, wollet, net, _ = self._setup(isolated_manager, "craft_expl")
+
+        fake_addr = MagicMock()
+        fake_addr.is_blinded.return_value = False
+        canned_policy = "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d"
+
+        with (
+            patch.object(isolated_manager, "sync_wallet"),
+            patch.object(isolated_manager, "_get_network", return_value=net),
+            patch.object(isolated_manager, "_get_policy_asset", return_value=canned_policy),
+            patch("aqua.wallet.lwk.Address", return_value=fake_addr),
+        ):
+            isolated_manager.craft_raw_tx(
+                wallet_name="craft_expl",
+                address="anything-unblinded",
+                amount=7,
+            )
+
+        builder.add_explicit_recipient.assert_called_once()
+        args = builder.add_explicit_recipient.call_args[0]
+        assert args[0] is fake_addr
+        assert args[1] == 7
+        # The L-BTC policy asset id was resolved automatically for unblinded.
+        assert args[2] == canned_policy
+        builder.add_lbtc_recipient.assert_not_called()
+        builder.add_recipient.assert_not_called()
+
+    def test_does_not_broadcast(self, isolated_manager):
+        """`craft_raw_tx` must not call client.broadcast."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="craft_nobroadcast")
+        _, _, net, _ = self._setup(isolated_manager, "craft_nobroadcast")
+        mock_client = MagicMock()
+
+        with (
+            patch.object(isolated_manager, "sync_wallet"),
+            patch.object(isolated_manager, "_get_network", return_value=net),
+            patch.object(isolated_manager, "_get_client", return_value=mock_client),
+        ):
+            isolated_manager.craft_raw_tx(
+                wallet_name="craft_nobroadcast",
+                address=self.DEST_BLINDED,
+                amount=100,
+            )
+
+        mock_client.broadcast.assert_not_called()
+
+    def test_watch_only_rejects(self, isolated_manager):
+        net = lwk.Network.mainnet()
+        signer = lwk.Signer(lwk.Mnemonic(TEST_MNEMONIC), net)
+        desc = str(signer.wpkh_slip77_descriptor())
+        lw_import_descriptor(descriptor=desc, wallet_name="wo_craft")
+
+        with pytest.raises(ValueError, match="watch-only"):
+            isolated_manager.craft_raw_tx(
+                wallet_name="wo_craft",
+                address=self.DEST_BLINDED,
+                amount=100,
+            )
+
+    def test_zero_amount_rejects(self, isolated_manager):
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="craft_zero")
+        with pytest.raises(ValueError, match="Amount must be positive"):
+            isolated_manager.craft_raw_tx(
+                wallet_name="craft_zero",
+                address=self.DEST_BLINDED,
+                amount=0,
+            )
+
+    def test_negative_amount_rejects(self, isolated_manager):
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="craft_neg")
+        with pytest.raises(ValueError, match="Amount must be positive"):
+            isolated_manager.craft_raw_tx(
+                wallet_name="craft_neg",
+                address=self.DEST_BLINDED,
+                amount=-1,
+            )
+
+    def test_missing_wallet_raises(self, isolated_manager):
+        with pytest.raises(ValueError, match="not found"):
+            isolated_manager.craft_raw_tx(
+                wallet_name="ghost_craft",
+                address=self.DEST_BLINDED,
+                amount=1,
+            )
+
+
+# ---------------------------------------------------------------------------
 # WalletManager internal logic  # Significance: 4 (Important)
 # ---------------------------------------------------------------------------
 
@@ -1038,10 +1206,8 @@ class TestToolRegistry:
             "sideswap_quote",
             "sideswap_execute_swap",
             "sideswap_swap_status",
-            "aqua_login",
-            "aqua_verify",
-            "aqua_logout",
-            "aqua_session",
+            "jan3_login",
+            "jan3_verify",
             "wapupay_exchange_rates",
             "wapupay_quote",
             "wapupay_create_order",
@@ -1052,6 +1218,11 @@ class TestToolRegistry:
             "wapupay_transaction",
             "wapupay_spending_limit",
             "wapupay_provision_account",
+            "jan3_login_start",
+            "jan3_login_complete",
+            "jan3_session_info",
+            "jan3_list_sessions",
+            "jan3_logout",
         }
         assert set(TOOLS.keys()) == expected
 
