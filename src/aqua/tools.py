@@ -1327,9 +1327,11 @@ def aqua_session() -> dict[str, Any]:
 def aqua_get_user() -> dict[str, Any]:
     """Get the AQUA account profile (email, LN username, fingerprint, feature flags).
 
-    Use this to answer "what's my Lightning Address?" (`<ln_username>@aquabtc.com`)
-    and to read state the other LN-address tools depend on: `ln_address_toggled`,
-    `new_addresses_needed`, and the server-side wallet `fingerprint`.
+    Use this to answer "what's my Lightning Address?" — the `ln_username` field
+    is the full address as returned by the backend; surface it verbatim, never
+    append a domain. Also read state the other LN-address tools depend on:
+    `ln_address_toggled`, `new_addresses_needed`, and the server-side wallet
+    `fingerprint`.
 
     Requires a prior `aqua_login` + `aqua_verify`. Auto-refreshes the access
     token on 401.
@@ -1371,8 +1373,8 @@ def aqua_register_ln_addresses(
 ) -> dict[str, Any]:
     """Upload a batch of unused Liquid receive addresses for LN-address delivery.
 
-    The AQUA backend hands these out one-by-one as the user's
-    `<ln_username>@aquabtc.com` receives invoices. Without a healthy pool,
+    The AQUA backend hands these out one-by-one as the user's Lightning
+    Address receives invoices. Without a healthy pool,
     inbound LN payments CANNOT be delivered — call this whenever
     `aqua_get_user` reports `new_addresses_needed > 0`.
 

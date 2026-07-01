@@ -1182,10 +1182,11 @@ TOOL_SCHEMAS = {
     "aqua_get_user": {
         "description": (
             "Get the AQUA account profile (email, ln_username, fingerprint, "
-            "feature flags). Use this to read the user's Lightning Address "
-            "(<ln_username>@aquabtc.com) and the state the other LN-address "
-            "tools depend on: ln_address_toggled, new_addresses_needed, and "
-            "the server-side wallet fingerprint. Requires aqua_login first."
+            "feature flags). The ln_username field is the user's full Lightning "
+            "Address as returned by the backend — surface it verbatim, never "
+            "append a domain. Also carries the state the other LN-address tools "
+            "depend on: ln_address_toggled, new_addresses_needed, and the "
+            "server-side wallet fingerprint. Requires aqua_login first."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -1215,7 +1216,7 @@ TOOL_SCHEMAS = {
         "inputSchema": {
             "type": "object",
             "properties": {
-                "ln_username": {"type": "string", "description": "Desired LN username (the part before @aquabtc.com)."},
+                "ln_username": {"type": "string", "description": "Desired LN username (the local part, before the @domain)."},
             },
             "required": ["ln_username"],
         },
@@ -1223,7 +1224,7 @@ TOOL_SCHEMAS = {
     "aqua_register_ln_addresses": {
         "description": (
             "Upload a batch of unused Liquid receive addresses so the AQUA "
-            "backend can deliver inbound LN payments to <ln_username>@aquabtc.com. "
+            "backend can deliver inbound LN payments to the user's Lightning Address. "
             "Without a healthy unused-address pool, the LN address feature "
             "CANNOT receive — the server hands out one address per invoice. "
             "Call when aqua_get_user.new_addresses_needed > 0. Refuses on "

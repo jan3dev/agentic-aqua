@@ -616,7 +616,7 @@ class JAN3AccountManager:
         """Mint a batch of unused Liquid receive addresses and POST them to /auth/user/addresses/.
 
         Without a healthy pool of unused addresses on the server, inbound LN
-        payments to ``<ln_username>@aquabtc.com`` cannot be delivered — the
+        payments to the user's Lightning Address cannot be delivered — the
         server hands out one address per invoice. Mirrors the AQUA app's
         ``LnAddressRegistrationNotifier``.
 
