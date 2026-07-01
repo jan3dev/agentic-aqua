@@ -1,12 +1,15 @@
-"""Tests for JAN3 Accounts paid captchaless login.
+"""Tests for the unified JAN3 / AQUA account stack (aqua.jan3_accounts).
 
-Patches ``Jan3AccountsClient`` methods on the class so the manager-level
-tests never touch the network; the wallet manager is faked too since
-``craft_raw_tx`` is exercised in test_tools.py.
+The only HTTP seam is ``urllib.request.urlopen`` (patched here); the wallet
+manager's ``craft_raw_tx`` is faked for the paid captchaless flow. Manager tests
+drive the real client through urlopen so the 401→SessionExpiredError mapping,
+the refresh-and-retry orchestration, and rotation-aware refresh are all exercised
+end-to-end — never stubbed out.
 """
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -18,13 +21,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from aqua.ankara import ANKARA_API_URL, SessionExpiredError
 from aqua.jan3_accounts import (
-    AQUA_ANKARA_API_URL,
     ASSET_TICKER_LBTC,
     Jan3AccountsClient,
     Jan3AccountsManager,
     Jan3Session,
-    Jan3UnauthorizedError,
     _email_to_filename,
     _token_preview,
     _validate_email,
@@ -37,6 +39,9 @@ VAULT_ADDR = (
     "lq1qqvxk052kf3qtkxmrakx50a9gc3smqad2ync54hzntjt980kfej9kkfe"
     "0247rp5h4yzmdftsahhw64uy8pzfe7cpg4fgykm7cv"
 )
+# Mirror the env-configured backend so the legacy-migration test (which records
+# base_url=ANKARA_API_URL) and the manager agree on the host.
+BASE_URL = ANKARA_API_URL
 
 
 @pytest.fixture
@@ -64,8 +69,73 @@ def _manager(storage, raw_tx: str = "0200deadbeef") -> Jan3AccountsManager:
     return Jan3AccountsManager(
         storage=storage,
         wallet_manager=_fake_wallet_manager(raw_tx),
-        base_url=AQUA_ANKARA_API_URL,
+        base_url=BASE_URL,
     )
+
+
+def _mock_response(data, status=200):
+    resp = MagicMock()
+    if isinstance(data, (dict, list)):
+        resp.read.return_value = json.dumps(data).encode()
+    elif data is None:
+        resp.read.return_value = b""
+    else:
+        resp.read.return_value = data
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+def _http_error(code, body):
+    return urllib.error.HTTPError(
+        url="https://ankara.aquabtc.com/x", code=code, msg="err", hdrs=None,
+        fp=io.BytesIO(body.encode() if isinstance(body, str) else body),
+    )
+
+
+def _jwt_with_exp(exp: int) -> str:
+    """Build an unsigned JWT carrying the given ``exp`` claim (test fixture)."""
+
+    def seg(obj):
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+    return f"{seg({'alg': 'HS256', 'typ': 'JWT'})}.{seg({'exp': exp})}.sig"
+
+
+# A far-future / long-expired JWT pair for seeding sessions whose access token
+# must (not) trigger ``_with_auth_retry``'s proactive refresh.
+FUTURE_JWT = _jwt_with_exp(9_999_999_999)
+EXPIRED_JWT = _jwt_with_exp(1_000_000_000)
+
+
+class Seq(list):
+    """Marker for a response *sequence* (consumed left-to-right per call).
+
+    A bare list value is a JSON list response (e.g. the products endpoint); wrap
+    it in ``Seq`` only when you want successive calls to the same path to return
+    different things (e.g. a 401 then a success after refresh).
+    """
+
+
+def _route(mapping):
+    """Build a urlopen side_effect that dispatches on the request path.
+
+    ``mapping`` maps a path suffix to a value (returned as a JSON response), an
+    Exception (raised), or a ``Seq`` consumed left-to-right (response sequence).
+    """
+
+    def side_effect(req, timeout=None):
+        path = req.full_url.split("?", 1)[0]
+        for suffix, val in mapping.items():
+            if path.endswith(suffix):
+                if isinstance(val, Seq):
+                    val = val.pop(0)
+                if isinstance(val, Exception):
+                    raise val
+                return _mock_response(val)
+        raise AssertionError(f"unexpected request to {path}")
+
+    return side_effect
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +176,7 @@ class TestPureHelpers:
         encoded = _email_to_filename("a..b/c@d.com")
         assert "/" not in encoded
         assert "\\" not in encoded
+        assert "%2f" in encoded  # the slash was percent-encoded
 
 
 # ---------------------------------------------------------------------------
@@ -117,20 +188,18 @@ class TestSessionRoundtrip:
     def test_to_from_dict(self):
         s = Jan3Session(
             email="me@example.com",
-            base_url="https://ankara.aquabtc.com",
+            base_url=BASE_URL,
             access_token="A" * 40,
             refresh_token="R" * 40,
             created_at="2026-06-16T00:00:00+00:00",
             captcha_exempt=True,
         )
-        s2 = Jan3Session.from_dict(s.to_dict())
-        assert s2 == s
+        assert Jan3Session.from_dict(s.to_dict()) == s
 
     def test_from_dict_backfills_optional_fields(self):
-        """Legacy files without refreshed_at / captcha_exempt should load."""
         s = Jan3Session.from_dict({
             "email": "x@y.com",
-            "base_url": "https://ankara.aquabtc.com",
+            "base_url": BASE_URL,
             "access_token": "a",
             "refresh_token": "r",
             "created_at": "now",
@@ -138,86 +207,85 @@ class TestSessionRoundtrip:
         assert s.refreshed_at is None
         assert s.captcha_exempt is False
 
+    def test_from_dict_drops_unknown_keys(self):
+        s = Jan3Session.from_dict({
+            "email": "x@y.com",
+            "base_url": BASE_URL,
+            "access_token": "a",
+            "refresh_token": "r",
+            "created_at": "now",
+            "bogus_key_from_other_branch": "ignored",
+        })
+        assert s.email == "x@y.com"
+
 
 # ---------------------------------------------------------------------------
-# Jan3AccountsClient HTTP layer
+# Jan3AccountsClient HTTP layer (urlopen seam)
 # ---------------------------------------------------------------------------
-
-
-def _mock_response(data, status=200):
-    resp = MagicMock()
-    if isinstance(data, (dict, list)):
-        resp.read.return_value = json.dumps(data).encode()
-    elif data is None:
-        resp.read.return_value = b""
-    else:
-        resp.read.return_value = data
-    resp.__enter__ = MagicMock(return_value=resp)
-    resp.__exit__ = MagicMock(return_value=False)
-    return resp
 
 
 class TestHttpClient:
     @patch("urllib.request.urlopen")
     def test_get_vault_payment_address(self, mock_urlopen):
         mock_urlopen.return_value = _mock_response({"address": VAULT_ADDR})
-        client = Jan3AccountsClient(base_url="https://ankara.aquabtc.com")
+        client = Jan3AccountsClient(base_url=BASE_URL)
         assert client.get_vault_payment_address() == VAULT_ADDR
-        # The path is the documented one.
         req = mock_urlopen.call_args[0][0]
         assert req.full_url.endswith("/api/v1/liquid-wallet/payment/receive-address/")
 
     @patch("urllib.request.urlopen")
     def test_get_vault_payment_address_empty_raises(self, mock_urlopen):
         mock_urlopen.return_value = _mock_response({"address": ""})
-        client = Jan3AccountsClient(base_url="https://ankara.aquabtc.com")
-        with pytest.raises(RuntimeError, match="no address"):
+        client = Jan3AccountsClient(base_url=BASE_URL)
+        with pytest.raises(ValueError, match="no address"):
             client.get_vault_payment_address()
 
     @patch("urllib.request.urlopen")
     def test_get_product_price_selects_matching_row(self, mock_urlopen):
         rows = [
-            {
-                "product_type": "OTHER",
-                "lbtc_sats_price": 1,
-                "usdt_base_units_price": 1,
-                "usdt_display_price": "1",
-            },
-            {
-                "product_type": "CAPTCHALESS_LOGIN",
-                "lbtc_sats_price": 100,
-                "usdt_base_units_price": 200,
-                "usdt_display_price": "0.10",
-            },
+            {"product_type": "OTHER", "lbtc_sats_price": 1},
+            {"product_type": "CAPTCHALESS_LOGIN", "lbtc_sats_price": 100},
         ]
         mock_urlopen.return_value = _mock_response(rows)
-        client = Jan3AccountsClient(base_url="https://ankara.aquabtc.com")
+        client = Jan3AccountsClient(base_url=BASE_URL)
         row = client.get_product_price("CAPTCHALESS_LOGIN")
         assert row["lbtc_sats_price"] == 100
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url.endswith(
+            "/api/v1/liquid-wallet/products/?product_type=CAPTCHALESS_LOGIN"
+        )
 
     @patch("urllib.request.urlopen")
     def test_get_product_price_missing_row_raises(self, mock_urlopen):
         mock_urlopen.return_value = _mock_response([])
-        client = Jan3AccountsClient(base_url="https://ankara.aquabtc.com")
-        with pytest.raises(RuntimeError, match="no entry for"):
-            client.get_product_price("LN_USERNAME_UPDATE")
+        client = Jan3AccountsClient(base_url=BASE_URL)
+        with pytest.raises(ValueError, match="no entry for"):
+            client.get_product_price("CAPTCHALESS_LOGIN")
 
     @patch("urllib.request.urlopen")
-    def test_login_v2_body_carries_login_challenge(self, mock_urlopen):
+    def test_login_free_posts_email_and_language(self, mock_urlopen):
         mock_urlopen.return_value = _mock_response({"message": "ok"})
-        client = Jan3AccountsClient(base_url="https://ankara.aquabtc.com")
-        result = client.login_v2(
+        client = Jan3AccountsClient(base_url=BASE_URL)
+        assert client.login_free("me@example.com", language="es") == {"message": "ok"}
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data.decode())
+        assert body == {"email": "me@example.com", "language": "es"}
+        assert req.full_url.endswith("/api/v1/auth/login/")
+
+    @patch("urllib.request.urlopen")
+    def test_login_captchaless_carries_challenge(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"message": "ok"})
+        client = Jan3AccountsClient(base_url=BASE_URL)
+        result = client.login_captchaless(
             email="me@example.com",
             language="en",
             raw_tx="DEADBEEF",
             payment_address=VAULT_ADDR,
         )
         assert result == {"message": "ok"}
-        # Verify request body shape.
         req = mock_urlopen.call_args[0][0]
         body = json.loads(req.data.decode())
         assert body["email"] == "me@example.com"
-        assert body["language"] == "en"
         assert body["login_challenge"] == {
             "raw_tx": "DEADBEEF",
             "payment_address": VAULT_ADDR,
@@ -225,69 +293,142 @@ class TestHttpClient:
         assert req.full_url.endswith("/api/v2/auth/login/")
 
     @patch("urllib.request.urlopen")
-    def test_login_v2_without_challenge_omits_field(self, mock_urlopen):
+    def test_login_captchaless_without_challenge_omits_field(self, mock_urlopen):
         mock_urlopen.return_value = _mock_response({"message": "ok"})
-        client = Jan3AccountsClient(base_url="https://ankara.aquabtc.com")
-        client.login_v2(email="me@example.com")
+        client = Jan3AccountsClient(base_url=BASE_URL)
+        client.login_captchaless(email="me@example.com")
         req = mock_urlopen.call_args[0][0]
         body = json.loads(req.data.decode())
         assert "login_challenge" not in body
 
     @patch("urllib.request.urlopen")
-    def test_401_raises_unauthorized(self, mock_urlopen):
-        err = urllib.error.HTTPError(
-            url="https://ankara.aquabtc.com/api/v1/auth/verify/",
-            code=401,
-            msg="Unauthorized",
-            hdrs=None,
-            fp=io.BytesIO(json.dumps({"message": "bad otp"}).encode()),
+    def test_verify_otp_posts_code(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"access": "a", "refresh": "r"})
+        client = Jan3AccountsClient(base_url=BASE_URL)
+        out = client.verify_otp("me@example.com", "123456", fingerprint="fp")
+        assert out == {"access": "a", "refresh": "r"}
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data.decode())
+        assert body == {
+            "email": "me@example.com",
+            "otp_code": "123456",
+            "fingerprint": "fp",
+        }
+        assert req.full_url.endswith("/api/v1/auth/verify/")
+
+    @patch("urllib.request.urlopen")
+    def test_refresh_access_token_returns_dict_rotation_aware(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response(
+            {"access": "new.acc", "refresh": "rot.ref"}
         )
-        mock_urlopen.side_effect = err
-        client = Jan3AccountsClient(base_url="https://ankara.aquabtc.com")
-        with pytest.raises(Jan3UnauthorizedError):
+        client = Jan3AccountsClient(base_url=BASE_URL)
+        out = client.refresh_access_token("the.refresh.tok")
+        assert out == {"access": "new.acc", "refresh": "rot.ref"}
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_method() == "POST"
+        assert req.full_url.endswith("/api/v1/auth/refresh/")
+        assert req.get_header("Authorization") is None
+        assert json.loads(req.data.decode()) == {"refresh": "the.refresh.tok"}
+
+    @patch("urllib.request.urlopen")
+    def test_401_raises_session_expired(self, mock_urlopen):
+        mock_urlopen.side_effect = _http_error(401, json.dumps({"message": "bad otp"}))
+        client = Jan3AccountsClient(base_url=BASE_URL)
+        with pytest.raises(SessionExpiredError):
             client.verify_otp("me@example.com", "000000")
 
     @patch("urllib.request.urlopen")
-    def test_other_http_error_raises_runtime(self, mock_urlopen):
-        err = urllib.error.HTTPError(
-            url="x", code=400, msg="Bad",
-            hdrs=None,
-            fp=io.BytesIO(json.dumps({"message": "CAPTCHA_REQUIRED"}).encode()),
+    def test_other_http_error_raises_valueerror_with_detail(self, mock_urlopen):
+        mock_urlopen.side_effect = _http_error(
+            400, json.dumps({"message": "CAPTCHA_REQUIRED"})
         )
-        mock_urlopen.side_effect = err
-        client = Jan3AccountsClient(base_url="https://ankara.aquabtc.com")
-        with pytest.raises(RuntimeError, match="CAPTCHA_REQUIRED"):
-            client.login_v2(email="me@example.com")
+        client = Jan3AccountsClient(base_url=BASE_URL)
+        with pytest.raises(ValueError, match="CAPTCHA_REQUIRED"):
+            client.login_captchaless(email="me@example.com")
+
+    @patch("urllib.request.urlopen")
+    def test_url_error_raises_valueerror(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.URLError("conn refused")
+        client = Jan3AccountsClient(base_url=BASE_URL)
+        with pytest.raises(ValueError, match="unreachable"):
+            client.login_free("me@example.com")
+
+    @patch("urllib.request.urlopen")
+    def test_provision_wapupay_account_sends_bearer(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"token": "provisioned-key"})
+        client = Jan3AccountsClient(base_url=BASE_URL)
+        out = client.provision_wapupay_account("jwt.access.token")
+        assert out == {"token": "provisioned-key"}
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url.endswith("/api/v1/wapupay/account/")
+        assert req.get_method() == "POST"
+        assert req.get_header("Authorization") == "Bearer jwt.access.token"
+        assert req.get_header("X-api-key") is None
+
+    @patch("urllib.request.urlopen")
+    def test_provision_wapupay_account_401_is_session_expired(self, mock_urlopen):
+        mock_urlopen.side_effect = _http_error(401, json.dumps({"detail": "expired"}))
+        client = Jan3AccountsClient(base_url=BASE_URL)
+        with pytest.raises(SessionExpiredError):
+            client.provision_wapupay_account("expired")
 
 
 # ---------------------------------------------------------------------------
-# Login flow
+# Manager: free email-OTP login
+# ---------------------------------------------------------------------------
+
+
+class TestFreeLogin:
+    def test_login_emails_otp_and_persists_nothing(self, storage):
+        mgr = _manager(storage)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/api/v1/auth/login/": {"message": "sent"}}),
+        ):
+            out = mgr.login("ME@Example.com", language="es")
+        assert out["email"] == "me@example.com"
+        assert out["message"] == "sent"
+        assert "next_step" in out
+        assert mgr.load_session("me@example.com") is None
+
+    def test_login_echoes_dev_otp_code(self, storage):
+        mgr = _manager(storage)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route(
+                {"/api/v1/auth/login/": {"message": "sent", "otp_code": "424242"}}
+            ),
+        ):
+            out = mgr.login("me@example.com")
+        assert out["otp_code"] == "424242"
+
+    def test_login_rejects_bad_email(self, storage):
+        mgr = _manager(storage)
+        with pytest.raises(ValueError, match="Invalid email"):
+            mgr.login("not-an-email")
+
+
+# ---------------------------------------------------------------------------
+# Manager: paid captchaless login (request_login)
 # ---------------------------------------------------------------------------
 
 
 class TestRequestLogin:
-    def test_happy_path(self, storage):
+    def test_happy_path_crafts_tx_and_dispatches(self, storage):
         mgr = _manager(storage, raw_tx="hex-tx")
-        with (
-            patch.object(Jan3AccountsClient, "get_vault_payment_address", return_value=VAULT_ADDR),
-            patch.object(
-                Jan3AccountsClient,
-                "get_product_price",
-                return_value={"lbtc_sats_price": 100},
-            ),
-            patch.object(
-                Jan3AccountsClient,
-                "login_v2",
-                return_value={"message": "OTP sent"},
-            ) as mock_login,
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/api/v1/liquid-wallet/payment/receive-address/": {"address": VAULT_ADDR},
+                "/api/v1/liquid-wallet/products/": [
+                    {"product_type": "CAPTCHALESS_LOGIN", "lbtc_sats_price": 100}
+                ],
+                "/api/v2/auth/login/": {"message": "OTP sent"},
+            }),
         ):
             result = mgr.request_login(
-                email="ME@Example.com",
-                wallet_name="default",
-                password=None,
-                language="en",
+                email="ME@Example.com", wallet_name="default", password=None
             )
-
         assert result["email"] == "me@example.com"
         assert result["payment_address"] == VAULT_ADDR
         assert result["amount_sats"] == 100
@@ -299,34 +440,24 @@ class TestRequestLogin:
             asset_id=LBTC_ASSET_ID,
             password=None,
         )
-        mock_login.assert_called_once_with(
-            email="me@example.com",
-            language="en",
-            raw_tx="hex-tx",
-            payment_address=VAULT_ADDR,
-        )
-        # No session is persisted yet — complete_login does that.
+        # No session persisted yet — verify() does that.
         assert mgr.load_session("me@example.com") is None
 
-    def test_blocked_when_disabled(self, storage):
-        """A 403 CAPTCHALESS_LOGIN_DISABLED from the server surfaces as RuntimeError."""
+    def test_blocked_when_disabled_surfaces_valueerror(self, storage):
         mgr = _manager(storage)
-        with (
-            patch.object(Jan3AccountsClient, "get_vault_payment_address", return_value=VAULT_ADDR),
-            patch.object(
-                Jan3AccountsClient,
-                "get_product_price",
-                return_value={"lbtc_sats_price": 100},
-            ),
-            patch.object(
-                Jan3AccountsClient,
-                "login_v2",
-                side_effect=RuntimeError(
-                    "AQUA API error (403 POST /api/v2/auth/login/): CAPTCHALESS_LOGIN_DISABLED"
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/api/v1/liquid-wallet/payment/receive-address/": {"address": VAULT_ADDR},
+                "/api/v1/liquid-wallet/products/": [
+                    {"product_type": "CAPTCHALESS_LOGIN", "lbtc_sats_price": 100}
+                ],
+                "/api/v2/auth/login/": _http_error(
+                    403, json.dumps({"detail": "CAPTCHALESS_LOGIN_DISABLED"})
                 ),
-            ),
+            }),
         ):
-            with pytest.raises(RuntimeError, match="CAPTCHALESS_LOGIN_DISABLED"):
+            with pytest.raises(ValueError, match="CAPTCHALESS_LOGIN_DISABLED"):
                 mgr.request_login(email="me@example.com")
 
     def test_rejects_invalid_email(self, storage):
@@ -335,83 +466,105 @@ class TestRequestLogin:
             mgr.request_login(email="not-an-email")
 
     def test_rejects_non_positive_price(self, storage):
-        """If the server seeded the price at zero, we refuse to craft a zero-amount tx."""
         mgr = _manager(storage)
-        with (
-            patch.object(Jan3AccountsClient, "get_vault_payment_address", return_value=VAULT_ADDR),
-            patch.object(
-                Jan3AccountsClient,
-                "get_product_price",
-                return_value={"lbtc_sats_price": 0},
-            ),
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/api/v1/liquid-wallet/payment/receive-address/": {"address": VAULT_ADDR},
+                "/api/v1/liquid-wallet/products/": [
+                    {"product_type": "CAPTCHALESS_LOGIN", "lbtc_sats_price": 0}
+                ],
+            }),
         ):
-            with pytest.raises(RuntimeError, match="non-positive"):
+            with pytest.raises(ValueError, match="non-positive"):
                 mgr.request_login(email="me@example.com")
 
 
-class TestCompleteLogin:
-    def test_persists_session(self, storage):
-        mgr = _manager(storage)
-        with patch.object(
-            Jan3AccountsClient,
-            "verify_otp",
-            return_value={"access": "A" * 40, "refresh": "R" * 40},
-        ):
-            result = mgr.complete_login(email="me@example.com", otp_code="123456")
+# ---------------------------------------------------------------------------
+# Manager: verify (shared by both flows) — persists per-email session
+# ---------------------------------------------------------------------------
 
-        assert result["captcha_exempt"] is True
+
+class TestVerify:
+    def test_persists_session_free_flow(self, storage):
+        mgr = _manager(storage)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route(
+                {"/api/v1/auth/verify/": {"access": "A" * 40, "refresh": "R" * 40}}
+            ),
+        ):
+            result = mgr.verify("me@example.com", "123456", captcha_exempt=False)
+
+        assert result["logged_in"] is True
+        assert result["captcha_exempt"] is False
         assert result["access_token_preview"].startswith("AAAA")
-        # The refresh token is the long-lived secret — its preview must
-        # never appear in tool output (would land in MCP transcripts).
+        # The refresh token's preview must never appear in tool output.
         assert "refresh_token_preview" not in result
 
         loaded = mgr.load_session("me@example.com")
         assert loaded is not None
         assert loaded.access_token == "A" * 40
         assert loaded.refresh_token == "R" * 40
-        assert loaded.captcha_exempt is True
+        assert loaded.captcha_exempt is False
 
-        # File permissions: stash secrets at 0o600 on POSIX. (Skip on Windows
-        # where chmod is largely a no-op — the atomic-write helper attempts
-        # it best-effort.)
         if os.name == "posix":
-            path = mgr._session_path("me@example.com")
-            mode = stat.S_IMODE(path.stat().st_mode)
+            mode = stat.S_IMODE(mgr._session_path("me@example.com").stat().st_mode)
             assert mode == 0o600
 
-    def test_propagates_invalid_otp(self, storage):
+    def test_persists_session_captchaless_flow_sets_flag(self, storage):
         mgr = _manager(storage)
-        with patch.object(
-            Jan3AccountsClient,
-            "verify_otp",
-            side_effect=Jan3UnauthorizedError("bad OTP"),
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route(
+                {"/api/v1/auth/verify/": {"access": "A" * 40, "refresh": "R" * 40}}
+            ),
         ):
-            with pytest.raises(Jan3UnauthorizedError):
-                mgr.complete_login(email="me@example.com", otp_code="000000")
+            result = mgr.verify("me@example.com", "123456", captcha_exempt=True)
+        assert result["captcha_exempt"] is True
+        assert mgr.load_session("me@example.com").captcha_exempt is True
+
+    def test_propagates_invalid_otp_and_saves_nothing(self, storage):
+        mgr = _manager(storage)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route(
+                {"/api/v1/auth/verify/": _http_error(401, json.dumps({"message": "bad"}))}
+            ),
+        ):
+            with pytest.raises(SessionExpiredError):
+                mgr.verify("me@example.com", "000000")
         assert mgr.load_session("me@example.com") is None
 
     def test_rejects_blank_otp(self, storage):
         mgr = _manager(storage)
         with pytest.raises(ValueError, match="otp_code is required"):
-            mgr.complete_login(email="me@example.com", otp_code="   ")
+            mgr.verify("me@example.com", "   ")
 
     def test_rejects_missing_tokens(self, storage):
         mgr = _manager(storage)
-        with patch.object(
-            Jan3AccountsClient,
-            "verify_otp",
-            return_value={"access": "only-access"},
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/api/v1/auth/verify/": {"access": "only-access"}}),
         ):
-            with pytest.raises(RuntimeError, match="both access and refresh"):
-                mgr.complete_login(email="me@example.com", otp_code="123456")
+            with pytest.raises(ValueError, match="did not return tokens"):
+                mgr.verify("me@example.com", "123456")
+        assert mgr.load_session("me@example.com") is None
 
 
-def _seed_session(mgr: Jan3AccountsManager, email: str) -> Jan3Session:
+# ---------------------------------------------------------------------------
+# Manager: multi-account session persistence
+# ---------------------------------------------------------------------------
+
+
+def _seed_session(
+    mgr, email, access="initial-access", refresh="refresh-token-xyz"
+) -> Jan3Session:
     session = Jan3Session(
         email=email,
         base_url=mgr.base_url,
-        access_token="initial-access",
-        refresh_token="refresh-token-xyz",
+        access_token=access,
+        refresh_token=refresh,
         created_at="2026-06-16T00:00:00+00:00",
         captcha_exempt=True,
     )
@@ -419,194 +572,330 @@ def _seed_session(mgr: Jan3AccountsManager, email: str) -> Jan3Session:
     return session
 
 
-# ---------------------------------------------------------------------------
-# Session management
-# ---------------------------------------------------------------------------
-
-
 class TestSessionManagement:
+    def test_save_load_roundtrip(self, storage):
+        mgr = _manager(storage)
+        _seed_session(mgr, "me@example.com")
+        loaded = mgr.load_session("me@example.com")
+        assert loaded is not None and loaded.email == "me@example.com"
+
     def test_logout_deletes_file(self, storage):
         mgr = _manager(storage)
         _seed_session(mgr, "me@example.com")
-        assert mgr.load_session("me@example.com") is not None
-
         assert mgr.delete_session("me@example.com") is True
         assert mgr.load_session("me@example.com") is None
 
     def test_logout_idempotent(self, storage):
         mgr = _manager(storage)
         assert mgr.delete_session("ghost@example.com") is False
+        assert mgr.logout("ghost@example.com") == {
+            "email": "ghost@example.com",
+            "logged_out": False,
+        }
 
-    def test_list_sessions(self, storage):
+    def test_list_sessions_multi_account(self, storage):
         mgr = _manager(storage)
         _seed_session(mgr, "a@example.com")
         _seed_session(mgr, "b@example.com")
         emails = {s.email for s in mgr.list_sessions()}
         assert emails == {"a@example.com", "b@example.com"}
 
-    def test_session_file_is_under_jan3_accounts_dir(self, storage):
+    def test_list_sessions_ignores_legacy_session_json(self, storage):
+        mgr = _manager(storage)
+        _seed_session(mgr, "a@example.com")
+        # A stray legacy single-session file must not be listed as an account.
+        (storage.jan3_dir / "session.json").write_text("{}")
+        emails = {s.email for s in mgr.list_sessions()}
+        assert emails == {"a@example.com"}
+
+    def test_session_file_is_under_jan3_dir(self, storage):
         mgr = _manager(storage)
         path = mgr._session_path("me@example.com")
-        assert path.parent == storage.jan3_accounts_dir
+        assert path.parent == storage.jan3_dir
 
     def test_load_session_tolerates_corrupted_file(self, storage):
-        """A corrupted on-disk session shouldn't break every JAN3 tool —
-        treat it as missing so the caller can prompt a re-login."""
         mgr = _manager(storage)
         path = mgr._session_path("me@example.com")
         path.write_text("{not valid json")
         assert mgr.load_session("me@example.com") is None
 
-    def test_load_session_tolerates_missing_required_fields(self, storage):
-        """A file that's valid JSON but missing required dataclass fields
-        (e.g., refresh_token) should also be treated as missing."""
+
+# ---------------------------------------------------------------------------
+# Manager: session_status (local exp check + refresh-on-expiry)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionStatus:
+    def test_not_logged_in(self, storage):
         mgr = _manager(storage)
-        path = mgr._session_path("me@example.com")
-        path.write_text('{"email": "me@example.com"}')
+        assert mgr.session_status("ghost@example.com") == {
+            "email": "ghost@example.com",
+            "logged_in": False,
+        }
+
+    def test_valid_access_skips_network(self, storage):
+        mgr = _manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch("urllib.request.urlopen", side_effect=AssertionError("no network")):
+            st = mgr.session_status("me@example.com")
+        assert st["logged_in"] is True and st["valid"] is True
+        assert "access" not in st and "refresh" not in st  # no secrets leaked
+
+    def test_expired_access_refreshes_and_reports_valid(self, storage):
+        mgr = _manager(storage)
+        _seed_session(mgr, "me@example.com", access=EXPIRED_JWT, refresh="good.ref")
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/api/v1/auth/refresh/": {"access": FUTURE_JWT}}),
+        ):
+            st = mgr.session_status("me@example.com")
+        assert st["valid"] is True
+        # The rotated access token was persisted.
+        assert mgr.load_session("me@example.com").access_token == FUTURE_JWT
+
+    def test_refresh_rejected_reports_invalid(self, storage):
+        mgr = _manager(storage)
+        _seed_session(mgr, "me@example.com", access=EXPIRED_JWT, refresh="dead.ref")
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route(
+                {"/api/v1/auth/refresh/": _http_error(401, "{}")}
+            ),
+        ):
+            st = mgr.session_status("me@example.com")
+        assert st["logged_in"] is True and st["valid"] is False
+        assert "jan3_login" in st["message"]
+
+    def test_network_error_reports_unknown(self, storage):
+        mgr = _manager(storage)
+        _seed_session(mgr, "me@example.com", access=EXPIRED_JWT, refresh="ref")
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route(
+                {"/api/v1/auth/refresh/": urllib.error.URLError("unreachable")}
+            ),
+        ):
+            st = mgr.session_status("me@example.com")
+        assert st["valid"] is None
+        assert "Could not verify" in st["message"]
+
+
+# ---------------------------------------------------------------------------
+# Manager: _refresh_session (rotation-aware) + _with_auth_retry
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshSession:
+    def test_keeps_old_refresh_when_not_rotated(self, storage):
+        mgr = _manager(storage)
+        session = _seed_session(
+            mgr, "me@example.com", access="old.acc", refresh="keep.ref"
+        )
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/api/v1/auth/refresh/": {"access": "new.acc"}}),
+        ):
+            updated = mgr._refresh_session(session)
+        assert updated.access_token == "new.acc"
+        assert updated.refresh_token == "keep.ref"
+        reloaded = mgr.load_session("me@example.com")
+        assert reloaded.access_token == "new.acc"
+        assert reloaded.refreshed_at is not None
+
+    def test_persists_rotated_refresh(self, storage):
+        mgr = _manager(storage)
+        session = _seed_session(
+            mgr, "me@example.com", access="old.acc", refresh="old.ref"
+        )
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route(
+                {"/api/v1/auth/refresh/": {"access": "rot.acc", "refresh": "rot.ref"}}
+            ),
+        ):
+            mgr._refresh_session(session)
+        reloaded = mgr.load_session("me@example.com")
+        assert reloaded.access_token == "rot.acc" and reloaded.refresh_token == "rot.ref"
+
+    def test_no_refresh_token_deletes_and_raises(self, storage):
+        mgr = _manager(storage)
+        session = _seed_session(mgr, "me@example.com", refresh="")
+        with pytest.raises(SessionExpiredError):
+            mgr._refresh_session(session)
+        assert mgr.load_session("me@example.com") is None
+
+    def test_empty_access_in_response_deletes_and_raises(self, storage):
+        mgr = _manager(storage)
+        session = _seed_session(mgr, "me@example.com", refresh="r")
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/api/v1/auth/refresh/": {}}),
+        ):
+            with pytest.raises(SessionExpiredError):
+                mgr._refresh_session(session)
+        assert mgr.load_session("me@example.com") is None
+
+    def test_refresh_401_deletes_session(self, storage):
+        mgr = _manager(storage)
+        session = _seed_session(mgr, "me@example.com", refresh="dead.ref")
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/api/v1/auth/refresh/": _http_error(401, "{}")}),
+        ):
+            with pytest.raises(SessionExpiredError):
+                mgr._refresh_session(session)
         assert mgr.load_session("me@example.com") is None
 
 
-# ---------------------------------------------------------------------------
-# Refresh-token flow: expired access token → refresh → retry
-# ---------------------------------------------------------------------------
-
-
-class TestRefreshFlow:
-    """End-to-end verification of the access-token refresh contract.
-
-    Documents that the implementation:
-      1. Persists BOTH access_token and refresh_token after login.
-      2. Detects access-token expiry (HTTP 401) on any authed call.
-      3. Calls /api/v1/auth/refresh/ with the STORED refresh_token
-         (and no Authorization header — the bearer has just expired).
-      4. Persists the new access_token while preserving refresh_token.
-      5. Retries the original authed call with the new bearer.
-    """
-
-    @patch("urllib.request.urlopen")
-    def test_refresh_endpoint_wire_shape(self, mock_urlopen):
-        """The refresh call hits /api/v1/auth/refresh/ with ``{"refresh": …}``
-        and no Authorization header (the access token has just expired,
-        so presenting it would be useless or worse)."""
-        mock_urlopen.return_value = _mock_response({"access": "new-tok"})
-        client = Jan3AccountsClient(
-            base_url="https://ankara.aquabtc.com",
-            access_token="expired-tok",
-        )
-
-        assert client.refresh_access_token("the-refresh-token") == "new-tok"
-
-        req = mock_urlopen.call_args[0][0]
-        assert req.get_method() == "POST"
-        assert req.full_url.endswith("/api/v1/auth/refresh/")
-        assert req.get_header("Authorization") is None
-        assert json.loads(req.data.decode()) == {"refresh": "the-refresh-token"}
-
-    @patch("urllib.request.urlopen")
-    def test_refresh_endpoint_missing_access_field_raises(self, mock_urlopen):
-        """A 200 OK with no ``access`` field is a server bug — surface it
-        as a clear RuntimeError rather than silently storing ``None``."""
-        mock_urlopen.return_value = _mock_response({})
-        client = Jan3AccountsClient(base_url="https://ankara.aquabtc.com")
-        with pytest.raises(RuntimeError, match="no access token"):
-            client.refresh_access_token("the-refresh-token")
-
-    def test_with_refresh_retry_refreshes_on_401(self, storage):
-        """First authed call 401s → refresh → retry succeeds with new bearer."""
+class TestWithAuthRetry:
+    def test_first_call_success_no_refresh(self, storage):
         mgr = _manager(storage)
-        session = _seed_session(mgr, "me@example.com")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        seen = []
 
-        tokens_seen: list[str | None] = []
-        calls = {"n": 0}
-
-        def authed_call(client):
-            tokens_seen.append(client.access_token)
-            calls["n"] += 1
-            if calls["n"] == 1:
-                raise Jan3UnauthorizedError("expired")
+        def call(access):
+            seen.append(access)
             return {"ok": True}
 
-        with patch.object(
-            Jan3AccountsClient,
-            "refresh_access_token",
-            return_value="new-access",
-        ) as mock_refresh:
-            result = mgr._with_refresh_retry(session, authed_call)
+        with patch("urllib.request.urlopen", side_effect=AssertionError("no refresh")):
+            assert mgr._with_auth_retry("me@example.com", call) == {"ok": True}
+        assert seen == [FUTURE_JWT]
 
+    def test_refreshes_and_retries_on_401(self, storage):
+        mgr = _manager(storage)
+        _seed_session(
+            mgr, "me@example.com", access=FUTURE_JWT, refresh="good.ref"
+        )
+        seen = []
+        calls = {"n": 0}
+
+        def call(access):
+            seen.append(access)
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise SessionExpiredError("expired at server")
+            return {"ok": True}
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/api/v1/auth/refresh/": {"access": "new.acc"}}),
+        ):
+            result = mgr._with_auth_retry("me@example.com", call)
         assert result == {"ok": True}
-        mock_refresh.assert_called_once_with("refresh-token-xyz")
-        # First attempt got the stale token, retry got the refreshed one.
-        assert tokens_seen == ["initial-access", "new-access"]
+        assert seen == [FUTURE_JWT, "new.acc"]
+        assert mgr.load_session("me@example.com").access_token == "new.acc"
 
-        reloaded = mgr.load_session("me@example.com")
-        assert reloaded.access_token == "new-access"
-        assert reloaded.refreshed_at is not None
-        # Server's refresh response only carries ``access`` — refresh_token
-        # must be preserved locally.
-        assert reloaded.refresh_token == "refresh-token-xyz"
-
-    def test_with_refresh_retry_post_refresh_401_wipes_session(self, storage):
-        """Call 401 → refresh OK → call 401 again → session deleted.
-
-        Server-side revocation (account banned, key rotated, etc.) gives
-        us a successful refresh but the next authed call still 401s. The
-        local session is poisoned — wipe it so the user is forced to
-        re-login rather than retrying forever."""
+    def test_proactive_refresh_when_access_expired(self, storage):
+        # A locally-expired access token triggers a refresh BEFORE the call.
         mgr = _manager(storage)
-        session = _seed_session(mgr, "me@example.com")
+        _seed_session(
+            mgr, "me@example.com", access=EXPIRED_JWT, refresh="good.ref"
+        )
+        seen = []
 
-        def authed_call(client):
-            raise Jan3UnauthorizedError("server says no")
-
-        with patch.object(
-            Jan3AccountsClient,
-            "refresh_access_token",
-            return_value="new-access",
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/api/v1/auth/refresh/": {"access": "fresh.acc"}}),
         ):
-            with pytest.raises(Jan3UnauthorizedError):
-                mgr._with_refresh_retry(session, authed_call)
+            mgr._with_auth_retry("me@example.com", lambda access: seen.append(access))
+        # Call never saw the stale token — only the proactively-refreshed one.
+        assert seen == ["fresh.acc"]
 
+    def test_second_401_wipes_session_and_raises_valueerror(self, storage):
+        mgr = _manager(storage)
+        _seed_session(
+            mgr, "me@example.com", access=FUTURE_JWT, refresh="good.ref"
+        )
+
+        def call(access):
+            raise SessionExpiredError("server says no")
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/api/v1/auth/refresh/": {"access": "new.acc"}}),
+        ):
+            with pytest.raises(ValueError, match="still invalid after refresh"):
+                mgr._with_auth_retry("me@example.com", call)
         assert mgr.load_session("me@example.com") is None
 
-    def test_with_refresh_retry_double_401_wipes_session(self, storage):
-        """Call 401 → refresh itself 401s → session deleted.
-
-        ``_refresh_access_token`` is responsible for wiping when the
-        refresh endpoint rejects us; this test guards that path."""
+    def test_require_session_raises_when_not_logged_in(self, storage):
         mgr = _manager(storage)
-        session = _seed_session(mgr, "me@example.com")
+        with pytest.raises(ValueError, match="Not logged in"):
+            mgr.require_session("ghost@example.com")
 
-        def authed_call(client):
-            raise Jan3UnauthorizedError("expired")
 
-        with patch.object(
-            Jan3AccountsClient,
-            "refresh_access_token",
-            side_effect=Jan3UnauthorizedError("refresh also expired"),
+# ---------------------------------------------------------------------------
+# Manager: provision_wapupay_token (works from either login flow)
+# ---------------------------------------------------------------------------
+
+
+class TestProvisionWapupayToken:
+    def test_happy_path_free_flow_session(self, storage):
+        mgr = _manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/api/v1/wapupay/account/": {"token": "WapuKey_abc"}}),
         ):
-            with pytest.raises(Jan3UnauthorizedError):
-                mgr._with_refresh_retry(session, authed_call)
+            assert mgr.provision_wapupay_token("me@example.com") == "WapuKey_abc"
 
-        assert mgr.load_session("me@example.com") is None
-
-    def test_with_refresh_retry_first_call_success_no_refresh(self, storage):
-        """If the first call succeeds, refresh must NOT be invoked."""
+    def test_happy_path_captchaless_session(self, storage):
         mgr = _manager(storage)
-        session = _seed_session(mgr, "me@example.com")
+        # captcha_exempt=True session (paid flow) provisions identically.
+        s = _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        assert s.captcha_exempt is True
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/api/v1/wapupay/account/": {"token": "WapuKey_xyz"}}),
+        ):
+            assert mgr.provision_wapupay_token("me@example.com") == "WapuKey_xyz"
 
-        def authed_call(client):
-            return {"ok": True, "seen": client.access_token}
+    def test_refreshes_and_retries_on_401(self, storage):
+        mgr = _manager(storage)
+        _seed_session(
+            mgr, "me@example.com", access=FUTURE_JWT, refresh="good.ref"
+        )
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/api/v1/wapupay/account/": Seq([
+                    _http_error(401, json.dumps({"detail": "expired"})),
+                    {"token": "WapuKey_after_refresh"},
+                ]),
+                "/api/v1/auth/refresh/": {"access": "fresh.acc", "refresh": "fresh.ref"},
+            }),
+        ):
+            token = mgr.provision_wapupay_token("me@example.com")
+        assert token == "WapuKey_after_refresh"
+        assert mgr.load_session("me@example.com").access_token == "fresh.acc"
 
-        with patch.object(
-            Jan3AccountsClient,
-            "refresh_access_token",
-        ) as mock_refresh:
-            result = mgr._with_refresh_retry(session, authed_call)
+    def test_relogin_when_refresh_fails(self, storage):
+        mgr = _manager(storage)
+        _seed_session(
+            mgr, "me@example.com", access=FUTURE_JWT, refresh="dead.ref"
+        )
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/api/v1/wapupay/account/": _http_error(401, "{}"),
+                "/api/v1/auth/refresh/": _http_error(401, "{}"),
+            }),
+        ):
+            with pytest.raises(ValueError, match="jan3_login"):
+                mgr.provision_wapupay_token("me@example.com")
 
-        assert result == {"ok": True, "seen": "initial-access"}
-        mock_refresh.assert_not_called()
+    def test_requires_login(self, storage):
+        mgr = _manager(storage)
+        with pytest.raises(ValueError, match="Not logged in"):
+            mgr.provision_wapupay_token("me@example.com")
 
-        # Session is unchanged.
-        reloaded = mgr.load_session("me@example.com")
-        assert reloaded.access_token == "initial-access"
-        assert reloaded.refreshed_at is None
+    def test_missing_token_raises(self, storage):
+        mgr = _manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/api/v1/wapupay/account/": {"not_token": "x"}}),
+        ):
+            with pytest.raises(ValueError, match="token missing"):
+                mgr.provision_wapupay_token("me@example.com")
+

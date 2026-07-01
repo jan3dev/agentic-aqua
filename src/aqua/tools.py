@@ -37,8 +37,7 @@ _sideshift_manager: "SideShiftManager | None" = None
 _sideswap_peg_manager: "SideSwapPegManager | None" = None
 _sideswap_swap_manager: "SideSwapSwapManager | None" = None
 _wapupay_manager: "WapuPayManager | None" = None
-_jan3_manager: "JAN3AccountManager | None" = None
-_jan3_accounts_manager: "Jan3AccountsManager | None" = None
+_jan3_manager: "Jan3AccountsManager | None" = None
 
 
 def get_manager() -> WalletManager:
@@ -137,17 +136,22 @@ def get_sideswap_swap_manager() -> "SideSwapSwapManager":
     return _sideswap_swap_manager
 
 
-def get_jan3_manager() -> "JAN3AccountManager":
-    """Get or create the JAN3 / AQUA account manager (shares storage).
+def get_jan3_manager() -> "Jan3AccountsManager":
+    """Get or create the JAN3 account manager (shares storage + wallet manager).
 
-    Owns the AQUA-account auth surface (the ``aqua_*`` tools) and the WapuPay-key
-    provisioning call against the JAN3/AQUA backend (``ANKARA_API_URL``).
+    Owns all JAN3/AQUA account management (the ``jan3_*`` tools): both login
+    flows (free email-OTP + paid captchaless), multi-account session
+    persistence, and the WapuPay-key provisioning call against the JAN3/AQUA
+    backend (``ANKARA_API_URL``).
     """
     global _jan3_manager
     if _jan3_manager is None:
-        from .ankara import JAN3AccountManager
+        from .jan3_accounts import Jan3AccountsManager
 
-        _jan3_manager = JAN3AccountManager(storage=get_manager().storage)
+        _jan3_manager = Jan3AccountsManager(
+            storage=get_manager().storage,
+            wallet_manager=get_manager(),
+        )
     return _jan3_manager
 
 
@@ -163,24 +167,6 @@ def get_wapupay_manager() -> "WapuPayManager":
             jan3_manager=get_jan3_manager(),
         )
     return _wapupay_manager
-
-
-def get_jan3_accounts_manager() -> "Jan3AccountsManager":
-    """Get or create JAN3 Accounts manager (shares storage + wallet manager).
-
-    Owns the paid captchaless-login flow and on-chain LN-username purchases
-    surfaced as the ``jan3_*`` tools (separate from the email-OTP ``aqua_*``
-    surface in [[get_jan3_manager]]).
-    """
-    global _jan3_accounts_manager
-    if _jan3_accounts_manager is None:
-        from .jan3_accounts import Jan3AccountsManager
-
-        _jan3_accounts_manager = Jan3AccountsManager(
-            storage=get_manager().storage,
-            wallet_manager=get_manager(),
-        )
-    return _jan3_accounts_manager
 
 
 # Tool implementations
@@ -1271,55 +1257,6 @@ def changelly_status(order_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# JAN3's AQUA (Ankara) account auth surface
-# ---------------------------------------------------------------------------
-
-def aqua_login(email: str, language: str = "en") -> dict[str, Any]:
-    """Start AQUA account login: JAN3's Ankara backend emails a one-time code (OTP).
-
-    The user authenticates with their AQUA account email; Ankara sends a 6-digit
-    OTP to that address. Follow up with `aqua_verify` passing the code the user
-    received.
-
-    Args:
-        email: the user's AQUA account email address.
-        language: OTP email language (en/es/pt). Default: en.
-
-    Returns:
-        email, message, next_step (and otp_code only on non-prod Ankara).
-    """
-    return get_jan3_manager().login(email, language=language)
-
-
-def aqua_verify(email: str, otp_code: str) -> dict[str, Any]:
-    """Verify the OTP emailed by `aqua_login` and store the AQUA session.
-
-    On success the AQUA↔Ankara JWT session is persisted locally (protected at
-    rest by file permissions) so subsequent AQUA calls don't re-prompt.
-
-    Args:
-        email: the same email used in `aqua_login`.
-        otp_code: the 6-digit code from the email.
-
-    Returns:
-        email, logged_in, message.
-    """
-    return get_jan3_manager().verify(email, otp_code)
-
-
-def aqua_logout() -> dict[str, Any]:
-    """Forget the local AQUA session."""
-    return get_jan3_manager().logout()
-
-
-def aqua_session() -> dict[str, Any]:
-    """Check if AQUA session is active and valid.
-
-    Refreshes token if needed. Returns login and validity status."""
-    return get_jan3_manager().session_status()
-
-
-# ---------------------------------------------------------------------------
 # WapuPay (Argentine direct-fiat payments)
 # ---------------------------------------------------------------------------
 
@@ -1484,16 +1421,20 @@ def wapupay_spending_limit() -> dict[str, Any]:
     return get_wapupay_manager().spending_limit()
 
 
-def wapupay_provision_account() -> dict[str, Any]:
-    """Provision a WapuPay API key via your AQUA account, so the WapuPay tools work.
+def wapupay_provision_account(email: str) -> dict[str, Any]:
+    """Provision a WapuPay API key via your JAN3 account, so the WapuPay tools work.
 
     Use this when the user wants to use WapuPay but has no WapuPay API key set.
-    It calls the AQUA backend (authorized with the AQUA login session) to create
-    the user's WapuPay sub-user and obtain their API key, then stores the key
-    locally (0o600) so every other `wapupay_*` tool can use it automatically.
-    The raw key is never returned — only a masked preview.
+    It calls the AQUA backend (authorized with the JAN3 login session for
+    `email`) to create the user's WapuPay sub-user and obtain their API key, then
+    stores the key locally (0o600) so every other `wapupay_*` tool can use it
+    automatically. The raw key is never returned — only a masked preview.
 
-    Requires a prior AQUA login: call `aqua_login` then `aqua_verify` first.
+    Requires a prior JAN3 login for `email` (either flow): call `jan3_login` then
+    `jan3_verify`, or `jan3_login_start` then `jan3_login_complete`.
+
+    Args:
+        email: the logged-in JAN3 account whose session authorizes the call.
 
     The AQUA backend issues a fresh key on EVERY call and invalidates any key
     previously issued for the account (no grace period). So this only calls the
@@ -1507,7 +1448,7 @@ def wapupay_provision_account() -> dict[str, Any]:
         already configured: already_configured=True, source ("env"|"stored"),
         key_preview, message.
     """
-    return get_wapupay_manager().provision_account()
+    return get_wapupay_manager().provision_account(email)
 
 
 # ---------------------------------------------------------------------------
@@ -2143,8 +2084,50 @@ def qr_decode(image_path: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# JAN3 Accounts (login + purchases)
+# JAN3 account management (multi-account login + sessions + paid captchaless login)
 # ---------------------------------------------------------------------------
+
+
+def jan3_login(email: str, language: str = "en") -> dict[str, Any]:
+    """Default JAN3 login: the backend emails a one-time code (free, email-OTP).
+
+    The user authenticates with their JAN3 account email; the backend sends a
+    6-digit OTP to that address. Follow up with `jan3_verify` passing the code.
+    This is the preferred login path; use `jan3_login_start` (paid captchaless)
+    only as a fallback when this flow isn't available for the account.
+
+    Args:
+        email: the user's JAN3 account email address.
+        language: OTP email language (en/es/pt). Default: en.
+
+    Returns:
+        email, message, otp_sent_to, next_step (and otp_code only on non-prod).
+    """
+    return get_jan3_manager().login(email, language=language)
+
+
+def jan3_verify(
+    email: str,
+    otp_code: str,
+    fingerprint: str | None = None,
+) -> dict[str, Any]:
+    """Verify the OTP from `jan3_login` and persist the JAN3 session for `email`.
+
+    On success the JWT session is persisted locally per-email (0o600) so
+    subsequent JAN3/WapuPay calls don't re-prompt.
+
+    Args:
+        email: the same email used in `jan3_login`.
+        otp_code: the 6-digit code from the email.
+        fingerprint: optional device fingerprint string.
+
+    Returns:
+        email, logged_in, captcha_exempt (False for this free flow), message,
+        access_token_preview.
+    """
+    return get_jan3_manager().verify(
+        email, otp_code, fingerprint=fingerprint, captcha_exempt=False
+    )
 
 
 def jan3_login_start(
@@ -2153,8 +2136,8 @@ def jan3_login_start(
     password: str | None = None,
     language: str = "en",
 ) -> dict[str, Any]:
-    """
-    Step 1 of the JAN3 paid captchaless login.
+    """Fallback JAN3 login (paid captchaless), step 1 — for accounts that can't
+    use the free `jan3_login` email-OTP flow.
 
     Fetches the AQUA vault payment address and the CAPTCHALESS_LOGIN price,
     crafts a signed L-BTC tx funding the vault for that exact amount, and
@@ -2172,8 +2155,7 @@ def jan3_login_start(
         otp_code (only when server has EMAIL_BASED_OTP off — dev/test),
         next_step.
     """
-    manager = get_jan3_accounts_manager()
-    return manager.request_login(
+    return get_jan3_manager().request_login(
         email=email,
         wallet_name=wallet_name,
         password=password,
@@ -2186,9 +2168,8 @@ def jan3_login_complete(
     otp_code: str,
     fingerprint: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Step 2 of the JAN3 login. Exchanges the OTP for JWT tokens and persists
-    the session to ``~/.aqua/jan3_accounts/{email}.json`` (0o600).
+    """Step 2 of the paid captchaless login. Exchanges the OTP for JWT tokens and
+    persists the per-email session to ``~/.aqua/jan3/{email}.json`` (0o600).
 
     Args:
         email: JAN3 account email (must match the one used in jan3_login_start).
@@ -2196,43 +2177,24 @@ def jan3_login_complete(
         fingerprint: Optional device fingerprint string.
 
     Returns:
-        email, captcha_exempt (always true after a paid login), message,
-        access_token_preview. Full tokens are NEVER echoed (and the
-        refresh token isn't previewed at all — it's the long-lived
-        secret and shouldn't appear in transcripts).
+        email, logged_in, captcha_exempt (True for this paid flow), message,
+        access_token_preview. Full tokens are NEVER echoed.
     """
-    manager = get_jan3_accounts_manager()
-    return manager.complete_login(
-        email=email, otp_code=otp_code, fingerprint=fingerprint
+    return get_jan3_manager().verify(
+        email, otp_code, fingerprint=fingerprint, captcha_exempt=True
     )
 
 
 def jan3_session_info(email: str) -> dict[str, Any]:
+    """Return status + non-sensitive info about the persisted JAN3 session for
+    `email` (refreshes the token if expired). Does NOT echo full tokens.
     """
-    Return non-sensitive information about a persisted JAN3 session.
-
-    Does NOT echo full tokens — only metadata and preview strings.
-    """
-    manager = get_jan3_accounts_manager()
-    session = manager.load_session(email)
-    if not session:
-        return {"email": email, "has_session": False}
-    from .jan3_accounts import _token_preview
-
-    return {
-        "email": session.email,
-        "has_session": True,
-        "base_url": session.base_url,
-        "created_at": session.created_at,
-        "refreshed_at": session.refreshed_at,
-        "captcha_exempt": session.captcha_exempt,
-        "access_token_preview": _token_preview(session.access_token),
-    }
+    return get_jan3_manager().session_status(email)
 
 
 def jan3_list_sessions() -> dict[str, Any]:
     """List all persisted JAN3 sessions (metadata only — no tokens)."""
-    manager = get_jan3_accounts_manager()
+    manager = get_jan3_manager()
     sessions = manager.list_sessions()
     return {
         "sessions": [
@@ -2249,10 +2211,8 @@ def jan3_list_sessions() -> dict[str, Any]:
 
 
 def jan3_logout(email: str) -> dict[str, Any]:
-    """Delete a persisted JAN3 session. Idempotent."""
-    manager = get_jan3_accounts_manager()
-    deleted = manager.delete_session(email)
-    return {"email": email, "deleted": deleted}
+    """Delete the persisted JAN3 session for `email`. Idempotent."""
+    return get_jan3_manager().logout(email)
 
 
 # Tool registry for MCP
@@ -2307,10 +2267,6 @@ TOOLS = {
     "sideswap_quote": sideswap_quote,
     "sideswap_execute_swap": sideswap_execute_swap,
     "sideswap_swap_status": sideswap_swap_status,
-    "aqua_login": aqua_login,
-    "aqua_verify": aqua_verify,
-    "aqua_logout": aqua_logout,
-    "aqua_session": aqua_session,
     "wapupay_exchange_rates": wapupay_exchange_rates,
     "wapupay_quote": wapupay_quote,
     "wapupay_create_order": wapupay_create_order,
@@ -2321,6 +2277,8 @@ TOOLS = {
     "wapupay_transaction": wapupay_transaction,
     "wapupay_spending_limit": wapupay_spending_limit,
     "wapupay_provision_account": wapupay_provision_account,
+    "jan3_login": jan3_login,
+    "jan3_verify": jan3_verify,
     "jan3_login_start": jan3_login_start,
     "jan3_login_complete": jan3_login_complete,
     "jan3_session_info": jan3_session_info,

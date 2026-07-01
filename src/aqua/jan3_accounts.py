@@ -1,31 +1,25 @@
-"""JAN3 Accounts integration: paid captchaless login.
+"""JAN3 / AQUA account management (the ``jan3_*`` tools).
 
-Talks to the AQUA Ankara production backend at ``https://ankara.aquabtc.com``.
-The base URL is hardcoded — staging is for internal use only and requires a
-local code patch.
+Single home for everything that manages a JAN3/AQUA account against the Ankara
+backend (``ANKARA_API_URL`` — env-overridable, staging via
+``https://test.aquabtc.com``). Sessions are **multi-account**: one JWT pair per
+email, persisted at ``~/.aqua/jan3/{email}.json`` (0o600).
 
-Surface (REST/JSON):
+Two login flows, both ending at the same ``/api/v1/auth/verify/`` endpoint:
 
-  GET  /api/v1/liquid-wallet/payment/receive-address/
-       → {"address": "lq1..."} — public, no auth.
+  * **Free email-OTP (default)** — ``login`` → ``POST /api/v1/auth/login/`` emails
+    an OTP; ``verify`` exchanges it for ``{access, refresh}``.
+  * **Paid captchaless (fallback)** — ``request_login`` crafts a signed L-BTC tx
+    funding AQUA's vault for the CAPTCHALESS_LOGIN price, POSTs it to
+    ``POST /api/v2/auth/login/`` (server broadcasts it, flips ``captcha_exempt``,
+    emails the OTP); ``verify`` then completes it.
 
-  GET  /api/v1/liquid-wallet/products/?product_type=...
-       → [{"product_type","lbtc_sats_price","usdt_base_units_price",
-            "usdt_display_price"}] — public.
+The WapuPay API-key provisioning call (``POST /api/v1/wapupay/account/``) also
+lives here and works with a session from *either* flow — it only needs the JWT.
 
-  POST /api/v2/auth/login/
-       Body: {"email","language","login_challenge":{"raw_tx",
-                "payment_address","captcha_token"}}
-       The paid bypass uses raw_tx + payment_address; server broadcasts
-       the tx, flips UserProfile.captcha_exempt, and emails the OTP.
-
-  POST /api/v1/auth/verify/      {email, otp_code, fingerprint?}
-                                   → {access, refresh}
-  POST /api/v1/auth/refresh/     {refresh} → {access}
-
-Sessions persist at ~/.aqua/jan3_accounts/{email}.json (0o600). Only
-``complete_login`` writes the session — ``request_login`` is a
-non-mutating step that just dispatches the OTP email.
+Shared HTTP/PII/JWT helpers (``_redact`` / ``_mask`` / ``_extract_error_message``
+/ ``_jwt_exp`` / ``_access_token_expired`` / ``SessionExpiredError``) are imported
+from ``ankara.py``; the dependency is one-way (``ankara`` never imports this).
 """
 
 from __future__ import annotations
@@ -36,11 +30,19 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from .ankara import (
+    ANKARA_API_URL,
+    HTTP_TIMEOUT_SECONDS,
+    USER_AGENT,
+    SessionExpiredError,
+    _access_token_expired,
+    _extract_error_message,
+)
 from .assets import resolve_liquid_asset_id
 from .storage import Storage
 from .wallet import WalletManager
@@ -48,9 +50,10 @@ from .wallet import WalletManager
 logger = logging.getLogger(__name__)
 
 
-AQUA_ANKARA_API_URL = "https://ankara.aquabtc.com"
-USER_AGENT = "agentic-aqua"
-HTTP_TIMEOUT_SECONDS = 30.0
+# Auth/account endpoints (same Ankara host as Lightning).
+AUTH_BASE_PATH_V1 = "/api/v1/auth"
+AUTH_BASE_PATH_V2 = "/api/v2/auth"
+WAPUPAY_ACCOUNT_PATH = "/api/v1/wapupay/account/"
 
 PRODUCT_TYPE_CAPTCHALESS_LOGIN = "CAPTCHALESS_LOGIN"
 
@@ -61,40 +64,7 @@ ASSET_TICKER_USDT = "USDt"
 # catches obvious mistakes before we make a network call.
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-
-class Jan3UnauthorizedError(RuntimeError):
-    """Raised when an authenticated request returns HTTP 401.
-
-    The manager catches this once per call to attempt a refresh-and-retry.
-    A second 401 (or a 401 on the refresh itself) deletes the local session
-    and re-raises so the caller can prompt the user to log in again.
-    """
-
-
-@dataclass
-class Jan3Session:
-    """Persistent record of a JAN3 account login session.
-
-    ``captcha_exempt`` is always True after a successful captchaless login.
-    """
-
-    email: str
-    base_url: str
-    access_token: str
-    refresh_token: str
-    created_at: str
-    refreshed_at: Optional[str] = None
-    captcha_exempt: bool = False
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "Jan3Session":
-        data = {**data}
-        data.setdefault("refreshed_at", None)
-        data.setdefault("captcha_exempt", False)
-        return cls(**data)
+_LEGACY_SESSION_FILENAME = "session.json"
 
 
 def _now_iso() -> str:
@@ -132,16 +102,47 @@ def _email_to_filename(email: str) -> str:
     return re.sub(r"[^a-z0-9@._-]", lambda m: f"%{ord(m.group(0)):02x}", email)
 
 
+@dataclass
+class Jan3Session:
+    """Persistent record of a JAN3 account login session (one per email).
+
+    ``captcha_exempt`` is True for sessions created via the paid captchaless
+    flow; False for the free email-OTP flow. It's informational only — it does
+    not affect authentication.
+    """
+
+    email: str
+    base_url: str
+    access_token: str
+    refresh_token: str
+    created_at: str
+    refreshed_at: Optional[str] = None
+    captcha_exempt: bool = False
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Jan3Session":
+        # Tolerant load: drop unknown keys, backfill optional fields.
+        known = {f.name for f in fields(cls)}
+        data = {k: v for k, v in data.items() if k in known}
+        data.setdefault("refreshed_at", None)
+        data.setdefault("captcha_exempt", False)
+        return cls(**data)
+
+
 # ---------------------------------------------------------------------------
 # HTTP client
 # ---------------------------------------------------------------------------
 
 
 class Jan3AccountsClient:
-    """HTTP client for the AQUA Ankara backend.
+    """HTTP client for the AQUA Ankara account API.
 
-    Stateless except for the optional bearer ``access_token`` — pass a new
-    token to retry after a refresh.
+    Stateless except for the optional bearer ``access_token``. Raises
+    :class:`SessionExpiredError` on HTTP 401 (recoverable — the manager
+    refreshes and retries) and ``ValueError`` on any other backend failure.
     """
 
     def __init__(
@@ -149,7 +150,7 @@ class Jan3AccountsClient:
         base_url: Optional[str] = None,
         access_token: Optional[str] = None,
     ) -> None:
-        self.base_url = (base_url or AQUA_ANKARA_API_URL).rstrip("/")
+        self.base_url = (base_url or ANKARA_API_URL).rstrip("/")
         self.access_token = access_token
 
     def _api_request(
@@ -167,10 +168,11 @@ class Jan3AccountsClient:
                 url += "?" + urllib.parse.urlencode(cleaned)
         data = json.dumps(body).encode() if body is not None else None
         headers = {
-            "Content-Type": "application/json",
             "Accept": "application/json",
             "User-Agent": USER_AGENT,
         }
+        if data is not None:
+            headers["Content-Type"] = "application/json"
         if auth:
             if not self.access_token:
                 raise ValueError("Authenticated request requires an access_token")
@@ -179,36 +181,37 @@ class Jan3AccountsClient:
         try:
             with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
                 raw = resp.read().decode()
-                return json.loads(raw) if raw else None
+                return json.loads(raw) if raw.strip() else None
         except urllib.error.HTTPError as e:
-            detail = ""
+            body_text = ""
             try:
-                err_body = json.loads(e.read().decode())
-                detail = (
-                    err_body.get("message")
-                    or err_body.get("error_code")
-                    or err_body.get("error")
-                    or err_body.get("detail")
-                    or ""
-                )
-                if isinstance(detail, dict):
-                    detail = detail.get("message") or detail.get("code") or str(detail)
+                body_text = e.read().decode()
             except Exception:
                 pass
+            detail = _extract_error_message(body_text)
             if e.code == 401:
-                raise Jan3UnauthorizedError(
-                    f"AQUA API unauthorized ({method} {path}): {detail or 'no detail'}"
+                # Recoverable — manager refreshes the token and retries once.
+                msg = f"AQUA session token rejected (401 {method} {path})"
+                if detail:
+                    msg += f": {detail}"
+                raise SessionExpiredError(msg) from e
+            if e.code == 403:
+                raise ValueError(
+                    f"AQUA backend forbade the request (403 {method} {path})"
+                    + (f": {detail}" if detail else "")
+                ) from e
+            if e.code == 502:
+                raise ValueError(
+                    f"AQUA upstream error (502 {method} {path}) — try again shortly."
                 ) from e
             msg = f"AQUA API error ({e.code} {method} {path})"
             if detail:
                 msg += f": {detail}"
-            raise RuntimeError(msg) from e
+            raise ValueError(msg) from e
         except urllib.error.URLError as e:
-            raise RuntimeError(
-                f"AQUA API unreachable ({method} {path}): {e.reason}"
-            ) from e
+            raise ValueError(f"AQUA API unreachable ({method} {path}): {e.reason}") from e
 
-    # ─── public endpoints ──────────────────────────────────────────────
+    # ─── public (no-auth) endpoints ────────────────────────────────────
 
     def get_vault_payment_address(self) -> str:
         result = self._api_request(
@@ -216,17 +219,13 @@ class Jan3AccountsClient:
         )
         address = (result or {}).get("address")
         if not address:
-            raise RuntimeError(
+            raise ValueError(
                 "AQUA payment receive-address endpoint returned no address"
             )
         return address
 
     def get_product_price(self, product_type: str) -> dict:
-        """GET /products/?product_type=... — returns the single matching row.
-
-        Raises if the response is empty or doesn't include the requested
-        product type (server-side default seed should always provide one).
-        """
+        """GET /products/?product_type=... — returns the single matching row."""
         result = self._api_request(
             "GET",
             "/api/v1/liquid-wallet/products/",
@@ -236,11 +235,21 @@ class Jan3AccountsClient:
         for row in rows:
             if row.get("product_type") == product_type:
                 return row
-        raise RuntimeError(
+        raise ValueError(
             f"AQUA products endpoint returned no entry for {product_type!r}"
         )
 
-    def login_v2(
+    # ─── login / auth endpoints ────────────────────────────────────────
+
+    def login_free(self, email: str, language: str = "en") -> dict:
+        """POST /api/v1/auth/login/ — free email-OTP. Returns ``{message[, otp_code]}``."""
+        return self._api_request(
+            "POST",
+            f"{AUTH_BASE_PATH_V1}/login/",
+            body={"email": email, "language": language},
+        ) or {}
+
+    def login_captchaless(
         self,
         email: str,
         language: str = "en",
@@ -249,6 +258,7 @@ class Jan3AccountsClient:
         payment_address: Optional[str] = None,
         captcha_token: Optional[str] = None,
     ) -> dict:
+        """POST /api/v2/auth/login/ — paid captchaless bypass (raw_tx + payment_address)."""
         challenge: dict[str, str] = {}
         if raw_tx is not None:
             challenge["raw_tx"] = raw_tx
@@ -259,7 +269,7 @@ class Jan3AccountsClient:
         body: dict[str, Any] = {"email": email, "language": language}
         if challenge:
             body["login_challenge"] = challenge
-        return self._api_request("POST", "/api/v2/auth/login/", body=body) or {}
+        return self._api_request("POST", f"{AUTH_BASE_PATH_V2}/login/", body=body) or {}
 
     def verify_otp(
         self,
@@ -267,32 +277,43 @@ class Jan3AccountsClient:
         otp_code: str,
         fingerprint: Optional[str] = None,
     ) -> dict:
+        """POST /api/v1/auth/verify/ — exchange the OTP for ``{access, refresh}``."""
         body: dict[str, Any] = {"email": email, "otp_code": otp_code}
         if fingerprint is not None:
             body["fingerprint"] = fingerprint
-        return self._api_request("POST", "/api/v1/auth/verify/", body=body) or {}
+        return self._api_request("POST", f"{AUTH_BASE_PATH_V1}/verify/", body=body) or {}
 
-    def refresh_access_token(self, refresh_token: str) -> str:
-        result = self._api_request(
-            "POST", "/api/v1/auth/refresh/", body={"refresh": refresh_token}
+    def refresh_access_token(self, refresh_token: str) -> dict:
+        """POST /api/v1/auth/refresh/ — returns ``{access[, refresh]}`` (rotation-aware).
+
+        Raises :class:`SessionExpiredError` (via 401) if the refresh token is
+        itself rejected.
+        """
+        return self._api_request(
+            "POST", f"{AUTH_BASE_PATH_V1}/refresh/", body={"refresh": refresh_token}
         ) or {}
-        access = result.get("access")
-        if not access:
-            raise RuntimeError("AQUA refresh endpoint returned no access token")
-        return access
+
+    def provision_wapupay_account(self, access_token: str) -> dict:
+        """POST /api/v1/wapupay/account/ — create a WapuPay user, return its API key.
+
+        Authenticates with the AQUA JWT (no X-API-Key — this hits AQUA/Ankara).
+        Raises :class:`SessionExpiredError` on 401 so the manager can refresh.
+        """
+        client = Jan3AccountsClient(base_url=self.base_url, access_token=access_token)
+        return client._api_request("POST", WAPUPAY_ACCOUNT_PATH, auth=True) or {}
 
 
 # ---------------------------------------------------------------------------
-# Manager (login orchestration)
+# Manager (login orchestration + multi-account persistence)
 # ---------------------------------------------------------------------------
 
 
 class Jan3AccountsManager:
-    """High-level JAN3 Accounts orchestration.
+    """High-level JAN3 account orchestration (multi-account).
 
-    Owns session persistence and the multi-step login + purchase flows.
-    The underlying :class:`Jan3AccountsClient` is stateless; the manager
-    builds one per call (or per retry) with the current bearer token.
+    Owns per-email session persistence and both login flows. The underlying
+    :class:`Jan3AccountsClient` is stateless; the manager builds one per call
+    (or per retry) with the current bearer token.
     """
 
     def __init__(
@@ -303,13 +324,14 @@ class Jan3AccountsManager:
     ) -> None:
         self.storage = storage
         self.wallet_manager = wallet_manager
-        self.base_url = (base_url or AQUA_ANKARA_API_URL).rstrip("/")
+        self.base_url = (base_url or ANKARA_API_URL).rstrip("/")
+        self._migrate_legacy_session()
 
     # ─── session persistence ───────────────────────────────────────────
 
     def _session_path(self, email: str) -> Path:
         email = _validate_email(email)
-        return self.storage.jan3_accounts_dir / f"{_email_to_filename(email)}.json"
+        return self.storage.jan3_dir / f"{_email_to_filename(email)}.json"
 
     def load_session(self, email: str) -> Optional[Jan3Session]:
         path = self._session_path(email)
@@ -319,8 +341,7 @@ class Jan3AccountsManager:
             with open(path) as f:
                 return Jan3Session.from_dict(json.load(f))
         except (OSError, json.JSONDecodeError, TypeError):
-            # Corrupted file shouldn't pin the user out of every JAN3 tool.
-            # Treat as missing and let the caller force a re-login.
+            # Corrupted file shouldn't lock the user out of every JAN3 tool.
             logger.warning("Unreadable JAN3 session file: %s", path)
             return None
 
@@ -337,15 +358,47 @@ class Jan3AccountsManager:
 
     def list_sessions(self) -> list[Jan3Session]:
         sessions: list[Jan3Session] = []
-        for path in self.storage.jan3_accounts_dir.glob("*.json"):
+        for path in self.storage.jan3_dir.glob("*.json"):
+            if path.name == _LEGACY_SESSION_FILENAME:
+                continue  # legacy single-session file, not a per-email session
             try:
                 with open(path) as f:
                     sessions.append(Jan3Session.from_dict(json.load(f)))
             except (OSError, json.JSONDecodeError, TypeError):
-                # Skip corrupted files rather than failing the whole list.
                 logger.warning("Skipping unreadable JAN3 session file: %s", path)
         sessions.sort(key=lambda s: s.created_at, reverse=True)
         return sessions
+
+    def _migrate_legacy_session(self) -> None:
+        """Convert a pre-multi-account ``jan3/session.json`` to ``jan3/{email}.json``.
+
+        The legacy schema was ``{email, access, refresh, created_at}``. Idempotent:
+        migrates once (skipping if a per-email file already exists) then deletes
+        the legacy file. An unreadable legacy file is left untouched and logged.
+        """
+        legacy = self.storage.jan3_session_path
+        if not legacy.exists():
+            return
+        try:
+            with open(legacy) as f:
+                data = json.load(f)
+            email = _validate_email(data["email"])
+            target = self._session_path(email)
+            if not target.exists():
+                session = Jan3Session(
+                    email=email,
+                    base_url=self.base_url,
+                    access_token=data.get("access", ""),
+                    refresh_token=data.get("refresh", ""),
+                    created_at=data.get("created_at") or _now_iso(),
+                    refreshed_at=None,
+                    captcha_exempt=False,
+                )
+                self.save_session(session)
+                logger.info("Migrated legacy JAN3 session → %s", target)
+            legacy.unlink()
+        except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
+            logger.warning("Could not migrate legacy JAN3 session (%s); leaving as-is", e)
 
     # ─── asset resolution ─────────────────────────────────────────────
 
@@ -367,7 +420,23 @@ class Jan3AccountsManager:
             )
         return resolved
 
-    # ─── login flow ────────────────────────────────────────────────────
+    # ─── login flows ──────────────────────────────────────────────────
+
+    def login(self, email: str, language: str = "en") -> dict:
+        """Free email-OTP login (default): Ankara emails an OTP. Persists nothing yet."""
+        email = _validate_email(email)
+        client = Jan3AccountsClient(base_url=self.base_url)
+        resp = client.login_free(email, language=language)
+        out = {
+            "email": email,
+            "message": resp.get("message", "An OTP code has been sent to your email."),
+            "otp_sent_to": email,
+            "next_step": "Call jan3_verify with the OTP code from your email.",
+        }
+        # Non-prod Ankara (EMAIL_BASED_OTP off) returns the code inline.
+        if resp.get("otp_code"):
+            out["otp_code"] = resp["otp_code"]
+        return out
 
     def request_login(
         self,
@@ -376,17 +445,13 @@ class Jan3AccountsManager:
         password: Optional[str] = None,
         language: str = "en",
     ) -> dict:
-        """Paid captchaless login step 1: dispatch the OTP email.
+        """Paid captchaless login (fallback) step 1: pay the fee and dispatch the OTP.
 
-        Fetches the vault payment address and the CAPTCHALESS_LOGIN price
-        from the AQUA backend, then crafts a signed L-BTC tx that funds
-        that address and POSTs everything to /api/v2/auth/login/. The
-        server broadcasts the tx, sets captcha_exempt on the user, and
-        emails the OTP.
-
-        Returns a dict describing what to do next — the actual session
-        is only persisted by :meth:`complete_login` after the user
-        supplies the OTP.
+        Fetches the vault payment address and the CAPTCHALESS_LOGIN price, crafts
+        a signed L-BTC tx funding that address, and POSTs everything to
+        /api/v2/auth/login/. The server broadcasts the tx, sets ``captcha_exempt``
+        on the user, and emails the OTP. The session is only persisted by
+        :meth:`verify` after the user supplies the OTP.
         """
         email = _validate_email(email)
         client = Jan3AccountsClient(base_url=self.base_url)
@@ -395,7 +460,7 @@ class Jan3AccountsManager:
         price = client.get_product_price(PRODUCT_TYPE_CAPTCHALESS_LOGIN)
         amount_sats = int(price.get("lbtc_sats_price") or 0)
         if amount_sats <= 0:
-            raise RuntimeError(
+            raise ValueError(
                 f"AQUA CAPTCHALESS_LOGIN price is non-positive ({amount_sats}); "
                 "captchaless login is not configured server-side."
             )
@@ -409,7 +474,7 @@ class Jan3AccountsManager:
             password=password,
         )
 
-        response = client.login_v2(
+        response = client.login_captchaless(
             email=email,
             language=language,
             raw_tx=raw_tx,
@@ -422,20 +487,23 @@ class Jan3AccountsManager:
             "amount_sats": amount_sats,
             "asset_ticker": ASSET_TICKER_LBTC,
             "otp_sent_to": email,
-            # When the backend has EMAIL_BASED_OTP disabled (dev/test) it
-            # echoes the OTP in the response — surface it so smoke tests
-            # don't need email access.
+            # When EMAIL_BASED_OTP is disabled (dev/test) the OTP is echoed back.
             "otp_code": response.get("otp_code"),
             "next_step": "Call jan3_login_complete with the OTP code from your email.",
         }
 
-    def complete_login(
+    def verify(
         self,
         email: str,
         otp_code: str,
         fingerprint: Optional[str] = None,
+        captcha_exempt: bool = False,
     ) -> dict:
-        """Exchange the OTP for JWT tokens and persist the session."""
+        """Exchange the OTP for JWT tokens and persist the per-email session.
+
+        Shared by both login flows. ``captcha_exempt`` records which flow created
+        the session (True for the paid captchaless flow) — informational only.
+        """
         email = _validate_email(email)
         otp_code = (otp_code or "").strip()
         if not otp_code:
@@ -446,8 +514,8 @@ class Jan3AccountsManager:
         access = tokens.get("access")
         refresh = tokens.get("refresh")
         if not access or not refresh:
-            raise RuntimeError(
-                "AQUA verify endpoint did not return both access and refresh tokens"
+            raise ValueError(
+                "AQUA verify did not return tokens — check the email and OTP code."
             )
 
         session = Jan3Session(
@@ -456,66 +524,151 @@ class Jan3AccountsManager:
             access_token=access,
             refresh_token=refresh,
             created_at=_now_iso(),
-            captcha_exempt=True,
+            captcha_exempt=captcha_exempt,
         )
         self.save_session(session)
         return {
             "email": email,
-            "captcha_exempt": True,
+            "logged_in": True,
+            "captcha_exempt": captcha_exempt,
             "message": (
                 f"Session saved at {self._session_path(email)}. "
-                "You can now make authenticated purchases."
+                "You can now make authenticated calls."
             ),
             "access_token_preview": _token_preview(access),
         }
 
-    # ─── refresh-and-retry ────────────────────────────────────────────
+    def logout(self, email: str) -> dict:
+        """Forget the local session for ``email`` (does not revoke server-side)."""
+        deleted = self.delete_session(email)
+        return {"email": email, "logged_out": deleted}
 
-    def _refresh_access_token(self, session: Jan3Session) -> Jan3Session:
-        """Try to mint a new access token. Deletes the session on failure.
+    # ─── session status / refresh-and-retry ────────────────────────────
 
-        Mutates ``session`` in place and returns it. Not safe under
-        concurrent calls for the same email (last write wins) — fine for
-        single-user CLI / MCP usage, would need a lock if invoked from
-        parallel workers.
+    def require_session(self, email: str) -> Jan3Session:
+        """Return the stored session for ``email``, or raise if not logged in."""
+        session = self.load_session(email)
+        if not session or not session.access_token:
+            raise ValueError(
+                f"Not logged in to JAN3 account {email!r}. Run jan3_login then "
+                "jan3_verify (or jan3_login_start then jan3_login_complete)."
+            )
+        return session
+
+    def session_status(self, email: str) -> dict:
+        """Report session status without leaking secrets.
+
+        Validates ``exp`` locally; refreshes via the stored token if expired.
+        ``valid``: True=ok, False=re-login needed, None=network/backend error.
         """
+        session = self.load_session(email)
+        if not session:
+            return {"email": email, "logged_in": False}
+        base = {
+            "email": session.email,
+            "logged_in": True,
+            "base_url": session.base_url,
+            "created_at": session.created_at,
+            "refreshed_at": session.refreshed_at,
+            "captcha_exempt": session.captcha_exempt,
+            "access_token_preview": _token_preview(session.access_token),
+        }
+        if not _access_token_expired(session.access_token):
+            return {**base, "valid": True}
+        try:
+            self._refresh_session(session)
+            return {**base, "valid": True}
+        except SessionExpiredError:
+            return {
+                **base,
+                "valid": False,
+                "message": (
+                    "JAN3 session expired — run jan3_login then jan3_verify "
+                    "(or the captchaless flow) again."
+                ),
+            }
+        except ValueError as e:
+            # Network/backend failure — don't claim the session is invalid.
+            return {**base, "valid": None, "message": f"Could not verify session: {e}"}
+
+    def _refresh_session(self, session: Jan3Session) -> Jan3Session:
+        """Mint a new access token (rotation-aware) and persist it.
+
+        Mutates ``session`` in place and returns it. Deletes the stored session
+        and raises :class:`SessionExpiredError` if the refresh token is rejected
+        or missing — so a dead session never lingers on disk.
+        """
+        if not session.refresh_token:
+            self.delete_session(session.email)
+            raise SessionExpiredError("No refresh token stored for this JAN3 session.")
         client = Jan3AccountsClient(base_url=session.base_url)
         try:
-            new_access = client.refresh_access_token(session.refresh_token)
-        except Jan3UnauthorizedError:
-            # Refresh token is gone too — wipe the local session so the
-            # user is forced to re-login rather than retrying forever.
+            tokens = client.refresh_access_token(session.refresh_token) or {}
+        except SessionExpiredError:
             self.delete_session(session.email)
             raise
-        session.access_token = new_access
+        new_access = tokens.get("access")
+        if not new_access or not str(new_access).strip():
+            self.delete_session(session.email)
+            raise SessionExpiredError("AQUA refresh did not return a new access token.")
+        session.access_token = str(new_access).strip()
+        # ROTATE_REFRESH_TOKENS may hand back a fresh refresh token; keep the
+        # old one if the backend didn't rotate.
+        if tokens.get("refresh"):
+            session.refresh_token = str(tokens["refresh"])
         session.refreshed_at = _now_iso()
         self.save_session(session)
         return session
 
-    def _with_refresh_retry(self, session: Jan3Session, call):
-        """Run an authed API call; on 401, refresh access token and retry once.
+    def _with_auth_retry(self, email: str, call):
+        """Run ``call(access_token)`` for ``email``; refresh+retry once on 401.
 
-        If the retry *also* 401s, the session is dead at the server (e.g.,
-        user revoked, account banned) — wipe the local copy so we don't
-        keep a poisoned bearer on disk. ``_refresh_access_token`` already
-        handles the case where the refresh endpoint itself rejects us.
-
-        ``session`` is mutated in place by ``_refresh_access_token``, so
-        callers holding the same reference see the new ``access_token``
-        after this returns.
+        Proactively refreshes if the stored access token is already expired. If
+        the call still 401s after a refresh, the session is dead at the server —
+        wipe the local copy and raise ``ValueError`` guiding a re-login.
         """
-        client = Jan3AccountsClient(
-            base_url=session.base_url, access_token=session.access_token
-        )
+        session = self.require_session(email)
+        if _access_token_expired(session.access_token):
+            session = self._refresh_token_or_reraise(session)
         try:
-            return call(client)
-        except Jan3UnauthorizedError:
-            session = self._refresh_access_token(session)
-            client = Jan3AccountsClient(
-                base_url=session.base_url, access_token=session.access_token
-            )
+            return call(session.access_token)
+        except SessionExpiredError:
+            session = self._refresh_token_or_reraise(session)
             try:
-                return call(client)
-            except Jan3UnauthorizedError:
-                self.delete_session(session.email)
-                raise
+                return call(session.access_token)
+            except SessionExpiredError as e:
+                self.delete_session(email)
+                raise ValueError(
+                    "JAN3 session still invalid after refresh — run jan3_login "
+                    "then jan3_verify (or the captchaless flow) again."
+                ) from e
+
+    def _refresh_token_or_reraise(self, session: Jan3Session) -> Jan3Session:
+        """``_refresh_session`` but translate a dead-session signal to ValueError."""
+        try:
+            return self._refresh_session(session)
+        except SessionExpiredError as e:
+            raise ValueError(
+                "JAN3 session expired and could not be refreshed — run jan3_login "
+                "then jan3_verify (or the captchaless flow) again."
+            ) from e
+
+    def provision_wapupay_token(self, email: str) -> str:
+        """Provision a fresh WapuPay API key via the AQUA backend for ``email``.
+
+        Requires a prior login (either flow). Uses ``_with_auth_retry``; the
+        backend invalidates any previous key on each call.
+        """
+        email = _validate_email(email)
+        resp = self._with_auth_retry(
+            email,
+            lambda access: Jan3AccountsClient(
+                base_url=self.base_url
+            ).provision_wapupay_account(access),
+        )
+        token = (resp or {}).get("token")
+        if not token or not str(token).strip():
+            raise ValueError(
+                "AQUA backend did not return a WapuPay API key (token missing)."
+            )
+        return str(token).strip()

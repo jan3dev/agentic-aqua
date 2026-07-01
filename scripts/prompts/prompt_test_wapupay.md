@@ -32,7 +32,7 @@ Show my AQUA session status.
 ```
 
 **Expected behavior:**
-- `aqua_session()` reports whether a session is active (and its expiry)
+- `jan3_session_info(email)` reports whether a session is active (and its expiry)
 
 ---
 

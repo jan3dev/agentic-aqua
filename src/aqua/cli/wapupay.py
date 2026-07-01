@@ -187,11 +187,13 @@ def spending_limit(ctx):
 
 
 @wapupay.command("provision-account")
+@click.option("--email", required=True, help="Logged-in JAN3 account whose session authorizes the call.")
 @click.pass_obj
-def provision_account(ctx):
-    """Provision your WapuPay API key via your AQUA account and store it locally.
+def provision_account(ctx, email):
+    """Provision your WapuPay API key via your JAN3 account and store it locally.
 
-    Use this when you have no WAPUPAY_API_KEY set. Requires an AQUA/JAN3 session first.
+    Use this when you have no WAPUPAY_API_KEY set. Requires a JAN3 session for
+    `--email` first.
     The key is stored under ~/.aqua/wapupay/ and used automatically by `aqua wapupay` commands.
     """
-    run_tool(ctx, lambda: wapupay_provision_account())
+    run_tool(ctx, lambda: wapupay_provision_account(email=email))

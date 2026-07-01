@@ -30,7 +30,6 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
     if config is None:
         config = load_config_with_merge()
 
-    from .auth import auth
     from .btc import btc
     from .changelly import changelly
     from .jan3 import jan3
@@ -47,7 +46,6 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
     cli.commands.clear()
 
     groups: list[tuple[str, click.Group]] = [
-        ("auth", auth),
         ("wallet", wallet),
         ("liquid", liquid),
         ("btc", btc),

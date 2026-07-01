@@ -145,7 +145,6 @@ class Storage:
         self.wapupay_api_key_path = self.wapupay_dir / "api_key.json"
         self.jan3_dir = self.base_dir / "jan3"
         self.jan3_session_path = self.jan3_dir / "session.json"
-        self.jan3_accounts_dir = self.base_dir / "jan3_accounts"
         self.qr_dir = self.base_dir / "qr"
         self.config_path = self.base_dir / "config.json"
         self._ensure_dirs()
@@ -180,8 +179,6 @@ class Storage:
         restrict_permissions(self.wapupay_orders_dir, 0o700)
         self.jan3_dir.mkdir(exist_ok=True, mode=0o700)
         restrict_permissions(self.jan3_dir, 0o700)
-        self.jan3_accounts_dir.mkdir(exist_ok=True, mode=0o700)
-        restrict_permissions(self.jan3_accounts_dir, 0o700)
         self.qr_dir.mkdir(exist_ok=True, mode=0o700)
         restrict_permissions(self.qr_dir, 0o700)
 
@@ -680,27 +677,9 @@ class Storage:
                     pass
         return removed
 
-    # JAN3 / AQUA account operations
-
-    def save_jan3_session(self, session) -> None:
-        """Persist the JAN3 / AQUA account session (Ankara JWT pair)."""
-        self._atomic_write_json(self.jan3_session_path, session.to_dict())
-
-    def load_jan3_session(self):
-        """Load the JAN3 / AQUA account session. Returns JAN3Session or None."""
-        from .ankara import JAN3Session
-
-        if not self.jan3_session_path.exists():
-            return None
-        with open(self.jan3_session_path) as f:
-            return JAN3Session.from_dict(json.load(f))
-
-    def delete_jan3_session(self) -> None:
-        """Remove the persisted JAN3 / AQUA session (idempotent)."""
-        try:
-            self.jan3_session_path.unlink()
-        except FileNotFoundError:
-            pass
+    # JAN3 / AQUA account sessions are managed (multi-account, per-email) by
+    # Jan3AccountsManager in jan3_accounts.py, which reads/writes files directly
+    # under jan3_dir. Storage only exposes the directory + legacy path.
 
     # WapuPay operations
 

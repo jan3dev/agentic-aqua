@@ -115,12 +115,6 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("sideswap", "swap"): "sideswap_execute_swap",
     ("sideswap", "swap-status"): "sideswap_swap_status",
 
-    # auth group (cli/auth.py) — AQUA account login (used by WapuPay)
-    ("auth", "login"): "aqua_login",
-    ("auth", "verify"): "aqua_verify",
-    ("auth", "logout"): "aqua_logout",
-    ("auth", "session"): "aqua_session",
-
     # wapupay group (cli/wapupay.py)
     ("wapupay", "rates"): "wapupay_exchange_rates",
     ("wapupay", "quote"): "wapupay_quote",
@@ -136,7 +130,9 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     # qr group (cli/qr.py)
     ("qr", "decode"): "qr_decode",
 
-    # jan3 group (cli/jan3.py)
+    # jan3 group (cli/jan3.py) — JAN3 account login + sessions
+    ("jan3", "login"): "jan3_login",
+    ("jan3", "verify"): "jan3_verify",
     ("jan3", "login-start"): "jan3_login_start",
     ("jan3", "login-complete"): "jan3_login_complete",
     ("jan3", "session-info"): "jan3_session_info",

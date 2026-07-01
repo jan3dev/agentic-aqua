@@ -14,6 +14,7 @@ X-API-Key (never a Bearer token), and exchange_rates is public.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import tempfile
@@ -26,12 +27,11 @@ import pytest
 
 import aqua.tools as tools
 from aqua.ankara import (
-    JAN3AccountManager,
-    JAN3Session,
     _extract_error_message,
     _mask,
     _redact,
 )
+from aqua.jan3_accounts import Jan3AccountsManager, Jan3Session
 from aqua.storage import Storage
 from aqua.wapupay import (
     FUNDING_METHOD_USDT,
@@ -141,12 +141,12 @@ class FakeClient:
 
 
 def make_manager(storage, fake):
-    # One scriptable fake stands in for both client seams: the JAN3 auth client
-    # (login / verify / provision) and the WapuPay client. The JAN3
-    # account manager is injected so provision_account() resolves the session +
-    # backend call through it, exactly as get_wapupay_manager() wires production.
-    jan3 = JAN3AccountManager(storage=storage)
-    jan3._client = fake
+    # ``fake`` drives the WapuPay business client seam (``m._client = fake``) for
+    # the order/quote/limit tests. The JAN3 account manager is a REAL
+    # Jan3AccountsManager (needs storage + wallet_manager) wired exactly as
+    # get_wapupay_manager() does in production; provisioning tests drive its
+    # backend call through ``urllib.request.urlopen`` (see _route).
+    jan3 = Jan3AccountsManager(storage=storage, wallet_manager=DummyWallet())
     m = WapuPayManager(
         storage=storage, wallet_manager=DummyWallet(), jan3_manager=jan3
     )
@@ -154,10 +154,49 @@ def make_manager(storage, fake):
     return m
 
 
-def logged_in(storage, email="user@example.com", access="acc.tok", refresh="ref.tok"):
-    storage.save_jan3_session(
-        JAN3Session(email=email, access=access, refresh=refresh, created_at="t0")
+def _jwt_with_exp(exp):
+    """Unsigned JWT carrying the given ``exp`` claim (test fixture)."""
+
+    def seg(obj):
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+    return f"{seg({'alg': 'HS256', 'typ': 'JWT'})}.{seg({'exp': exp})}.sig"
+
+
+# A far-future JWT so _with_auth_retry never proactively refreshes a seeded
+# session (a non-JWT string parses as "expired" and would force a refresh).
+FUTURE_JWT = _jwt_with_exp(9_999_999_999)
+
+
+def logged_in(storage, email="user@example.com", access=None, refresh="ref.tok"):
+    """Seed a per-email JAN3 session via the real manager's persistence layer."""
+    Jan3AccountsManager(storage=storage, wallet_manager=DummyWallet()).save_session(
+        Jan3Session(
+            email=email,
+            base_url=Jan3AccountsManager(
+                storage=storage, wallet_manager=DummyWallet()
+            ).base_url,
+            access_token=access or FUTURE_JWT,
+            refresh_token=refresh,
+            created_at="t0",
+        )
     )
+
+
+def _route_provision(token=None, *, error=None):
+    """urlopen side_effect for the WapuPay-account provisioning endpoint."""
+
+    def side_effect(req, timeout=None):
+        assert req.full_url.endswith("/api/v1/wapupay/account/")
+        if error is not None:
+            raise error
+        resp = MagicMock()
+        resp.read.return_value = json.dumps({"token": token}).encode()
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    return side_effect
 
 
 TENTATIVE_ID = "7f4b8b8d-39a4-4f80-8e89-44d1f8dff111"
@@ -939,20 +978,25 @@ def test_tool_create_order_attaches_qr(monkeypatch, storage):  # Sig:4
 
 
 # ---------------------------------------------------------------------------
-# WapuPayManager.provision_account — orchestration only (the AQUA-backend call
-# is delegated to JAN3AccountManager; the JAN3AuthClient HTTP tests for
-# provisioning live in tests/test_ankara.py)
+# WapuPayManager.provision_account(email) — orchestration only. The AQUA-backend
+# call is delegated to Jan3AccountsManager.provision_wapupay_token; we drive that
+# call through urlopen (the JAN3 client HTTP tests live in test_jan3_accounts.py).
 # ---------------------------------------------------------------------------
+
+EMAIL = "user@example.com"
 
 
 def test_provision_manager_success_stores_and_masks(monkeypatch, storage):  # Sig:5
     # No key configured (env unset, none stored) -> the no-op is skipped and the
     # backend is called.
     monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
-    logged_in(storage, access="aqua.jwt.access")
-    fake = FakeClient({"provision_wapupay_account": {"token": "WapuKey_2UJgLDyuY8"}})
-    m = make_manager(storage, fake)
-    out = m.provision_account()
+    logged_in(storage, email=EMAIL)  # future-JWT access -> no proactive refresh
+    m = make_manager(storage, FakeClient())
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=_route_provision("WapuKey_2UJgLDyuY8"),
+    ):
+        out = m.provision_account(EMAIL)
 
     assert out["provisioned"] is True
     assert "rotated" not in out  # dropped: it lied (false on a backend-side rotation)
@@ -961,8 +1005,6 @@ def test_provision_manager_success_stores_and_masks(monkeypatch, storage):  # Si
     # Raw key never returned; only a masked preview (first 4 + … + last 4).
     assert out["key_preview"] == _mask("WapuKey_2UJgLDyuY8") == "Wapu…yuY8"
     assert "WapuKey_2UJgLDyuY8" not in json.dumps(out)
-    # The provisioning call carried the stored AQUA access token.
-    assert fake.calls == [("provision_wapupay_account", ("aqua.jwt.access",))]
     # Persisted at the api-key path and now resolvable by _require_api_key.
     stored = storage.load_wapupay_api_key()
     assert stored is not None and stored.token == "WapuKey_2UJgLDyuY8"
@@ -971,32 +1013,33 @@ def test_provision_manager_success_stores_and_masks(monkeypatch, storage):  # Si
 
 def test_provision_first_time_carries_backend_rotation_note(monkeypatch, storage):
     monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
-    logged_in(storage)
-    fake = FakeClient({"provision_wapupay_account": {"token": "fresh-first-key"}})
-    m = make_manager(storage, fake)
-    out = m.provision_account()  # no key yet -> hits backend
+    logged_in(storage, email=EMAIL)
+    m = make_manager(storage, FakeClient())
+    with patch(
+        "urllib.request.urlopen", side_effect=_route_provision("fresh-first-key")
+    ):
+        out = m.provision_account(EMAIL)  # no key yet -> hits backend
     assert out["provisioned"] is True
     assert "rotated" not in out
     assert "warning" in out and "invalidates" in out["warning"].lower()
-    assert fake.calls == [("provision_wapupay_account", ("acc.tok",))]
 
 
 def test_provision_manager_requires_login(monkeypatch, storage):  # Sig:5
     monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
     m = make_manager(storage, FakeClient())
-    with pytest.raises(ValueError) as ei:
-        m.provision_account()
-    assert "aqua_login" in str(ei.value).lower() or "logged in" in str(ei.value).lower()
-    assert m._client.calls == []  # never reached the backend
+    with patch("urllib.request.urlopen", side_effect=AssertionError("no network")):
+        with pytest.raises(ValueError) as ei:
+            m.provision_account(EMAIL)
+    assert "jan3_login" in str(ei.value).lower() or "logged in" in str(ei.value).lower()
 
 
 def test_provision_manager_missing_token_raises(monkeypatch, storage):  # Sig:5
     monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
-    logged_in(storage)
-    fake = FakeClient({"provision_wapupay_account": {"not_token": "x"}})
-    m = make_manager(storage, fake)
-    with pytest.raises(ValueError) as ei:
-        m.provision_account()
+    logged_in(storage, email=EMAIL)
+    m = make_manager(storage, FakeClient())
+    with patch("urllib.request.urlopen", side_effect=_route_provision(None)):
+        with pytest.raises(ValueError) as ei:
+            m.provision_account(EMAIL)
     assert "token" in str(ei.value).lower()
     assert storage.load_wapupay_api_key() is None  # nothing persisted on failure
 
@@ -1004,12 +1047,11 @@ def test_provision_manager_missing_token_raises(monkeypatch, storage):  # Sig:5
 def test_provision_noop_when_env_key_set(monkeypatch, storage):  # Sig:5
     # env key present -> no-op, NO backend call (env key never invalidated).
     monkeypatch.setenv("WAPUPAY_API_KEY", "env-set-key")
-    logged_in(storage)
-    fake = FakeClient({"provision_wapupay_account": {"token": "should-not-be-used"}})
-    m = make_manager(storage, fake)
-    out = m.provision_account()
+    logged_in(storage, email=EMAIL)
+    m = make_manager(storage, FakeClient())
+    with patch("urllib.request.urlopen", side_effect=AssertionError("no network")):
+        out = m.provision_account(EMAIL)
     assert out["already_configured"] is True and out["source"] == "env"
-    assert fake.calls == []
     assert storage.load_wapupay_api_key() is None  # didn't overwrite/persist
     assert "env-set-key" not in json.dumps(out)  # masked
 
@@ -1017,12 +1059,11 @@ def test_provision_noop_when_env_key_set(monkeypatch, storage):  # Sig:5
 def test_provision_noop_when_stored_key_exists(monkeypatch, storage):  # Sig:5
     monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
     storage.save_wapupay_api_key(WapuPayApiKey(token="already-stored", created_at="t0"))
-    logged_in(storage)
-    fake = FakeClient({"provision_wapupay_account": {"token": "new-key"}})
-    m = make_manager(storage, fake)
-    out = m.provision_account()
+    logged_in(storage, email=EMAIL)
+    m = make_manager(storage, FakeClient())
+    with patch("urllib.request.urlopen", side_effect=AssertionError("no network")):
+        out = m.provision_account(EMAIL)
     assert out["already_configured"] is True and out["source"] == "stored"
-    assert fake.calls == []
     # Existing key untouched.
     assert storage.load_wapupay_api_key().token == "already-stored"
 
@@ -1061,14 +1102,49 @@ def test_mask_short_and_long():  # Sig:3
     assert _mask("abcdEFGHijkl") == "abcd…ijkl"
 
 
+def test_provision_refreshes_and_retries_on_401(monkeypatch, storage):  # Sig:5
+    """A 401 on the provisioning call refreshes the JWT and retries once, then
+    persists the rotated session — provisioning works from a stale-but-refreshable
+    session without re-login."""
+    monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
+    logged_in(storage, email=EMAIL, refresh="good.ref")
+    m = make_manager(storage, FakeClient())
+    rotated_access = _jwt_with_exp(8_888_888_888)  # distinct from the seeded JWT
+
+    def side_effect(req, timeout=None):
+        url = req.full_url
+        resp = MagicMock()
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        if url.endswith("/api/v1/auth/refresh/"):
+            resp.read.return_value = json.dumps(
+                {"access": rotated_access, "refresh": "rot.ref"}
+            ).encode()
+            return resp
+        if url.endswith("/api/v1/wapupay/account/"):
+            if not getattr(side_effect, "first_done", False):
+                side_effect.first_done = True
+                raise _http_error(401, json.dumps({"detail": "expired"}))
+            resp.read.return_value = json.dumps({"token": "WapuKey_after_refresh"}).encode()
+            return resp
+        raise AssertionError(f"unexpected {url}")
+
+    with patch("urllib.request.urlopen", side_effect=side_effect):
+        out = m.provision_account(EMAIL)
+    assert out["provisioned"] is True
+    assert storage.load_wapupay_api_key().token == "WapuKey_after_refresh"
+    # The rotated session was persisted by the auth-retry refresh.
+    assert m.jan3.load_session(EMAIL).access_token == rotated_access
+
+
 def test_logout_keeps_api_key(monkeypatch, storage):  # Sig:5
     # The API key is decoupled from the AQUA login session: logout must not delete it.
     monkeypatch.delenv("WAPUPAY_API_KEY", raising=False)
-    logged_in(storage)
+    logged_in(storage, email=EMAIL)
     storage.save_wapupay_api_key(WapuPayApiKey(token="keep-me", created_at="t0"))
     m = make_manager(storage, FakeClient())
-    m.jan3.logout()
-    assert storage.load_jan3_session() is None
+    m.jan3.logout(EMAIL)
+    assert m.jan3.load_session(EMAIL) is None
     assert storage.load_wapupay_api_key().token == "keep-me"
 
 

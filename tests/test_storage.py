@@ -729,15 +729,3 @@ class TestWapuPayApiKeyStorage:
         temp_storage.save_wapupay_api_key(self._make_key())
         mode = stat.S_IMODE(os.stat(temp_storage.wapupay_api_key_path).st_mode)
         assert mode == 0o600, f"Expected 0600, got {oct(mode)}"
-
-    def test_delete_session_keeps_api_key(self, temp_storage):
-        """The API key is decoupled from the AQUA session — logout must not drop it."""
-        from aqua.ankara import JAN3Session
-
-        temp_storage.save_jan3_session(
-            JAN3Session(email="a@b.com", access="acc", refresh="ref", created_at="t0")
-        )
-        temp_storage.save_wapupay_api_key(self._make_key())
-        temp_storage.delete_jan3_session()
-        assert temp_storage.load_jan3_session() is None
-        assert temp_storage.load_wapupay_api_key().token == "WapuKey_secret_123"

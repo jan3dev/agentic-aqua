@@ -1134,51 +1134,6 @@ TOOL_SCHEMAS = {
             "required": ["from_coin", "from_network", "to_coin", "to_network"],
         },
     },
-    "aqua_login": {
-        "description": (
-            "Start AQUA account login: JAN3's Ankara backend emails a 6-digit "
-            "OTP to the user's address. Follow up with aqua_verify."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "email": {"type": "string", "description": "User's AQUA account email address"},
-                "language": {
-                    "type": "string",
-                    "enum": ["en", "es", "pt"],
-                    "default": "en",
-                    "description": "OTP email language",
-                },
-            },
-            "required": ["email"],
-        },
-    },
-    "aqua_verify": {
-        "description": (
-            "Verify the OTP emailed by aqua_login and store the AQUA session "
-            "locally. Ask the user for the 6-digit code from their email."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "email": {"type": "string", "description": "Same email used in aqua_login"},
-                "otp_code": {"type": "string", "description": "6-digit code from the email"},
-            },
-            "required": ["email", "otp_code"],
-        },
-    },
-    "aqua_logout": {
-        "description": "Forget the local AQUA session (does not revoke the token server-side).",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    "aqua_session": {
-        "description": (
-            "Report whether an AQUA session is active and still valid (no secrets "
-            "returned). Checks the token expiry locally and only renews against "
-            "Jan3 if it has expired."
-        ),
-        "inputSchema": {"type": "object", "properties": {}},
-    },
     "wapupay_exchange_rates": {
         "description": "Get WapuPay's current exchange rates (e.g. USDT/ARS). Public — no login or API key.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -1307,9 +1262,10 @@ TOOL_SCHEMAS = {
     },
     "wapupay_provision_account": {
         "description": (
-            "Provision a WapuPay API key via the user's AQUA account so the other "
+            "Provision a WapuPay API key via the user's JAN3 account so the other "
             "WapuPay tools work. Use when the user wants WapuPay but has no API key "
-            "set. Requires a prior AQUA login (aqua_login then aqua_verify); calls "
+            "set. Requires a prior JAN3 login for the email (either flow: jan3_login "
+            "then jan3_verify, or jan3_login_start then jan3_login_complete); calls "
             "the AQUA backend with that session, then stores the returned key "
             "locally (0o600) for all wapupay_* tools — the raw key is never "
             "returned, only a masked preview. The AQUA backend issues a fresh key "
@@ -1318,7 +1274,17 @@ TOOL_SCHEMAS = {
             "already exists (env var or stored) it is a no-op "
             "(already_configured=true) and never invalidates a working key."
         ),
-        "inputSchema": {"type": "object", "properties": {}},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "format": "email",
+                    "description": "Logged-in JAN3 account whose session authorizes the call.",
+                },
+            },
+            "required": ["email"],
+        },
     },
     "qr_decode": {
         "description": "Decode a QR code from an image file and return the raw string content. Supports Bitcoin addresses, Liquid addresses, Lightning invoices (BOLT11), and Lightning addresses.",
@@ -1333,12 +1299,60 @@ TOOL_SCHEMAS = {
             "required": ["image_path"],
         },
     },
+    "jan3_login": {
+        "description": (
+            "Default JAN3 login (free, email-OTP): the backend emails a 6-digit "
+            "OTP to the user's address. Prefer this over the paid captchaless "
+            "fallback (jan3_login_start). Follow up with jan3_verify."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "format": "email",
+                    "description": "User's JAN3 account email address.",
+                },
+                "language": {
+                    "type": "string",
+                    "enum": ["en", "es", "pt"],
+                    "default": "en",
+                    "description": "OTP email language.",
+                },
+            },
+            "required": ["email"],
+        },
+    },
+    "jan3_verify": {
+        "description": (
+            "Verify the OTP emailed by jan3_login and persist the JAN3 session "
+            "for that email (multi-account, 0o600). Ask the user for the 6-digit "
+            "code from their email."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "format": "email",
+                    "description": "Same email used in jan3_login.",
+                },
+                "otp_code": {"type": "string", "description": "6-digit code from the email."},
+                "fingerprint": {
+                    "type": "string",
+                    "description": "Optional device fingerprint string.",
+                },
+            },
+            "required": ["email", "otp_code"],
+        },
+    },
     "jan3_login_start": {
         "description": (
-            "Step 1 of paid captchaless login into a JAN3 Account. Crafts a "
-            "signed L-BTC tx funding AQUA's vault for the CAPTCHALESS_LOGIN "
-            "price, POSTs it to /api/v2/auth/login/, and the server emails "
-            "an OTP. Then call jan3_login_complete."
+            "Fallback JAN3 login (paid captchaless) — use only when the free "
+            "jan3_login email-OTP flow isn't available for the account. Step 1: "
+            "crafts a signed L-BTC tx funding AQUA's vault for the "
+            "CAPTCHALESS_LOGIN price, POSTs it to /api/v2/auth/login/, and the "
+            "server emails an OTP. Then call jan3_login_complete."
         ),
         "inputSchema": {
             "type": "object",
@@ -1368,9 +1382,9 @@ TOOL_SCHEMAS = {
     },
     "jan3_login_complete": {
         "description": (
-            "Step 2 of JAN3 login. Exchanges the OTP for JWT tokens and saves "
-            "the session to ~/.aqua/jan3_accounts/{email}.json (0o600). Only "
-            "token previews are echoed back — never the full tokens."
+            "Step 2 of the paid captchaless login. Exchanges the OTP for JWT "
+            "tokens and saves the session to ~/.aqua/jan3/{email}.json (0o600). "
+            "Only token previews are echoed back — never the full tokens."
         ),
         "inputSchema": {
             "type": "object",

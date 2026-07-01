@@ -18,8 +18,8 @@ rendered to terminal/JSON instead of MCP responses.
 | `lightning.py` | `aqua lightning` | Receive (Ankara), send (Boltz), status. |
 | `sideshift.py` | `aqua sideshift` | Cross-chain quote, send, receive, status. |
 | `changelly.py` | `aqua changelly` | USDt cross-chain quote, send, receive, status. |
-| `auth.py` | `aqua auth` | AQUA account login (email OTP via Ankara): login, verify, logout, session. Maps to the `aqua_*` tools; decoupled from WapuPay's API key. |
-| `wapupay.py` | `aqua wapupay` | Argentine direct-fiat (calls WapuPay directly; needs an API key — env `WAPUPAY_API_KEY` or `provision-account`): rates (public), quote, create-order (→ Liquid USDT address), fund-order, order-status, transactions, transaction, spending-limit, provision-account (get/rotate the API key via your AQUA login, stored locally). |
+| `jan3.py` | `aqua jan3` | JAN3 account login + sessions (multi-account, one per email): `login`/`verify` (free email-OTP, default), `login-start`/`login-complete` (paid captchaless fallback), `session-info`/`list-sessions`/`logout`. Maps to the `jan3_*` tools; decoupled from WapuPay's API key. |
+| `wapupay.py` | `aqua wapupay` | Argentine direct-fiat (calls WapuPay directly; needs an API key — env `WAPUPAY_API_KEY` or `provision-account --email`): rates (public), quote, create-order (→ Liquid USDT address), fund-order, order-status, transactions, transaction, spending-limit, provision-account (get/rotate the API key via your JAN3 login for `--email`, stored locally). |
 | `serve.py` | `aqua serve` | Run the MCP stdio server from the CLI. |
 | `output.py` | helper | JSON / pretty rendering. Pretty mode uses `click.echo`; JSON dumps via `json.dumps(..., indent=2)`. |
 | `password.py` | helper | Secret resolution chain. See below. |
