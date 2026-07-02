@@ -17,16 +17,16 @@ import logging
 import click
 
 from ..tools import (
-    jan3_get_user,
+    jan3_enable_lightning_address,
     jan3_list_sessions,
-    jan3_ln_address_toggle,
-    jan3_ln_username_check_available,
+    jan3_ln_check_username,
     jan3_login,
     jan3_login_complete,
     jan3_login_start,
     jan3_logout,
     jan3_purchase_ln_username,
     jan3_session_info,
+    jan3_user_info,
     jan3_verify,
 )
 from .output import run_tool
@@ -144,14 +144,14 @@ def logout(ctx, email):
     run_tool(ctx, lambda: jan3_logout(email))
 
 
-@jan3.command("get-user")
+@jan3.command("user-info")
 @click.option("--email", required=True, help="JAN3 account email.")
 @click.option("--wallet-name", default="default", show_default=True)
 @click.option(
     "--password-stdin", "password_stdin", is_flag=True, default=False, help=_PASSWORD_HELP
 )
 @click.pass_obj
-def get_user(ctx, email, wallet_name, password_stdin):
+def user_info(ctx, email, wallet_name, password_stdin):
     """Show the AQUA account profile + Lightning Address status.
 
     When LN-address is active this also tops up the Liquid address pool
@@ -163,13 +163,13 @@ def get_user(ctx, email, wallet_name, password_stdin):
     run_tool(
         ctx,
         lambda: handle_password_retry(
-            jan3_get_user,
+            jan3_user_info,
             {"email": email, "wallet_name": wallet_name, "password": password},
         ),
     )
 
 
-@jan3.command("ln-address-toggle")
+@jan3.command("enable-lightning-address")
 @click.option("--email", required=True)
 @click.option(
     "--enable/--disable", "enabled", required=True,
@@ -180,7 +180,7 @@ def get_user(ctx, email, wallet_name, password_stdin):
     "--password-stdin", "password_stdin", is_flag=True, default=False, help=_PASSWORD_HELP
 )
 @click.pass_obj
-def ln_address_toggle(ctx, email, enabled, wallet_name, password_stdin):
+def enable_lightning_address(ctx, email, enabled, wallet_name, password_stdin):
     """Enable/disable the Lightning Address.
 
     Enabling populates a batch of Liquid receive addresses so AQUA can deliver
@@ -192,7 +192,7 @@ def ln_address_toggle(ctx, email, enabled, wallet_name, password_stdin):
     run_tool(
         ctx,
         lambda: handle_password_retry(
-            jan3_ln_address_toggle,
+            jan3_enable_lightning_address,
             {
                 "email": email,
                 "enabled": enabled,
@@ -203,17 +203,17 @@ def ln_address_toggle(ctx, email, enabled, wallet_name, password_stdin):
     )
 
 
-@jan3.command("ln-username-check")
+@jan3.command("ln-check-username")
 @click.option("--email", required=True)
 @click.option(
     "--ln-username", required=True,
     help="Desired username (local part, before the @domain).",
 )
 @click.pass_obj
-def ln_username_check(ctx, email, ln_username):
+def ln_check_username(ctx, email, ln_username):
     """Check whether a Lightning username is available before purchasing."""
     run_tool(
-        ctx, lambda: jan3_ln_username_check_available(email=email, ln_username=ln_username)
+        ctx, lambda: jan3_ln_check_username(email=email, ln_username=ln_username)
     )
 
 
