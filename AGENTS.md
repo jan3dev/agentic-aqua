@@ -155,15 +155,15 @@ which now builds a `Jan3AccountsManager`) and delegates provisioning to it.
   - `jan3_purchase_ln_username <email> <ln_username>` — buys/updates the username
     on-chain: creates an `LN_USERNAME_UPDATE` payment request and funds it with a
     signed L-BTC tx (`wallet_manager.craft_raw_tx` → `submit_raw_tx`). Check first
-    with `jan3_ln_username_check_available`.
-  - `jan3_ln_address_toggle <email> --enable/--disable` — opts the account in/out
+    with `jan3_ln_check_username`.
+  - `jan3_enable_lightning_address <email> --enable/--disable` — opts the account in/out
     of LN-address delivery. **On enable it immediately populates the pool** of
     unused Liquid receive addresses (best-effort, reported under
     `ln_address_pool`); received BTC lands on those stored addresses.
-  - `jan3_get_user <email>` — account profile; when LN-address is active it
+  - `jan3_user_info <email>` — account profile; when LN-address is active it
     **auto-tops-up the pool** (best-effort, never fails the read).
   - `register_ln_addresses` / `ensure_ln_pool` are **internal manager methods,
-    NOT MCP tools** — the pool self-heals via toggle-on + `jan3_get_user`. They
+    NOT MCP tools** — the pool self-heals via toggle-on + `jan3_user_info`. They
     rely on `WalletManager.reserve_addresses` (batched minting) and
     `WalletManager.fingerprint` (account↔wallet binding); the no-arg
     `get_address` advances a persisted `WalletData.next_address_index` counter so

@@ -1223,9 +1223,9 @@ class TestToolRegistry:
             "jan3_session_info",
             "jan3_list_sessions",
             "jan3_logout",
-            "jan3_get_user",
-            "jan3_ln_address_toggle",
-            "jan3_ln_username_check_available",
+            "jan3_user_info",
+            "jan3_enable_lightning_address",
+            "jan3_ln_check_username",
             "jan3_purchase_ln_username",
         }
         assert set(TOOLS.keys()) == expected

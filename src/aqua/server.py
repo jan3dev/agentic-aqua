@@ -1328,7 +1328,7 @@ TOOL_SCHEMAS = {
             "Verify the OTP emailed by jan3_login and persist the JAN3 session "
             "for that email (multi-account, 0o600). Ask the user for the 6-digit "
             "code from their email. The result's next_step cues you to offer the "
-            "user the Lightning Address opt-in (jan3_ln_address_toggle)."
+            "user the Lightning Address opt-in (jan3_enable_lightning_address)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1387,7 +1387,7 @@ TOOL_SCHEMAS = {
             "tokens and saves the session to ~/.aqua/jan3/{email}.json (0o600). "
             "Only token previews are echoed back — never the full tokens. The "
             "result's next_step cues you to offer the user the Lightning Address "
-            "opt-in (jan3_ln_address_toggle)."
+            "opt-in (jan3_enable_lightning_address)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1436,7 +1436,7 @@ TOOL_SCHEMAS = {
             "required": ["email"],
         },
     },
-    "jan3_get_user": {
+    "jan3_user_info": {
         "description": (
             "Get the AQUA account profile (email, ln_username, fingerprint, "
             "feature flags). The ln_username field is the user's full Lightning "
@@ -1464,7 +1464,7 @@ TOOL_SCHEMAS = {
             "required": ["email"],
         },
     },
-    "jan3_ln_address_toggle": {
+    "jan3_enable_lightning_address": {
         "description": (
             "Enable or disable the user's Lightning Address. Ask the user first: "
             "enabling means JAN3/AQUA delivers inbound Lightning payments to their "
@@ -1495,7 +1495,7 @@ TOOL_SCHEMAS = {
             "required": ["email", "enabled"],
         },
     },
-    "jan3_ln_username_check_available": {
+    "jan3_ln_check_username": {
         "description": (
             "Check whether a Lightning username is free before buying it. Call "
             "before jan3_purchase_ln_username to avoid paying L-BTC on a username "
@@ -1518,7 +1518,7 @@ TOOL_SCHEMAS = {
             "Purchase / update the Lightning username for a JAN3 account with an "
             "on-chain L-BTC payment. Creates a payment request, funds it with a "
             "signed L-BTC tx to AQUA's address, and submits it. Check availability "
-            "first with jan3_ln_username_check_available. Requires an active JAN3 "
+            "first with jan3_ln_check_username. Requires an active JAN3 "
             "session for the email (either login flow)."
         ),
         "inputSchema": {

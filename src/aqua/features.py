@@ -138,9 +138,9 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("jan3", "session-info"): "jan3_session_info",
     ("jan3", "list-sessions"): "jan3_list_sessions",
     ("jan3", "logout"): "jan3_logout",
-    ("jan3", "get-user"): "jan3_get_user",
-    ("jan3", "ln-address-toggle"): "jan3_ln_address_toggle",
-    ("jan3", "ln-username-check"): "jan3_ln_username_check_available",
+    ("jan3", "user-info"): "jan3_user_info",
+    ("jan3", "enable-lightning-address"): "jan3_enable_lightning_address",
+    ("jan3", "ln-check-username"): "jan3_ln_check_username",
     ("jan3", "purchase-ln-username"): "jan3_purchase_ln_username",
 }
 

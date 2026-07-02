@@ -597,10 +597,10 @@ class Jan3AccountsManager:
             # delivered there.
             "next_step": (
                 "Ask the user if they want to activate their Lightning Address. "
-                "If yes, call jan3_ln_address_toggle(email, enabled=true) — this "
+                "If yes, call jan3_enable_lightning_address(email, enabled=true) — this "
                 "stores a batch of Liquid receive addresses so JAN3/AQUA can "
                 "deliver inbound Lightning payments to them. A Lightning username "
-                "(jan3_purchase_ln_username) is required first; run jan3_get_user "
+                "(jan3_purchase_ln_username) is required first; run jan3_user_info "
                 "to check current status."
             ),
         }
@@ -847,7 +847,7 @@ class Jan3AccountsManager:
         if not user.get("ln_address_toggled") and not override_fingerprint:
             raise ValueError(
                 "LN address is currently disabled — call "
-                "jan3_ln_address_toggle(enabled=true) first, or pass "
+                "jan3_enable_lightning_address(enabled=true) first, or pass "
                 "override_fingerprint=true to re-enable it as part of this call."
             )
 

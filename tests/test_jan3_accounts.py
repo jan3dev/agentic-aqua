@@ -539,7 +539,7 @@ class TestVerify:
         ):
             result = mgr.verify("me@example.com", "123456")
         assert "lightning address" in result["next_step"].lower()
-        assert "jan3_ln_address_toggle" in result["next_step"]
+        assert "jan3_enable_lightning_address" in result["next_step"]
 
     def test_propagates_invalid_otp_and_saves_nothing(self, storage):
         mgr = _manager(storage)

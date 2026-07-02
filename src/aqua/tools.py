@@ -2124,7 +2124,7 @@ def jan3_verify(
     Returns:
         email, logged_in, captcha_exempt (False for this free flow), message,
         access_token_preview, and next_step — which cues you to offer the user
-        the Lightning Address opt-in (jan3_ln_address_toggle).
+        the Lightning Address opt-in (jan3_enable_lightning_address).
     """
     return get_jan3_manager().verify(
         email, otp_code, fingerprint=fingerprint, captcha_exempt=False
@@ -2180,7 +2180,7 @@ def jan3_login_complete(
     Returns:
         email, logged_in, captcha_exempt (True for this paid flow), message,
         access_token_preview, and next_step — which cues you to offer the user
-        the Lightning Address opt-in (jan3_ln_address_toggle). Full tokens are
+        the Lightning Address opt-in (jan3_enable_lightning_address). Full tokens are
         NEVER echoed.
     """
     return get_jan3_manager().verify(
@@ -2218,7 +2218,7 @@ def jan3_logout(email: str) -> dict[str, Any]:
     return get_jan3_manager().logout(email)
 
 
-def jan3_get_user(
+def jan3_user_info(
     email: str,
     wallet_name: str = "default",
     password: str | None = None,
@@ -2246,7 +2246,7 @@ def jan3_get_user(
     )
 
 
-def jan3_ln_address_toggle(
+def jan3_enable_lightning_address(
     email: str,
     enabled: bool,
     wallet_name: str = "default",
@@ -2272,7 +2272,7 @@ def jan3_ln_address_toggle(
     )
 
 
-def jan3_ln_username_check_available(email: str, ln_username: str) -> dict[str, Any]:
+def jan3_ln_check_username(email: str, ln_username: str) -> dict[str, Any]:
     """Check whether a Lightning username is free before buying it.
 
     Call before `jan3_purchase_ln_username` to avoid paying L-BTC on a username
@@ -2296,7 +2296,7 @@ def jan3_purchase_ln_username(
 
     Creates an LN_USERNAME_UPDATE payment request, funds it with a signed L-BTC
     tx to AQUA's address, and submits it. Check availability first with
-    `jan3_ln_username_check_available`. Requires an active JAN3 session for
+    `jan3_ln_check_username`. Requires an active JAN3 session for
     `email` (either login flow).
 
     Args:
@@ -2388,9 +2388,9 @@ TOOLS = {
     "jan3_session_info": jan3_session_info,
     "jan3_list_sessions": jan3_list_sessions,
     "jan3_logout": jan3_logout,
-    "jan3_get_user": jan3_get_user,
-    "jan3_ln_address_toggle": jan3_ln_address_toggle,
-    "jan3_ln_username_check_available": jan3_ln_username_check_available,
+    "jan3_user_info": jan3_user_info,
+    "jan3_enable_lightning_address": jan3_enable_lightning_address,
+    "jan3_ln_check_username": jan3_ln_check_username,
     "jan3_purchase_ln_username": jan3_purchase_ln_username,
     "qr_decode": qr_decode,
 }
