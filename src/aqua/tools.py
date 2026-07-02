@@ -2123,7 +2123,8 @@ def jan3_verify(
 
     Returns:
         email, logged_in, captcha_exempt (False for this free flow), message,
-        access_token_preview.
+        access_token_preview, and next_step — which cues you to offer the user
+        the Lightning Address opt-in (jan3_ln_address_toggle).
     """
     return get_jan3_manager().verify(
         email, otp_code, fingerprint=fingerprint, captcha_exempt=False
@@ -2178,7 +2179,9 @@ def jan3_login_complete(
 
     Returns:
         email, logged_in, captcha_exempt (True for this paid flow), message,
-        access_token_preview. Full tokens are NEVER echoed.
+        access_token_preview, and next_step — which cues you to offer the user
+        the Lightning Address opt-in (jan3_ln_address_toggle). Full tokens are
+        NEVER echoed.
     """
     return get_jan3_manager().verify(
         email, otp_code, fingerprint=fingerprint, captcha_exempt=True
@@ -2213,6 +2216,107 @@ def jan3_list_sessions() -> dict[str, Any]:
 def jan3_logout(email: str) -> dict[str, Any]:
     """Delete the persisted JAN3 session for `email`. Idempotent."""
     return get_jan3_manager().logout(email)
+
+
+def jan3_get_user(
+    email: str,
+    wallet_name: str = "default",
+    password: str | None = None,
+) -> dict[str, Any]:
+    """Get the AQUA account profile for `email` (Lightning Address status included).
+
+    The `ln_username` field is the user's full Lightning Address as returned by
+    the backend — surface it verbatim, never append a domain. Also carries the
+    state the LN-address feature depends on: `ln_address_toggled`,
+    `new_addresses_needed`, and the server-side wallet `fingerprint`.
+
+    When LN-address is active this call automatically tops up the pool of unused
+    Liquid receive addresses the backend needs to deliver inbound Lightning
+    payments (best-effort — reported under `ln_address_pool`, never fails the
+    read). Requires a prior `jan3_login`+`jan3_verify` (or the captchaless flow).
+
+    Args:
+        email: the JAN3 account email.
+        wallet_name: Liquid wallet whose addresses back the LN-address pool.
+        password: decrypts the wallet mnemonic if encrypted at rest (needed for
+            the automatic pool top-up on encrypted wallets).
+    """
+    return get_jan3_manager().get_user(
+        email, wallet_name=wallet_name, password=password
+    )
+
+
+def jan3_ln_address_toggle(
+    email: str,
+    enabled: bool,
+    wallet_name: str = "default",
+    password: str | None = None,
+) -> dict[str, Any]:
+    """Enable or disable the user's Lightning Address for `email`.
+
+    Ask the user first: enabling means JAN3/AQUA will deliver inbound Lightning
+    payments to their Lightning Address by handing out a batch of Liquid receive
+    addresses that this tool registers on their behalf (the received BTC lands on
+    those stored Liquid addresses). On enable, the address pool is populated
+    immediately (best-effort, reported under `ln_address_pool`). A `no_ln_username`
+    result means they must run `jan3_purchase_ln_username` first.
+
+    Args:
+        email: the JAN3 account email.
+        enabled: True to opt in (and populate the pool), False to opt out.
+        wallet_name: Liquid wallet whose addresses back the pool.
+        password: decrypts the wallet mnemonic if encrypted at rest.
+    """
+    return get_jan3_manager().ln_address_toggle(
+        email, enabled, wallet_name=wallet_name, password=password
+    )
+
+
+def jan3_ln_username_check_available(email: str, ln_username: str) -> dict[str, Any]:
+    """Check whether a Lightning username is free before buying it.
+
+    Call before `jan3_purchase_ln_username` to avoid paying L-BTC on a username
+    that's already taken. Requires an active JAN3 session for `email`.
+
+    Args:
+        email: the JAN3 account email (session used to authenticate the check).
+        ln_username: the desired username (local part, before the @domain).
+    """
+    return get_jan3_manager().ln_username_available(email, ln_username)
+
+
+def jan3_purchase_ln_username(
+    email: str,
+    ln_username: str,
+    wallet_name: str = "default",
+    password: str | None = None,
+    asset: str = "L-BTC",
+) -> dict[str, Any]:
+    """Purchase / update the Lightning username for a JAN3 account (on-chain L-BTC).
+
+    Creates an LN_USERNAME_UPDATE payment request, funds it with a signed L-BTC
+    tx to AQUA's address, and submits it. Check availability first with
+    `jan3_ln_username_check_available`. Requires an active JAN3 session for
+    `email` (either login flow).
+
+    Args:
+        email: the JAN3 account email.
+        ln_username: the desired username (local part, before the @domain).
+        wallet_name: Liquid wallet used to fund the purchase.
+        password: decrypts the wallet mnemonic if encrypted at rest.
+        asset: funding asset ticker (default L-BTC).
+
+    Returns:
+        payment_id, status, txid, ln_username, amount_sats, asset_ticker,
+        address, message.
+    """
+    return get_jan3_manager().purchase_ln_username(
+        email,
+        ln_username,
+        wallet_name=wallet_name,
+        password=password,
+        asset=asset,
+    )
 
 
 # Tool registry for MCP
@@ -2284,5 +2388,9 @@ TOOLS = {
     "jan3_session_info": jan3_session_info,
     "jan3_list_sessions": jan3_list_sessions,
     "jan3_logout": jan3_logout,
+    "jan3_get_user": jan3_get_user,
+    "jan3_ln_address_toggle": jan3_ln_address_toggle,
+    "jan3_ln_username_check_available": jan3_ln_username_check_available,
+    "jan3_purchase_ln_username": jan3_purchase_ln_username,
     "qr_decode": qr_decode,
 }

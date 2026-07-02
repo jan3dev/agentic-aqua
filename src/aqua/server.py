@@ -1327,7 +1327,8 @@ TOOL_SCHEMAS = {
         "description": (
             "Verify the OTP emailed by jan3_login and persist the JAN3 session "
             "for that email (multi-account, 0o600). Ask the user for the 6-digit "
-            "code from their email."
+            "code from their email. The result's next_step cues you to offer the "
+            "user the Lightning Address opt-in (jan3_ln_address_toggle)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1384,7 +1385,9 @@ TOOL_SCHEMAS = {
         "description": (
             "Step 2 of the paid captchaless login. Exchanges the OTP for JWT "
             "tokens and saves the session to ~/.aqua/jan3/{email}.json (0o600). "
-            "Only token previews are echoed back — never the full tokens."
+            "Only token previews are echoed back — never the full tokens. The "
+            "result's next_step cues you to offer the user the Lightning Address "
+            "opt-in (jan3_ln_address_toggle)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1431,6 +1434,117 @@ TOOL_SCHEMAS = {
                 "email": {"type": "string", "format": "email"},
             },
             "required": ["email"],
+        },
+    },
+    "jan3_get_user": {
+        "description": (
+            "Get the AQUA account profile (email, ln_username, fingerprint, "
+            "feature flags). The ln_username field is the user's full Lightning "
+            "Address as returned by the backend — surface it verbatim, never "
+            "append a domain. Carries the LN-address state (ln_address_toggled, "
+            "new_addresses_needed, fingerprint). When LN-address is active this "
+            "auto-tops-up the unused-address pool (best-effort, under "
+            "ln_address_pool). Requires a prior JAN3 login for the email."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "format": "email"},
+                "wallet_name": {
+                    "type": "string",
+                    "default": "default",
+                    "description": "Liquid wallet whose addresses back the LN-address pool.",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Decrypts the wallet mnemonic if encrypted at rest "
+                    "(needed for the automatic pool top-up on encrypted wallets).",
+                },
+            },
+            "required": ["email"],
+        },
+    },
+    "jan3_ln_address_toggle": {
+        "description": (
+            "Enable or disable the user's Lightning Address. Ask the user first: "
+            "enabling means JAN3/AQUA delivers inbound Lightning payments to their "
+            "Lightning Address by handing out a batch of Liquid receive addresses "
+            "this tool registers (received BTC lands on those stored Liquid "
+            "addresses). On enable, the pool is populated immediately (best-effort, "
+            "under ln_address_pool); a no_ln_username result means the user must "
+            "run jan3_purchase_ln_username first. Requires a prior JAN3 login."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "format": "email"},
+                "enabled": {
+                    "type": "boolean",
+                    "description": "True to opt in (and populate the pool), False to opt out.",
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "default": "default",
+                    "description": "Liquid wallet whose addresses back the pool.",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Decrypts the wallet mnemonic if encrypted at rest.",
+                },
+            },
+            "required": ["email", "enabled"],
+        },
+    },
+    "jan3_ln_username_check_available": {
+        "description": (
+            "Check whether a Lightning username is free before buying it. Call "
+            "before jan3_purchase_ln_username to avoid paying L-BTC on a username "
+            "that's already taken. Requires an active JAN3 session for the email."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "format": "email"},
+                "ln_username": {
+                    "type": "string",
+                    "description": "Desired username (the local part, before the @domain).",
+                },
+            },
+            "required": ["email", "ln_username"],
+        },
+    },
+    "jan3_purchase_ln_username": {
+        "description": (
+            "Purchase / update the Lightning username for a JAN3 account with an "
+            "on-chain L-BTC payment. Creates a payment request, funds it with a "
+            "signed L-BTC tx to AQUA's address, and submits it. Check availability "
+            "first with jan3_ln_username_check_available. Requires an active JAN3 "
+            "session for the email (either login flow)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "format": "email"},
+                "ln_username": {
+                    "type": "string",
+                    "description": "Desired username (the local part, before the @domain).",
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "default": "default",
+                    "description": "Liquid wallet used to fund the purchase.",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Decrypts the wallet mnemonic if encrypted at rest.",
+                },
+                "asset": {
+                    "type": "string",
+                    "default": "L-BTC",
+                    "description": "Funding asset ticker.",
+                },
+            },
+            "required": ["email", "ln_username"],
         },
     },
 }

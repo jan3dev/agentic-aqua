@@ -130,7 +130,7 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     # qr group (cli/qr.py)
     ("qr", "decode"): "qr_decode",
 
-    # jan3 group (cli/jan3.py) — JAN3 account login + sessions
+    # jan3 group (cli/jan3.py) — JAN3 account login + sessions + Lightning Address
     ("jan3", "login"): "jan3_login",
     ("jan3", "verify"): "jan3_verify",
     ("jan3", "login-start"): "jan3_login_start",
@@ -138,6 +138,10 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("jan3", "session-info"): "jan3_session_info",
     ("jan3", "list-sessions"): "jan3_list_sessions",
     ("jan3", "logout"): "jan3_logout",
+    ("jan3", "get-user"): "jan3_get_user",
+    ("jan3", "ln-address-toggle"): "jan3_ln_address_toggle",
+    ("jan3", "ln-username-check"): "jan3_ln_username_check_available",
+    ("jan3", "purchase-ln-username"): "jan3_purchase_ln_username",
 }
 
 
