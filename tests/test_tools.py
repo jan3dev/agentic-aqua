@@ -251,6 +251,18 @@ class TestAddress:
         addr = result["address"]
         assert addr.startswith("lq1") or addr.startswith("VJL") or addr.startswith("VTp")
 
+    def test_no_index_is_idempotent(self):
+        """Repeated no-index calls show the SAME address (read-only display peek).
+
+        lw_address is a pure display path: it must not advance the counter, so
+        re-showing "my address" returns the same one until it is funded.
+        """
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="peek_test")
+        r1 = lw_address(wallet_name="peek_test")
+        r2 = lw_address(wallet_name="peek_test")
+        assert r1["address"] == r2["address"]
+        assert r1["index"] == r2["index"]
+
     def test_specific_index(self):
         """Requesting a specific index returns that index."""
         lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="idx_test")

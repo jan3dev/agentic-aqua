@@ -932,6 +932,13 @@ class Jan3AccountsManager:
                 "fingerprint_mismatch",
                 server_fingerprint=server_fp,
                 local_fingerprint=local_fp,
+                message=(
+                    f"The pool was NOT topped up: this account delivers Lightning "
+                    f"payments to the wallet bound to fingerprint {server_fp!r}, "
+                    f"but wallet {wallet_name!r} is {local_fp!r}. Retry with the "
+                    "wallet that matches the bound fingerprint (self-serve "
+                    "re-binding to a different wallet is not yet available)."
+                ),
             )
 
         result = self.register_ln_addresses(

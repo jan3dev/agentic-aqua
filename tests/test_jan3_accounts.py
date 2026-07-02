@@ -1110,9 +1110,15 @@ class TestGetUserAutoPool:
         assert out["ln_address_pool"]["reason"] == "pool_full"
         wm.reserve_addresses.assert_not_called()
 
-    def test_locked_wallet_never_breaks_read(self, storage):
-        mgr, wm = _ln_manager(storage)
-        wm.fingerprint.side_effect = ValueError("wallet is encrypted; password required")
+    def test_topup_backend_failure_never_breaks_read(self, storage):
+        # A REAL failure mode: the local reserve succeeds but the backend
+        # register POST fails (transient 500). It must be swallowed into a skip,
+        # not raised — the profile read still returns. (The previous version of
+        # this test injected a "password required" error from fingerprint(),
+        # which the real code cannot produce for an encrypted hot wallet:
+        # address derivation needs only the descriptor, not the mnemonic —
+        # see test_wallet.py::TestEncryptedWalletNoPassword.)
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
         _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
         profile = {
             "ln_username": "alice",
@@ -1121,13 +1127,19 @@ class TestGetUserAutoPool:
             "new_addresses_needed": 3,
         }
         with patch(
-            "urllib.request.urlopen", side_effect=_route({"/user/": profile})
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/user/": profile,
+                "/addresses/": _http_error(500, "backend down"),
+            }),
         ):
             out = mgr.get_user("me@example.com")
-        # Profile still returned; the failure is reported, not raised.
+        # Profile still returned; the topup failure is reported, not raised.
         assert out["ln_username"] == "alice"
+        assert out["ln_address_pool"]["refilled"] is False
         assert out["ln_address_pool"]["reason"] == "auto_topup_unavailable"
-        assert "encrypted" in out["ln_address_pool"]["detail"]
+        # The burn-before-POST ordering means reserve was attempted first.
+        wm.reserve_addresses.assert_called_once_with("default", 3)
 
 
 class TestLnAddressToggleManager:
@@ -1252,12 +1264,13 @@ class TestEnsureLnPool:
                 "new_addresses_needed": 3,
             },
         )
-        assert out == {
-            "refilled": False,
-            "reason": "fingerprint_mismatch",
-            "server_fingerprint": "serverfp",
-            "local_fingerprint": "localfp",
-        }
+        assert out["refilled"] is False
+        assert out["reason"] == "fingerprint_mismatch"
+        assert out["server_fingerprint"] == "serverfp"
+        assert out["local_fingerprint"] == "localfp"
+        # The skip must carry actionable guidance naming both fingerprints
+        # (the reason alone is a dead-end; there is no self-serve re-bind tool).
+        assert "serverfp" in out["message"] and "localfp" in out["message"]
         wm.reserve_addresses.assert_not_called()
 
     def test_no_username_skips(self, storage):

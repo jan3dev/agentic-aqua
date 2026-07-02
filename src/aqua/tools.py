@@ -331,7 +331,10 @@ def lw_address(
 
     Args:
         wallet_name: Name of the wallet. Default: "default"
-        index: Specific address index. Default: next unused
+        index: Specify to get a particular address. 
+            If omitted, returns next unused address (read-only). 
+            Does not advance counter; repeated calls return same address.
+       
 
     Returns:
         address: The Liquid address
@@ -339,7 +342,7 @@ def lw_address(
         qr_code_path: Path to a PNG QR of the address (or qr_error on failure)
     """
     manager = get_manager()
-    addr = manager.get_address(wallet_name, index)
+    addr = manager.peek_address(wallet_name, index)
     return _attach_deposit_qr(addr.to_dict(), "address")
 
 

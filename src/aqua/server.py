@@ -132,7 +132,10 @@ TOOL_SCHEMAS = {
                 },
                 "index": {
                     "type": "integer",
-                    "description": "Specific address index (optional)",
+                    "description": (
+                        "If index is omitted, returns the next unused receive address (idempotent). "
+                        "Specifying an index gets the address at that index. "
+                    ),
                 },
             },
         },

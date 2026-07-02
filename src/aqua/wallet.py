@@ -209,14 +209,25 @@ class WalletManager:
         return self._wollets[wallet_name]
 
     def sync_wallet(self, wallet_name: str):
-        """Sync wallet with blockchain."""
+        """Sync wallet with blockchain.
+
+        Scans up to wallet's next_address_index using lwk's full_scan_to_index, not the default full_scan.
+        This ensures all handed-out addresses (including off-chain usage) are checked for funds, beyond gap limit.
+        Prevents missing incoming funds to any address advanced off-chain and saved in next_address_index.
+        Using full_scan_to_index never scans less than default, only equal or more as needed.
+
+        Scans wallet addresses up to next_address_index + 1 to ensure all shown or handed-out addresses are covered.
+        Prevents missing funds on newly generated frontier addresses.
+        This covers all committed handouts and avoids gap limit issues.
+        Ensures no incoming funds fall outside the scan window, regardless of inclusivity rules.
+        """
         wallet = self.storage.load_wallet(wallet_name)
         if not wallet:
             raise ValueError(f"Wallet '{wallet_name}' not found")
 
         wollet = self._get_wollet(wallet_name)
         client = self._get_client(wallet.network)
-        update = client.full_scan(wollet)
+        update = client.full_scan_to_index(wollet, wallet.next_address_index + 1)
         if update:
             wollet.apply_update(update)
 
@@ -279,8 +290,11 @@ class WalletManager:
         to know what they're doing.
 
         Note: the no-arg path is NOT idempotent — each call writes to disk and
-        consumes an index. Callers that need to peek without committing should
-        pass an explicit ``index``.
+        consumes an index. This is the right behavior for callers that COMMIT
+        the address to an external party (swap refund/settle, LN-address pool),
+        which must never be reused. For a pure "show me my address" display that
+        should stay idempotent and not grow the counter, use
+        :meth:`peek_address` instead.
         """
         if index is None:
             # The load → max(lwk_tip, counter) → derive → advance → save
@@ -317,6 +331,28 @@ class WalletManager:
         wallet_record.next_address_index = start + count
         self.storage.save_wallet(wallet_record)
         return addresses
+
+    def peek_address(
+        self,
+        wallet_name: str,
+        index: Optional[int] = None,
+    ) -> Address:
+        """Return a receive address for display, without advancing the counter or saving state.
+        Without ``index``, returns the next unused address. With ``index``, returns that address.
+        Never returns an address already handed out. Does not write to disk or advance the index.
+        """
+
+        wollet = self._get_wollet(wallet_name)
+        if index is not None:
+            addr = wollet.address(index)
+            return Address(address=str(addr.address()), index=addr.index())
+        wallet_record = self.storage.load_wallet(wallet_name)
+        if wallet_record is None:
+            raise ValueError(f"Wallet {wallet_name!r} not found")
+        lwk_tip = wollet.address(None).index()
+        frontier = max(lwk_tip, wallet_record.next_address_index)
+        addr = wollet.address(frontier)
+        return Address(address=str(addr.address()), index=addr.index())
 
     def fingerprint(
         self,
