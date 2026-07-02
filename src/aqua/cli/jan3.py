@@ -17,11 +17,15 @@ import logging
 import click
 
 from ..tools import (
+    jan3_get_user,
     jan3_list_sessions,
+    jan3_ln_address_toggle,
+    jan3_ln_username_check_available,
     jan3_login,
     jan3_login_complete,
     jan3_login_start,
     jan3_logout,
+    jan3_purchase_ln_username,
     jan3_session_info,
     jan3_verify,
 )
@@ -138,3 +142,108 @@ def list_sessions(ctx):
 def logout(ctx, email):
     """Delete a persisted JAN3 session."""
     run_tool(ctx, lambda: jan3_logout(email))
+
+
+@jan3.command("get-user")
+@click.option("--email", required=True, help="JAN3 account email.")
+@click.option("--wallet-name", default="default", show_default=True)
+@click.option(
+    "--password-stdin", "password_stdin", is_flag=True, default=False, help=_PASSWORD_HELP
+)
+@click.pass_obj
+def get_user(ctx, email, wallet_name, password_stdin):
+    """Show the AQUA account profile + Lightning Address status.
+
+    When LN-address is active this also tops up the Liquid address pool
+    (best-effort, reported under `ln_address_pool`).
+    """
+    password = resolve_secret(
+        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+    )
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            jan3_get_user,
+            {"email": email, "wallet_name": wallet_name, "password": password},
+        ),
+    )
+
+
+@jan3.command("ln-address-toggle")
+@click.option("--email", required=True)
+@click.option(
+    "--enable/--disable", "enabled", required=True,
+    help="Enable or disable the Lightning Address.",
+)
+@click.option("--wallet-name", default="default", show_default=True)
+@click.option(
+    "--password-stdin", "password_stdin", is_flag=True, default=False, help=_PASSWORD_HELP
+)
+@click.pass_obj
+def ln_address_toggle(ctx, email, enabled, wallet_name, password_stdin):
+    """Enable/disable the Lightning Address.
+
+    Enabling populates a batch of Liquid receive addresses so AQUA can deliver
+    inbound Lightning payments to those addresses.
+    """
+    password = resolve_secret(
+        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+    )
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            jan3_ln_address_toggle,
+            {
+                "email": email,
+                "enabled": enabled,
+                "wallet_name": wallet_name,
+                "password": password,
+            },
+        ),
+    )
+
+
+@jan3.command("ln-username-check")
+@click.option("--email", required=True)
+@click.option(
+    "--ln-username", required=True,
+    help="Desired username (local part, before the @domain).",
+)
+@click.pass_obj
+def ln_username_check(ctx, email, ln_username):
+    """Check whether a Lightning username is available before purchasing."""
+    run_tool(
+        ctx, lambda: jan3_ln_username_check_available(email=email, ln_username=ln_username)
+    )
+
+
+@jan3.command("purchase-ln-username")
+@click.option("--email", required=True)
+@click.option(
+    "--ln-username", required=True,
+    help="Desired username (local part, before the @domain).",
+)
+@click.option("--wallet-name", default="default", show_default=True)
+@click.option("--asset", default="L-BTC", show_default=True, help="Funding asset ticker.")
+@click.option(
+    "--password-stdin", "password_stdin", is_flag=True, default=False, help=_PASSWORD_HELP
+)
+@click.pass_obj
+def purchase_ln_username(ctx, email, ln_username, wallet_name, asset, password_stdin):
+    """Buy / update the Lightning username with an on-chain L-BTC payment."""
+    password = resolve_secret(
+        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+    )
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            jan3_purchase_ln_username,
+            {
+                "email": email,
+                "ln_username": ln_username,
+                "wallet_name": wallet_name,
+                "asset": asset,
+                "password": password,
+            },
+        ),
+    )

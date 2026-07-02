@@ -35,6 +35,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Optional
 
+import lwk
+
 from .ankara import (
     ANKARA_API_URL,
     HTTP_TIMEOUT_SECONDS,
@@ -60,9 +62,22 @@ PRODUCT_TYPE_CAPTCHALESS_LOGIN = "CAPTCHALESS_LOGIN"
 ASSET_TICKER_LBTC = "L-BTC"
 ASSET_TICKER_USDT = "USDt"
 
+# LN-username / LN-address endpoints (same Ankara host).
+LN_USERNAME_PAYMENT_REQUEST_PATH = "/api/v1/liquid-wallet/payment-request/ln-username/"
+SUBMIT_RAW_TX_PATH = "/api/v1/liquid-wallet/payment/submit-raw-tx/"
+
+# Server-side per-call cap on address registration, and the app's default pool
+# size to register when the server doesn't report how many are needed.
+MAX_ADDRESSES_PER_REGISTRATION = 15
+DEFAULT_LN_ADDRESS_POOL = 5
+
 # Minimal email syntax check — the server validates properly; this just
 # catches obvious mistakes before we make a network call.
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+# Mirrors aqua-ankara's common.constants.LN_USERNAME_REGEX so we fail fast
+# before a network call: lowercase alphanumerics with at most one dot.
+LN_USERNAME_REGEX = re.compile(r"^[a-z0-9]+(\.[a-z0-9]+)?$")
 
 
 def _now_iso() -> str:
@@ -87,6 +102,16 @@ def _validate_email(email: str) -> str:
     if not email or not _EMAIL_RE.match(email):
         raise ValueError(f"Invalid email address: {email!r}")
     return email.lower()
+
+
+def _validate_ln_username(username: str) -> str:
+    username = (username or "").strip().lower()
+    if not (4 <= len(username) <= 64) or not LN_USERNAME_REGEX.match(username):
+        raise ValueError(
+            f"Invalid ln_username {username!r}: must be 4–64 chars, "
+            "lowercase letters and digits, with at most one dot."
+        )
+    return username
 
 
 def _email_to_filename(email: str) -> str:
@@ -300,6 +325,72 @@ class Jan3AccountsClient:
         client = Jan3AccountsClient(base_url=self.base_url, access_token=access_token)
         return client._api_request("POST", WAPUPAY_ACCOUNT_PATH, auth=True) or {}
 
+    # ─── LN-address / LN-username (authenticated) ──────────────────────
+
+    def get_user(self) -> dict:
+        """GET /api/v1/auth/user/ — the account profile (email, ln_username,
+        fingerprint, ln_address_toggled, new_addresses_needed, …)."""
+        return self._api_request("GET", f"{AUTH_BASE_PATH_V1}/user/", auth=True) or {}
+
+    def ln_address_toggle(self, enabled: bool) -> dict:
+        """POST /api/v1/auth/user/ln-address-toggle/ — opt in/out of LN-address delivery."""
+        return self._api_request(
+            "POST",
+            f"{AUTH_BASE_PATH_V1}/user/ln-address-toggle/",
+            body={"enabled": bool(enabled)},
+            auth=True,
+        ) or {}
+
+    def ln_username_available(self, username: str) -> dict:
+        """GET /api/v1/auth/user/ln-username/{u}/is-available — availability check.
+
+        The OpenAPI schema marks this anonymous, but the live deployment requires
+        a JWT — so we forward the bearer token whenever the client has one.
+        """
+        safe = urllib.parse.quote(username, safe="")
+        return self._api_request(
+            "GET",
+            f"{AUTH_BASE_PATH_V1}/user/ln-username/{safe}/is-available",
+            auth=bool(self.access_token),
+        ) or {}
+
+    def register_addresses(
+        self,
+        fingerprint: str,
+        addresses: list[str],
+        override_fingerprint: bool = False,
+    ) -> dict:
+        """POST /api/v1/auth/user/addresses/ — upload unused Liquid receive addresses.
+
+        ``override_fingerprint=true`` (query string) re-binds the account to this
+        wallet's fingerprint and flips ``ln_address_toggled`` back to true.
+        """
+        return self._api_request(
+            "POST",
+            f"{AUTH_BASE_PATH_V1}/user/addresses/",
+            body={"fingerprint": fingerprint, "addresses": list(addresses)},
+            query={"override_fingerprint": "true"} if override_fingerprint else None,
+            auth=True,
+        ) or {}
+
+    def create_ln_username_payment_request(self, asset: str, ln_username: str) -> dict:
+        """POST …/payment-request/ln-username/ — create an LN_USERNAME_UPDATE order."""
+        return self._api_request(
+            "POST",
+            LN_USERNAME_PAYMENT_REQUEST_PATH,
+            body={"asset": asset, "ln_username": ln_username},
+            auth=True,
+        ) or {}
+
+    def submit_raw_tx(self, payment_id: str, raw_tx: str) -> dict:
+        """POST …/payment/submit-raw-tx/ — submit the signed funding tx for an order."""
+        return self._api_request(
+            "POST",
+            SUBMIT_RAW_TX_PATH,
+            body={"payment_id": payment_id, "raw_tx": raw_tx},
+            auth=True,
+        ) or {}
+
 
 # ---------------------------------------------------------------------------
 # Manager (login orchestration + multi-account persistence)
@@ -500,6 +591,18 @@ class Jan3AccountsManager:
                 "You can now make authenticated calls."
             ),
             "access_token_preview": _token_preview(access),
+            # Cue the agent to offer the Lightning Address opt-in right after
+            # login — this is the intended post-login UX. Enabling it stores a
+            # batch of Liquid receive addresses so inbound Lightning payments are
+            # delivered there.
+            "next_step": (
+                "Ask the user if they want to activate their Lightning Address. "
+                "If yes, call jan3_ln_address_toggle(email, enabled=true) — this "
+                "stores a batch of Liquid receive addresses so JAN3/AQUA can "
+                "deliver inbound Lightning payments to them. A Lightning username "
+                "(jan3_purchase_ln_username) is required first; run jan3_get_user "
+                "to check current status."
+            ),
         }
 
     def logout(self, email: str) -> dict:
@@ -636,3 +739,302 @@ class Jan3AccountsManager:
                 "AQUA backend did not return a WapuPay API key (token missing)."
             )
         return str(token).strip()
+
+    # ─── LN address / LN username ──────────────────────────────────────
+
+    def _authed_client(self, access_token: str) -> Jan3AccountsClient:
+        """Build a stateless client bound to ``access_token`` for one authed call."""
+        return Jan3AccountsClient(base_url=self.base_url, access_token=access_token)
+
+    def get_user(
+        self,
+        email: str,
+        wallet_name: str = "default",
+        password: Optional[str] = None,
+    ) -> dict:
+        """Fetch the AQUA account profile for ``email`` and keep the pool healthy.
+
+        The returned dict is the backend profile (``ln_username``,
+        ``ln_address_toggled``, ``fingerprint``, ``new_addresses_needed``, …).
+        When the LN-address feature is active we opportunistically top up the
+        unused-address pool — best-effort, never failing the profile read — and
+        attach the outcome under ``ln_address_pool``. This is why there is no
+        user-facing "ensure pool" tool: reading the account self-heals it.
+        """
+        email = _validate_email(email)
+        profile = self._with_auth_retry(
+            email, lambda access: self._authed_client(access).get_user()
+        )
+        result = dict(profile)
+        result["ln_address_pool"] = self._auto_ensure_ln_pool(
+            email, wallet_name=wallet_name, password=password, profile=profile
+        )
+        return result
+
+    def ln_address_toggle(
+        self,
+        email: str,
+        enabled: bool,
+        wallet_name: str = "default",
+        password: Optional[str] = None,
+    ) -> dict:
+        """Enable or disable the LN-address feature for ``email``.
+
+        Enabling means AQUA will deliver inbound Lightning payments to the user's
+        Lightning Address by handing out the Liquid receive addresses we register
+        here. So on enable we immediately populate the pool (best-effort) and
+        report the outcome under ``ln_address_pool`` — a ``no_ln_username`` skip
+        just means the user still has to run ``jan3_purchase_ln_username``.
+        """
+        email = _validate_email(email)
+        resp = self._with_auth_retry(
+            email,
+            lambda access: self._authed_client(access).ln_address_toggle(bool(enabled)),
+        )
+        out: dict[str, Any] = {"email": email, "enabled": bool(enabled), "result": resp}
+        if enabled:
+            out["ln_address_pool"] = self._auto_ensure_ln_pool(
+                email, wallet_name=wallet_name, password=password, profile=None
+            )
+        return out
+
+    def ln_username_available(self, email: str, username: str) -> dict:
+        """Check whether an LN username is free to claim (authenticated).
+
+        Call before ``purchase_ln_username`` to avoid paying L-BTC on a username
+        that's already taken.
+        """
+        email = _validate_email(email)
+        username = (username or "").strip().lower()
+        if not username:
+            raise ValueError("ln_username is required")
+        return self._with_auth_retry(
+            email,
+            lambda access: self._authed_client(access).ln_username_available(username),
+        )
+
+    def register_ln_addresses(
+        self,
+        email: str,
+        wallet_name: str = "default",
+        count: Optional[int] = None,
+        override_fingerprint: bool = False,
+        password: Optional[str] = None,
+        profile: Optional[dict] = None,
+    ) -> dict:
+        """Mint unused Liquid receive addresses and POST them to /auth/user/addresses/.
+
+        Internal — NOT exposed as an MCP tool. The pool is managed automatically
+        via :meth:`ensure_ln_pool` (called by :meth:`get_user` and on
+        :meth:`ln_address_toggle` enable). Without a healthy pool the AQUA
+        backend can't deliver inbound LN payments — it hands out one address per
+        invoice. Raises on hard errors (no username, disabled, fingerprint
+        mismatch); the auto path wraps those into skip dicts.
+        """
+        email = _validate_email(email)
+        user = (
+            profile
+            if profile is not None
+            else self._with_auth_retry(
+                email, lambda access: self._authed_client(access).get_user()
+            )
+        )
+        if not user.get("ln_username"):
+            raise ValueError(
+                "This account has no LN username yet — run "
+                "jan3_purchase_ln_username first."
+            )
+        if not user.get("ln_address_toggled") and not override_fingerprint:
+            raise ValueError(
+                "LN address is currently disabled — call "
+                "jan3_ln_address_toggle(enabled=true) first, or pass "
+                "override_fingerprint=true to re-enable it as part of this call."
+            )
+
+        server_fp = user.get("fingerprint")
+        local_fp = self.wallet_manager.fingerprint(wallet_name, password=password)
+        if server_fp and server_fp != local_fp and not override_fingerprint:
+            raise ValueError(
+                f"Wallet fingerprint mismatch: account is bound to {server_fp!r}, "
+                f"this wallet is {local_fp!r}. Pass override_fingerprint=true to "
+                "re-bind (this also disables LN delivery for the previously-bound "
+                "wallet)."
+            )
+
+        if count is None:
+            needed = user.get("new_addresses_needed") or 0
+            count = needed if needed > 0 else DEFAULT_LN_ADDRESS_POOL
+        if count <= 0:
+            raise ValueError("count must be positive")
+        if count > MAX_ADDRESSES_PER_REGISTRATION:
+            raise ValueError(
+                f"count cannot exceed {MAX_ADDRESSES_PER_REGISTRATION} "
+                "(server-side per-call limit)"
+            )
+
+        addresses = [
+            a.address for a in self.wallet_manager.reserve_addresses(wallet_name, count)
+        ]
+        resp = self._with_auth_retry(
+            email,
+            lambda access: self._authed_client(access).register_addresses(
+                local_fp, addresses, override_fingerprint=override_fingerprint
+            ),
+        )
+        return {
+            "requested_count": len(addresses),
+            "pool_size": len(resp.get("addresses", [])),
+            "fingerprint": local_fp,
+            "addresses": resp.get("addresses", []),
+        }
+
+    def ensure_ln_pool(
+        self,
+        email: str,
+        wallet_name: str = "default",
+        password: Optional[str] = None,
+        profile: Optional[dict] = None,
+    ) -> dict:
+        """Idempotent LN-address pool top-up (internal — NOT an MCP tool).
+
+        Only POSTs new addresses when the server reports
+        ``new_addresses_needed > 0``. Returns a ``{refilled: False, reason: …}``
+        dict (never raises for policy reasons) when auto-refill doesn't apply:
+        no LN username, toggle off, pool already full, or the local wallet's
+        fingerprint doesn't match the account-bound one.
+        """
+        email = _validate_email(email)
+
+        def _skip(reason: str, **extra) -> dict:
+            return {"refilled": False, "reason": reason, **extra}
+
+        user = (
+            profile
+            if profile is not None
+            else self._with_auth_retry(
+                email, lambda access: self._authed_client(access).get_user()
+            )
+        )
+        if not user.get("ln_username"):
+            return _skip("no_ln_username", fingerprint=user.get("fingerprint"))
+        if not user.get("ln_address_toggled"):
+            return _skip("ln_address_disabled", fingerprint=user.get("fingerprint"))
+        needed = user.get("new_addresses_needed") or 0
+        if needed <= 0:
+            return _skip(
+                "pool_full", fingerprint=user.get("fingerprint"), new_addresses_needed=0
+            )
+
+        server_fp = user.get("fingerprint")
+        local_fp = self.wallet_manager.fingerprint(wallet_name, password=password)
+        if server_fp and server_fp != local_fp:
+            return _skip(
+                "fingerprint_mismatch",
+                server_fingerprint=server_fp,
+                local_fingerprint=local_fp,
+            )
+
+        result = self.register_ln_addresses(
+            email,
+            wallet_name=wallet_name,
+            count=min(needed, MAX_ADDRESSES_PER_REGISTRATION),
+            password=password,
+            profile=user,
+        )
+        return {
+            "refilled": True,
+            "requested_count": result["requested_count"],
+            "pool_size": result["pool_size"],
+            "fingerprint": result["fingerprint"],
+        }
+
+    def _auto_ensure_ln_pool(
+        self,
+        email: str,
+        wallet_name: str,
+        password: Optional[str],
+        profile: Optional[dict] = None,
+    ) -> dict:
+        """Best-effort wrapper around :meth:`ensure_ln_pool` for the auto paths.
+
+        Used by :meth:`get_user` and by :meth:`ln_address_toggle` on enable, so
+        the pool self-heals without a dedicated user-facing tool. Never raises: a
+        locked/encrypted wallet (no password), an offline backend, etc. are
+        reported as a skip dict rather than failing the caller.
+        """
+        try:
+            return self.ensure_ln_pool(
+                email, wallet_name=wallet_name, password=password, profile=profile
+            )
+        except Exception as e:  # noqa: BLE001 — auto path must never break its caller
+            logger.warning("Auto LN-address pool top-up skipped for %s: %s", email, e)
+            return {
+                "refilled": False,
+                "reason": "auto_topup_unavailable",
+                "detail": str(e),
+            }
+
+    def purchase_ln_username(
+        self,
+        email: str,
+        ln_username: str,
+        wallet_name: str = "default",
+        password: Optional[str] = None,
+        asset: str = ASSET_TICKER_LBTC,
+    ) -> dict:
+        """Buy / update the Lightning username for ``email`` (on-chain L-BTC payment).
+
+        Creates an LN_USERNAME_UPDATE payment request, funds it with a signed
+        L-BTC tx to AQUA's address, and submits the raw tx. On a 401 the access
+        token is refreshed and the call retried once (via ``_with_auth_retry``).
+        """
+        email = _validate_email(email)
+        ln_username = _validate_ln_username(ln_username)
+
+        order = self._with_auth_retry(
+            email,
+            lambda access: self._authed_client(
+                access
+            ).create_ln_username_payment_request(asset, ln_username),
+        )
+        payment_id = order.get("payment_id")
+        address = order.get("address")
+        amount_sats = int(order.get("amount_base_units") or 0)
+        asset_ticker = order.get("asset_ticker") or asset
+        if not payment_id or not address or amount_sats <= 0:
+            raise ValueError(
+                "AQUA payment-request response is missing fields "
+                f"(payment_id/address/amount): {order!r}"
+            )
+
+        asset_id = self._resolve_asset_id(wallet_name, asset_ticker)
+        raw_tx = self.wallet_manager.craft_raw_tx(
+            wallet_name=wallet_name,
+            address=address,
+            amount=amount_sats,
+            asset_id=asset_id,
+            password=password,
+        )
+        # The API response omits the txid; compute it locally from the finalized
+        # raw tx so the caller has something to track on a block explorer.
+        txid = str(lwk.Transaction(raw_tx).txid())
+
+        result = self._with_auth_retry(
+            email,
+            lambda access: self._authed_client(access).submit_raw_tx(
+                payment_id=payment_id, raw_tx=raw_tx
+            ),
+        )
+        return {
+            "payment_id": payment_id,
+            "status": result.get("status"),
+            "txid": txid,
+            "ln_username": ln_username,
+            "amount_sats": amount_sats,
+            "asset_ticker": asset_ticker,
+            "address": address,
+            "message": (
+                f"Submitted raw_tx for {ln_username!r}. Server reports "
+                f"{result.get('status', 'UNKNOWN')}."
+            ),
+        }
