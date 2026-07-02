@@ -24,12 +24,15 @@ import pytest
 from aqua.ankara import ANKARA_API_URL, SessionExpiredError
 from aqua.jan3_accounts import (
     ASSET_TICKER_LBTC,
+    DEFAULT_LN_ADDRESS_POOL,
+    MAX_ADDRESSES_PER_REGISTRATION,
     Jan3AccountsClient,
     Jan3AccountsManager,
     Jan3Session,
     _email_to_filename,
     _token_preview,
     _validate_email,
+    _validate_ln_username,
 )
 from aqua.storage import Storage
 
@@ -524,6 +527,20 @@ class TestVerify:
         assert result["captcha_exempt"] is True
         assert mgr.load_session("me@example.com").captcha_exempt is True
 
+    def test_verify_cues_ln_address_offer(self, storage):
+        # The post-login UX: verify's return must cue the agent to offer the
+        # Lightning Address opt-in (this is why the toggle is user-facing).
+        mgr = _manager(storage)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route(
+                {"/api/v1/auth/verify/": {"access": "A" * 40, "refresh": "R" * 40}}
+            ),
+        ):
+            result = mgr.verify("me@example.com", "123456")
+        assert "lightning address" in result["next_step"].lower()
+        assert "jan3_ln_address_toggle" in result["next_step"]
+
     def test_propagates_invalid_otp_and_saves_nothing(self, storage):
         mgr = _manager(storage)
         with patch(
@@ -899,4 +916,405 @@ class TestProvisionWapupayToken:
         ):
             with pytest.raises(ValueError, match="token missing"):
                 mgr.provision_wapupay_token("me@example.com")
+
+
+# ---------------------------------------------------------------------------
+# LN username validation
+# ---------------------------------------------------------------------------
+
+
+class TestLnUsernameValidation:
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("alice", "alice"),
+            ("ALICE", "alice"),
+            ("bob.smith", "bob.smith"),
+            ("user1234", "user1234"),
+            ("  Trimmed  ", "trimmed"),
+        ],
+    )
+    def test_valid_normalizes(self, raw, expected):
+        assert _validate_ln_username(raw) == expected
+
+    @pytest.mark.parametrize(
+        "bad",
+        ["abc", "", "a_b", "ab.cd.ef", "with space", "under_score", "x" * 65, "no-dash"],
+    )
+    def test_invalid_rejected(self, bad):
+        with pytest.raises(ValueError, match="Invalid ln_username"):
+            _validate_ln_username(bad)
+
+
+# ---------------------------------------------------------------------------
+# LN client HTTP methods (urlopen seam)
+# ---------------------------------------------------------------------------
+
+
+class TestLnClientHttp:
+    @patch("urllib.request.urlopen")
+    def test_get_user_sends_bearer(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response(
+            {"email": "me@x.com", "ln_username": "alice"}
+        )
+        client = Jan3AccountsClient(base_url=BASE_URL, access_token="jwt.acc")
+        out = client.get_user()
+        assert out["ln_username"] == "alice"
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url.endswith("/api/v1/auth/user/")
+        assert req.get_method() == "GET"
+        assert req.get_header("Authorization") == "Bearer jwt.acc"
+
+    @patch("urllib.request.urlopen")
+    def test_ln_address_toggle_posts_enabled(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"ln_address_toggled": True})
+        client = Jan3AccountsClient(base_url=BASE_URL, access_token="jwt")
+        client.ln_address_toggle(True)
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url.endswith("/api/v1/auth/user/ln-address-toggle/")
+        assert json.loads(req.data.decode()) == {"enabled": True}
+
+    @patch("urllib.request.urlopen")
+    def test_ln_username_available_quotes_and_forwards_token(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"available": True})
+        client = Jan3AccountsClient(base_url=BASE_URL, access_token="jwt")
+        client.ln_username_available("alice.bob")
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url.endswith(
+            "/api/v1/auth/user/ln-username/alice.bob/is-available"
+        )
+        assert req.get_header("Authorization") == "Bearer jwt"
+
+    @patch("urllib.request.urlopen")
+    def test_ln_username_available_anonymous_without_token(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"available": True})
+        client = Jan3AccountsClient(base_url=BASE_URL)  # no access token
+        client.ln_username_available("alice")
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_header("Authorization") is None
+
+    @patch("urllib.request.urlopen")
+    def test_register_addresses_override_adds_query(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"addresses": ["a", "b"]})
+        client = Jan3AccountsClient(base_url=BASE_URL, access_token="jwt")
+        client.register_addresses("fp1234", ["a", "b"], override_fingerprint=True)
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url.endswith("/api/v1/auth/user/addresses/?override_fingerprint=true")
+        assert json.loads(req.data.decode()) == {
+            "fingerprint": "fp1234",
+            "addresses": ["a", "b"],
+        }
+
+    @patch("urllib.request.urlopen")
+    def test_register_addresses_no_override_no_query(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"addresses": []})
+        client = Jan3AccountsClient(base_url=BASE_URL, access_token="jwt")
+        client.register_addresses("fp", [])
+        req = mock_urlopen.call_args[0][0]
+        assert "override_fingerprint" not in req.full_url
+
+    @patch("urllib.request.urlopen")
+    def test_create_payment_request_posts_body(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response(
+            {"payment_id": "p1", "address": VAULT_ADDR, "amount_base_units": 500}
+        )
+        client = Jan3AccountsClient(base_url=BASE_URL, access_token="jwt")
+        client.create_ln_username_payment_request("L-BTC", "alice")
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url.endswith(
+            "/api/v1/liquid-wallet/payment-request/ln-username/"
+        )
+        assert json.loads(req.data.decode()) == {"asset": "L-BTC", "ln_username": "alice"}
+
+    @patch("urllib.request.urlopen")
+    def test_submit_raw_tx_posts_body(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"status": "PENDING"})
+        client = Jan3AccountsClient(base_url=BASE_URL, access_token="jwt")
+        client.submit_raw_tx("p1", "deadbeef")
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url.endswith("/api/v1/liquid-wallet/payment/submit-raw-tx/")
+        assert json.loads(req.data.decode()) == {"payment_id": "p1", "raw_tx": "deadbeef"}
+
+
+# ---------------------------------------------------------------------------
+# Manager: LN-address pool (get_user auto-heal + toggle + register/ensure)
+# ---------------------------------------------------------------------------
+
+
+def _ln_manager(storage, *, fingerprint="abcd1234", raw_tx="0200deadbeef"):
+    """Manager wired to a wallet stub with controllable fingerprint + addresses."""
+    wm = _fake_wallet_manager(raw_tx)
+    wm.fingerprint.return_value = fingerprint
+    wm.reserve_addresses.side_effect = lambda name, count: [
+        MagicMock(address=f"lq1addr{i}") for i in range(count)
+    ]
+    mgr = Jan3AccountsManager(
+        storage=storage, wallet_manager=wm, base_url=BASE_URL
+    )
+    return mgr, wm
+
+
+class TestGetUserAutoPool:
+    def test_auto_refills_when_active(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        profile = {
+            "email": "me@example.com",
+            "ln_username": "alice",
+            "ln_address_toggled": True,
+            "fingerprint": "abcd1234",
+            "new_addresses_needed": 3,
+        }
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/addresses/": {"addresses": ["a", "b", "c"]},
+                "/user/": profile,
+            }),
+        ):
+            out = mgr.get_user("me@example.com")
+        assert out["ln_username"] == "alice"
+        assert out["ln_address_pool"]["refilled"] is True
+        assert out["ln_address_pool"]["requested_count"] == 3
+        wm.reserve_addresses.assert_called_once_with("default", 3)
+
+    def test_skips_when_toggle_off(self, storage):
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        profile = {
+            "ln_username": "alice",
+            "ln_address_toggled": False,
+            "fingerprint": "abcd1234",
+            "new_addresses_needed": 5,
+        }
+        with patch(
+            "urllib.request.urlopen", side_effect=_route({"/user/": profile})
+        ):
+            out = mgr.get_user("me@example.com")
+        assert out["ln_address_pool"]["reason"] == "ln_address_disabled"
+        wm.reserve_addresses.assert_not_called()
+
+    def test_pool_full_no_register(self, storage):
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        profile = {
+            "ln_username": "alice",
+            "ln_address_toggled": True,
+            "fingerprint": "abcd1234",
+            "new_addresses_needed": 0,
+        }
+        with patch(
+            "urllib.request.urlopen", side_effect=_route({"/user/": profile})
+        ):
+            out = mgr.get_user("me@example.com")
+        assert out["ln_address_pool"]["reason"] == "pool_full"
+        wm.reserve_addresses.assert_not_called()
+
+    def test_locked_wallet_never_breaks_read(self, storage):
+        mgr, wm = _ln_manager(storage)
+        wm.fingerprint.side_effect = ValueError("wallet is encrypted; password required")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        profile = {
+            "ln_username": "alice",
+            "ln_address_toggled": True,
+            "fingerprint": "abcd1234",
+            "new_addresses_needed": 3,
+        }
+        with patch(
+            "urllib.request.urlopen", side_effect=_route({"/user/": profile})
+        ):
+            out = mgr.get_user("me@example.com")
+        # Profile still returned; the failure is reported, not raised.
+        assert out["ln_username"] == "alice"
+        assert out["ln_address_pool"]["reason"] == "auto_topup_unavailable"
+        assert "encrypted" in out["ln_address_pool"]["detail"]
+
+
+class TestLnAddressToggleManager:
+    def test_enable_populates_pool(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        profile = {
+            "ln_username": "alice",
+            "ln_address_toggled": True,
+            "fingerprint": "abcd1234",
+            "new_addresses_needed": 2,
+        }
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/ln-address-toggle/": {"ln_address_toggled": True},
+                "/addresses/": {"addresses": ["a", "b"]},
+                "/user/": profile,
+            }),
+        ):
+            out = mgr.ln_address_toggle("me@example.com", True)
+        assert out["enabled"] is True
+        assert out["ln_address_pool"]["refilled"] is True
+        wm.reserve_addresses.assert_called_once_with("default", 2)
+
+    def test_disable_does_not_touch_pool(self, storage):
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/ln-address-toggle/": {"ln_address_toggled": False}}),
+        ):
+            out = mgr.ln_address_toggle("me@example.com", False)
+        assert out["enabled"] is False
+        assert "ln_address_pool" not in out
+        wm.reserve_addresses.assert_not_called()
+
+    def test_enable_without_username_reports_skip(self, storage):
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        profile = {"ln_username": None, "ln_address_toggled": True, "fingerprint": "fp"}
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/ln-address-toggle/": {"ok": True},
+                "/user/": profile,
+            }),
+        ):
+            out = mgr.ln_address_toggle("me@example.com", True)
+        assert out["ln_address_pool"]["reason"] == "no_ln_username"
+        wm.reserve_addresses.assert_not_called()
+
+
+class TestRegisterLnAddresses:
+    def test_raises_without_username(self, storage):
+        mgr, _ = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with pytest.raises(ValueError, match="no LN username"):
+            mgr.register_ln_addresses(
+                "me@example.com",
+                profile={"ln_username": None, "ln_address_toggled": True},
+            )
+
+    def test_fingerprint_mismatch_raises(self, storage):
+        mgr, _ = _ln_manager(storage, fingerprint="local999")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with pytest.raises(ValueError, match="fingerprint mismatch"):
+            mgr.register_ln_addresses(
+                "me@example.com",
+                profile={
+                    "ln_username": "alice",
+                    "ln_address_toggled": True,
+                    "fingerprint": "server111",
+                    "new_addresses_needed": 2,
+                },
+            )
+
+    def test_caps_count_at_max(self, storage):
+        mgr, _ = _ln_manager(storage, fingerprint="fp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with pytest.raises(ValueError, match="cannot exceed"):
+            mgr.register_ln_addresses(
+                "me@example.com",
+                count=MAX_ADDRESSES_PER_REGISTRATION + 1,
+                profile={
+                    "ln_username": "alice",
+                    "ln_address_toggled": True,
+                    "fingerprint": "fp",
+                },
+            )
+
+    def test_default_count_when_none_needed(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="fp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/addresses/": {"addresses": ["x"] * 5}}),
+        ):
+            out = mgr.register_ln_addresses(
+                "me@example.com",
+                profile={
+                    "ln_username": "alice",
+                    "ln_address_toggled": True,
+                    "fingerprint": "fp",
+                    "new_addresses_needed": 0,
+                },
+            )
+        wm.reserve_addresses.assert_called_once_with("default", DEFAULT_LN_ADDRESS_POOL)
+        assert out["requested_count"] == DEFAULT_LN_ADDRESS_POOL
+
+
+class TestEnsureLnPool:
+    def test_fingerprint_mismatch_skips(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        out = mgr.ensure_ln_pool(
+            "me@example.com",
+            profile={
+                "ln_username": "alice",
+                "ln_address_toggled": True,
+                "fingerprint": "serverfp",
+                "new_addresses_needed": 3,
+            },
+        )
+        assert out == {
+            "refilled": False,
+            "reason": "fingerprint_mismatch",
+            "server_fingerprint": "serverfp",
+            "local_fingerprint": "localfp",
+        }
+        wm.reserve_addresses.assert_not_called()
+
+    def test_no_username_skips(self, storage):
+        mgr, _ = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        out = mgr.ensure_ln_pool("me@example.com", profile={"ln_username": None})
+        assert out["reason"] == "no_ln_username"
+
+
+# ---------------------------------------------------------------------------
+# Manager: purchase LN username (on-chain L-BTC)
+# ---------------------------------------------------------------------------
+
+
+class TestPurchaseLnUsername:
+    def test_happy_path(self, storage):
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        fake_tx = MagicMock()
+        fake_tx.txid.return_value = "computed-txid"
+        order = {
+            "payment_id": "pay1",
+            "address": VAULT_ADDR,
+            "amount_base_units": 777,
+            "asset_ticker": "L-BTC",
+        }
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=_route({
+                    "/payment-request/ln-username/": order,
+                    "/payment/submit-raw-tx/": {"status": "PENDING"},
+                }),
+            ),
+            patch("aqua.jan3_accounts.lwk.Transaction", return_value=fake_tx),
+        ):
+            out = mgr.purchase_ln_username("me@example.com", "alice")
+        assert out["txid"] == "computed-txid"
+        assert out["status"] == "PENDING"
+        assert out["ln_username"] == "alice"
+        assert out["amount_sats"] == 777
+        wm.craft_raw_tx.assert_called_once()
+
+    def test_missing_fields_raises(self, storage):
+        mgr, _ = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        order = {"payment_id": None, "address": None, "amount_base_units": 0}
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/payment-request/ln-username/": order}),
+        ):
+            with pytest.raises(ValueError, match="missing fields"):
+                mgr.purchase_ln_username("me@example.com", "alice")
+
+    def test_invalid_username_raises_before_network(self, storage):
+        mgr, _ = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with pytest.raises(ValueError, match="Invalid ln_username"):
+            mgr.purchase_ln_username("me@example.com", "bad..name")
 

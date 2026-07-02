@@ -29,6 +29,42 @@ def temp_storage():
         yield Storage(Path(tmpdir))
 
 
+class TestWalletDataAddressCounter:
+    """The ``next_address_index`` counter + its legacy migration."""
+
+    def test_defaults_to_zero(self):
+        w = WalletData(name="w", network="mainnet", descriptor="ct")
+        assert w.next_address_index == 0
+
+    def test_roundtrip_preserves_counter(self):
+        w = WalletData(
+            name="w", network="mainnet", descriptor="ct", next_address_index=7
+        )
+        assert WalletData.from_dict(w.to_dict()).next_address_index == 7
+
+    def test_migrates_legacy_ln_addr_next_index(self):
+        w = WalletData.from_dict({
+            "name": "w", "network": "mainnet", "descriptor": "ct",
+            "ln_addr_next_index": 12,
+        })
+        assert w.next_address_index == 12
+
+    def test_new_key_wins_over_legacy(self):
+        w = WalletData.from_dict({
+            "name": "w", "network": "mainnet", "descriptor": "ct",
+            "ln_addr_next_index": 12, "next_address_index": 99,
+        })
+        assert w.next_address_index == 99
+
+    def test_drops_unknown_future_keys(self):
+        w = WalletData.from_dict({
+            "name": "w", "network": "mainnet", "descriptor": "ct",
+            "some_future_field": "x",
+        })
+        assert w.next_address_index == 0
+        assert not hasattr(w, "some_future_field")
+
+
 class TestStorage:
     """Tests for Storage class."""
 
