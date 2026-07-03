@@ -331,10 +331,7 @@ def lw_address(
 
     Args:
         wallet_name: Name of the wallet. Default: "default"
-        index: Specify to get a particular address. 
-            If omitted, returns next unused address (read-only). 
-            Does not advance counter; repeated calls return same address.
-       
+        index: Address index. If omitted, returns next unused address (read-only, idempotent).
 
     Returns:
         address: The Liquid address
@@ -2224,54 +2221,38 @@ def jan3_logout(email: str) -> dict[str, Any]:
 def jan3_user_info(
     email: str,
     wallet_name: str = "default",
-    password: str | None = None,
 ) -> dict[str, Any]:
     """Get the AQUA account profile for `email` (Lightning Address status included).
 
-    The `ln_username` field is the user's full Lightning Address as returned by
-    the backend — surface it verbatim, never append a domain. Also carries the
-    state the LN-address feature depends on: `ln_address_toggled`,
-    `new_addresses_needed`, and the server-side wallet `fingerprint`.
-
-    When LN-address is active this call automatically tops up the pool of unused
-    Liquid receive addresses the backend needs to deliver inbound Lightning
-    payments (best-effort — reported under `ln_address_pool`, never fails the
-    read). Requires a prior `jan3_login`+`jan3_verify` (or the captchaless flow).
+    ``ln_username`` is the full Lightning Address verbatim from the backend.
+    Auto-tops-up the LN-address pool when active (result under ``ln_address_pool``).
+    The top-up derives Liquid addresses from the wallet descriptor, so no password
+    is needed even for a wallet encrypted at rest.
 
     Args:
         email: the JAN3 account email.
         wallet_name: Liquid wallet whose addresses back the LN-address pool.
-        password: decrypts the wallet mnemonic if encrypted at rest (needed for
-            the automatic pool top-up on encrypted wallets).
     """
-    return get_jan3_manager().get_user(
-        email, wallet_name=wallet_name, password=password
-    )
+    return get_jan3_manager().get_user(email, wallet_name=wallet_name)
 
 
 def jan3_enable_lightning_address(
     email: str,
     enabled: bool,
     wallet_name: str = "default",
-    password: str | None = None,
 ) -> dict[str, Any]:
     """Enable or disable the user's Lightning Address for `email`.
 
-    Ask the user first: enabling means JAN3/AQUA will deliver inbound Lightning
-    payments to their Lightning Address by handing out a batch of Liquid receive
-    addresses that this tool registers on their behalf (the received BTC lands on
-    those stored Liquid addresses). On enable, the address pool is populated
-    immediately (best-effort, reported under `ln_address_pool`). A `no_ln_username`
-    result means they must run `jan3_purchase_ln_username` first.
+    On enable, registers Liquid receive addresses and populates the pool
+    (result under ``ln_address_pool``). Addresses are derived from the wallet descriptor.
 
     Args:
         email: the JAN3 account email.
         enabled: True to opt in (and populate the pool), False to opt out.
         wallet_name: Liquid wallet whose addresses back the pool.
-        password: decrypts the wallet mnemonic if encrypted at rest.
     """
     return get_jan3_manager().ln_address_toggle(
-        email, enabled, wallet_name=wallet_name, password=password
+        email, enabled, wallet_name=wallet_name
     )
 
 
@@ -2280,20 +2261,10 @@ def jan3_rebind_wallet(
     wallet_name: str = "default",
     confirm: bool = False,
 ) -> dict[str, Any]:
-    """Re-bind the account's Lightning Address to a different local wallet.
+    """Re-bind Lightning Address delivery to a different local wallet (DESTRUCTIVE).
 
-    Two-step handshake — DO NOT pass confirm=true on the first call:
-      1. Call with `confirm` omitted/false to get a non-mutating PREVIEW. It
-         returns the Lightning Address (`ln_username`), the `current_fingerprint`
-         → `new_fingerprint`, and a `warning`. SHOW that warning to the user and
-         obtain explicit consent.
-      2. Only after the user confirms, call again with `confirm=true` to execute.
-
-    The Lightning Address shown (`ln_username`, a full user@domain) is NOT the
-    JAN3 account login `email` — never substitute one for the other. If the
-    account is already bound to this wallet the call is a harmless no-op
-    (`already_bound`); if no wallet was bound yet it is a first bind (not
-    destructive). Requires a prior JAN3 login for `email`.
+    Two-step: ``confirm=False`` returns a preview (``ln_username``, fingerprint diff,
+    ``warning``); ``confirm=True`` executes after user consent.
 
     Args:
         email: the JAN3 account email (identifies the account/session).
@@ -2307,9 +2278,6 @@ def jan3_rebind_wallet(
 
 def jan3_ln_check_username(email: str, ln_username: str) -> dict[str, Any]:
     """Check whether a Lightning username is free before buying it.
-
-    Call before `jan3_purchase_ln_username` to avoid paying L-BTC on a username
-    that's already taken. Requires an active JAN3 session for `email`.
 
     Args:
         email: the JAN3 account email (session used to authenticate the check).
@@ -2326,11 +2294,6 @@ def jan3_purchase_ln_username(
     asset: str = "L-BTC",
 ) -> dict[str, Any]:
     """Purchase / update the Lightning username for a JAN3 account (on-chain L-BTC).
-
-    Creates an LN_USERNAME_UPDATE payment request, funds it with a signed L-BTC
-    tx to AQUA's address, and submits it. Check availability first with
-    `jan3_ln_check_username`. Requires an active JAN3 session for
-    `email` (either login flow).
 
     Args:
         email: the JAN3 account email.

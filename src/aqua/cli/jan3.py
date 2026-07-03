@@ -148,26 +148,14 @@ def logout(ctx, email):
 @jan3.command("user-info")
 @click.option("--email", required=True, help="JAN3 account email.")
 @click.option("--wallet-name", default="default", show_default=True)
-@click.option(
-    "--password-stdin", "password_stdin", is_flag=True, default=False, help=_PASSWORD_HELP
-)
 @click.pass_obj
-def user_info(ctx, email, wallet_name, password_stdin):
+def user_info(ctx, email, wallet_name):
     """Show the AQUA account profile + Lightning Address status.
 
     When LN-address is active this also tops up the Liquid address pool
     (best-effort, reported under `ln_address_pool`).
     """
-    password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
-    )
-    run_tool(
-        ctx,
-        lambda: handle_password_retry(
-            jan3_user_info,
-            {"email": email, "wallet_name": wallet_name, "password": password},
-        ),
-    )
+    run_tool(ctx, lambda: jan3_user_info(email=email, wallet_name=wallet_name))
 
 
 @jan3.command("enable-lightning-address")
@@ -177,29 +165,17 @@ def user_info(ctx, email, wallet_name, password_stdin):
     help="Enable or disable the Lightning Address.",
 )
 @click.option("--wallet-name", default="default", show_default=True)
-@click.option(
-    "--password-stdin", "password_stdin", is_flag=True, default=False, help=_PASSWORD_HELP
-)
 @click.pass_obj
-def enable_lightning_address(ctx, email, enabled, wallet_name, password_stdin):
+def enable_lightning_address(ctx, email, enabled, wallet_name):
     """Enable/disable the Lightning Address.
 
     Enabling populates a batch of Liquid receive addresses so AQUA can deliver
     inbound Lightning payments to those addresses.
     """
-    password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
-    )
     run_tool(
         ctx,
-        lambda: handle_password_retry(
-            jan3_enable_lightning_address,
-            {
-                "email": email,
-                "enabled": enabled,
-                "wallet_name": wallet_name,
-                "password": password,
-            },
+        lambda: jan3_enable_lightning_address(
+            email=email, enabled=enabled, wallet_name=wallet_name
         ),
     )
 

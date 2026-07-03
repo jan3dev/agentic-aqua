@@ -1458,11 +1458,6 @@ TOOL_SCHEMAS = {
                     "default": "default",
                     "description": "Liquid wallet whose addresses back the LN-address pool.",
                 },
-                "password": {
-                    "type": "string",
-                    "description": "Decrypts the wallet mnemonic if encrypted at rest "
-                    "(needed for the automatic pool top-up on encrypted wallets).",
-                },
             },
             "required": ["email"],
         },
@@ -1489,10 +1484,6 @@ TOOL_SCHEMAS = {
                     "type": "string",
                     "default": "default",
                     "description": "Liquid wallet whose addresses back the pool.",
-                },
-                "password": {
-                    "type": "string",
-                    "description": "Decrypts the wallet mnemonic if encrypted at rest.",
                 },
             },
             "required": ["email", "enabled"],

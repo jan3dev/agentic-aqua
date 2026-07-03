@@ -746,7 +746,6 @@ class Jan3AccountsManager:
         self,
         email: str,
         wallet_name: str = "default",
-        password: Optional[str] = None,
     ) -> dict:
         """Fetch the AQUA account profile for ``email``.
 
@@ -759,7 +758,7 @@ class Jan3AccountsManager:
         )
         result = dict(profile)
         result["ln_address_pool"] = self._auto_ensure_ln_pool(
-            email, wallet_name=wallet_name, password=password, profile=profile
+            email, wallet_name=wallet_name, profile=profile
         )
         return result
 
@@ -768,7 +767,6 @@ class Jan3AccountsManager:
         email: str,
         enabled: bool,
         wallet_name: str = "default",
-        password: Optional[str] = None,
     ) -> dict:
         """Enable or disable the LN-address feature for ``email``.
 
@@ -783,7 +781,7 @@ class Jan3AccountsManager:
         out: dict[str, Any] = {"email": email, "enabled": bool(enabled), "result": resp}
         if enabled:
             out["ln_address_pool"] = self._auto_ensure_ln_pool(
-                email, wallet_name=wallet_name, password=password, profile=None
+                email, wallet_name=wallet_name, profile=None
             )
         return out
 
@@ -808,7 +806,6 @@ class Jan3AccountsManager:
         wallet_name: str = "default",
         count: Optional[int] = None,
         override_fingerprint: bool = False,
-        password: Optional[str] = None,
         profile: Optional[dict] = None,
     ) -> dict:
         """Mint ``count`` unused Liquid receive addresses and POST to /auth/user/addresses/.
@@ -837,7 +834,7 @@ class Jan3AccountsManager:
             )
 
         server_fp = user.get("fingerprint")
-        local_fp = self.wallet_manager.fingerprint(wallet_name, password=password)
+        local_fp = self.wallet_manager.fingerprint(wallet_name)
         if server_fp and server_fp != local_fp and not override_fingerprint:
             raise ValueError(
                 f"Wallet fingerprint mismatch: account is bound to {server_fp!r}, "
@@ -877,7 +874,6 @@ class Jan3AccountsManager:
         self,
         email: str,
         wallet_name: str = "default",
-        password: Optional[str] = None,
         profile: Optional[dict] = None,
     ) -> dict:
         """Idempotent LN-address pool top-up (internal — NOT an MCP tool).
@@ -908,7 +904,7 @@ class Jan3AccountsManager:
             )
 
         server_fp = user.get("fingerprint")
-        local_fp = self.wallet_manager.fingerprint(wallet_name, password=password)
+        local_fp = self.wallet_manager.fingerprint(wallet_name)
         if server_fp and server_fp != local_fp:
             return _skip(
                 "fingerprint_mismatch",
@@ -928,7 +924,6 @@ class Jan3AccountsManager:
             email,
             wallet_name=wallet_name,
             count=min(needed, MAX_ADDRESSES_PER_REGISTRATION),
-            password=password,
             profile=user,
         )
         return {
@@ -942,7 +937,6 @@ class Jan3AccountsManager:
         self,
         email: str,
         wallet_name: str,
-        password: Optional[str],
         profile: Optional[dict] = None,
     ) -> dict:
         """Best-effort wrapper around :meth:`ensure_ln_pool` (auto paths only).
@@ -952,7 +946,7 @@ class Jan3AccountsManager:
         """
         try:
             return self.ensure_ln_pool(
-                email, wallet_name=wallet_name, password=password, profile=profile
+                email, wallet_name=wallet_name, profile=profile
             )
         except Exception as e:  # noqa: BLE001 — auto path must never break its caller
             logger.warning("Auto LN-address pool top-up skipped for %s: %s", email, e)
@@ -997,7 +991,7 @@ class Jan3AccountsManager:
         # Already bound: no-op, but keep the pool healthy via the non-override path.
         if server_fp and server_fp == local_fp:
             pool = self._auto_ensure_ln_pool(
-                email, wallet_name=wallet_name, password=None, profile=profile
+                email, wallet_name=wallet_name, profile=profile
             )
             return {
                 "email": email,
