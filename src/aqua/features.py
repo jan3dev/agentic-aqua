@@ -140,6 +140,7 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("jan3", "logout"): "jan3_logout",
     ("jan3", "user-info"): "jan3_user_info",
     ("jan3", "enable-lightning-address"): "jan3_enable_lightning_address",
+    ("jan3", "rebind-wallet"): "jan3_rebind_wallet",
     ("jan3", "ln-check-username"): "jan3_ln_check_username",
     ("jan3", "purchase-ln-username"): "jan3_purchase_ln_username",
 }

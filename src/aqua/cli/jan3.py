@@ -25,6 +25,7 @@ from ..tools import (
     jan3_login_start,
     jan3_logout,
     jan3_purchase_ln_username,
+    jan3_rebind_wallet,
     jan3_session_info,
     jan3_user_info,
     jan3_verify,
@@ -199,6 +200,50 @@ def enable_lightning_address(ctx, email, enabled, wallet_name, password_stdin):
                 "wallet_name": wallet_name,
                 "password": password,
             },
+        ),
+    )
+
+
+@jan3.command("rebind-wallet")
+@click.option("--email", required=True, help="Your JAN3 account email (account/session).")
+@click.option(
+    "--wallet-name", default="default", show_default=True,
+    help="Local Liquid wallet to bind Lightning-Address delivery to.",
+)
+@click.option(
+    "--yes", "assume_yes", is_flag=True, default=False,
+    help="Skip the confirmation prompt (overwrites existing binding).",
+)
+@click.pass_obj
+def rebind_wallet(ctx, email, wallet_name, assume_yes):
+    """Re-bind your Lightning Address to a different wallet (DESTRUCTIVE).
+
+    Moves inbound Lightning delivery to --wallet-name; the previously-bound
+    wallet stops receiving. Previews the change first (showing your Lightning
+    Address and the current→new fingerprint), then asks for confirmation unless
+    --yes is given. If the account is already bound to this wallet it is a no-op.
+    No wallet password is needed — re-binding never signs.
+    """
+    try:
+        preview = jan3_rebind_wallet(
+            email=email, wallet_name=wallet_name, confirm=False
+        )
+    except Exception as e:
+        raise click.UsageError(f"Could not read account/wallet state: {e}") from e
+
+    # No-op (already bound to this wallet): nothing to confirm — show the result.
+    if not preview.get("requires_confirmation"):
+        run_tool(ctx, lambda: preview)
+        return
+
+    if not assume_yes:
+        click.echo(preview.get("warning", ""), err=True)
+        click.confirm("Continue?", abort=True, err=True)
+
+    run_tool(
+        ctx,
+        lambda: jan3_rebind_wallet(
+            email=email, wallet_name=wallet_name, confirm=True
         ),
     )
 

@@ -936,8 +936,9 @@ class Jan3AccountsManager:
                     f"The pool was NOT topped up: this account delivers Lightning "
                     f"payments to the wallet bound to fingerprint {server_fp!r}, "
                     f"but wallet {wallet_name!r} is {local_fp!r}. Retry with the "
-                    "wallet that matches the bound fingerprint (self-serve "
-                    "re-binding to a different wallet is not yet available)."
+                    "wallet that matches the bound fingerprint, or re-bind delivery "
+                    "to this wallet with jan3_rebind_wallet (this stops delivery to "
+                    "the previously-bound wallet)."
                 ),
             )
 
@@ -980,6 +981,106 @@ class Jan3AccountsManager:
                 "reason": "auto_topup_unavailable",
                 "detail": str(e),
             }
+
+    def rebind_wallet(
+        self,
+        email: str,
+        wallet_name: str = "default",
+        confirm: bool = False,
+    ) -> dict:
+        """Re-bind the account's Lightning Address to ``wallet_name`` (self-serve).
+
+        This is the only path that passes ``override_fingerprint=true`` — it
+        re-binds the AQUA account to this wallet's fingerprint and re-enables LN
+        delivery. It is reachable in three states, only the last of which is
+        destructive:
+
+        * **first bind** — the account has no wallet bound yet (``fingerprint``
+          empty on the profile). Binds ``wallet_name``; not destructive.
+        * **already bound** — the account is already bound to this exact wallet
+          (server fingerprint == this wallet's). A no-op; best-effort pool
+          top-up via the normal (non-override) path. No confirmation needed.
+        * **re-bind** — the account is bound to a *different* wallet. Destructive:
+          the previously-bound wallet stops receiving inbound Lightning. Requires
+          explicit confirmation.
+
+        Two-step handshake: ``confirm=False`` returns a non-mutating preview
+        (``requires_confirmation``, ``warning``, ``current_fingerprint`` →
+        ``new_fingerprint``); ``confirm=True`` executes. The Lightning Address in
+        the preview is ``ln_username`` (a full ``user@domain``) — never the
+        account login ``email``.
+        """
+        email = _validate_email(email)
+        profile = self._with_auth_retry(
+            email, lambda access: self._authed_client(access).get_user()
+        )
+        ln_username = profile.get("ln_username")
+        if not ln_username:
+            raise ValueError(
+                "This account has no LN username yet — run "
+                "jan3_purchase_ln_username first."
+            )
+
+        server_fp = profile.get("fingerprint")
+        local_fp = self.wallet_manager.fingerprint(wallet_name)
+
+        # Already bound to this exact wallet: nothing to re-bind. Keep the pool
+        # healthy via the normal (non-override) path and report a no-op.
+        if server_fp and server_fp == local_fp:
+            pool = self._auto_ensure_ln_pool(
+                email, wallet_name=wallet_name, password=None, profile=profile
+            )
+            return {
+                "email": email,
+                "ln_username": ln_username,
+                "wallet_name": wallet_name,
+                "fingerprint": local_fp,
+                "already_bound": True,
+                "requires_confirmation": False,
+                "rebound": False,
+                "ln_address_pool": pool,
+            }
+
+        state = "first_bind" if not server_fp else "rebind"
+        if state == "first_bind":
+            warning = (
+                f"This binds your Lightning Address {ln_username} to wallet "
+                f"{wallet_name!r} [{local_fp}]. No wallet was previously bound, "
+                "so nothing stops receiving."
+            )
+        else:
+            warning = (
+                f"Re-binding your Lightning Address {ln_username} to wallet "
+                f"{wallet_name!r} [{local_fp}] moves inbound Lightning delivery "
+                f"away from the currently-bound wallet [{server_fp}], which will "
+                "stop receiving. This is destructive."
+            )
+
+        info = {
+            "email": email,
+            "ln_username": ln_username,
+            "wallet_name": wallet_name,
+            "state": state,
+            "current_fingerprint": server_fp,
+            "new_fingerprint": local_fp,
+        }
+        if not confirm:
+            return {**info, "requires_confirmation": True, "rebound": False, "warning": warning}
+
+        result = self.register_ln_addresses(
+            email,
+            wallet_name=wallet_name,
+            override_fingerprint=True,
+            profile=profile,
+        )
+        return {
+            **info,
+            "rebound": True,
+            "requires_confirmation": False,
+            "requested_count": result["requested_count"],
+            "pool_size": result["pool_size"],
+            "fingerprint": result["fingerprint"],
+        }
 
     def purchase_ln_username(
         self,

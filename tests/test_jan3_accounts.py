@@ -141,6 +141,24 @@ def _route(mapping):
     return side_effect
 
 
+def _capturing_route(mapping):
+    """Like :func:`_route` but records every request URL (with query string).
+
+    The returned side_effect exposes ``.calls`` — a list of ``req.full_url``
+    strings — so a test can assert whether ``?override_fingerprint=true`` was
+    (or was not) sent.
+    """
+    urls: list[str] = []
+    base = _route(mapping)
+
+    def side_effect(req, timeout=None):
+        urls.append(req.full_url)
+        return base(req, timeout=timeout)
+
+    side_effect.calls = urls
+    return side_effect
+
+
 # ---------------------------------------------------------------------------
 # Pure helpers
 # ---------------------------------------------------------------------------
@@ -1249,6 +1267,154 @@ class TestRegisterLnAddresses:
             )
         wm.reserve_addresses.assert_called_once_with("default", DEFAULT_LN_ADDRESS_POOL)
         assert out["requested_count"] == DEFAULT_LN_ADDRESS_POOL
+
+
+# ---------------------------------------------------------------------------
+# Manager: rebind_wallet (self-serve override_fingerprint)
+# ---------------------------------------------------------------------------
+
+
+class TestRebindWallet:
+    """`rebind_wallet` re-binds the account's Lightning Address to a different
+    local wallet. Three states: first-bind (no server fp), no-op (server==local),
+    destructive re-bind (server!=local). confirm=False previews without mutating;
+    confirm=True executes with override_fingerprint=true.
+    """
+
+    def _profile(self, *, server_fp="serverfp", needed=2, ln_username="alice@aquabtc.com"):
+        return {
+            "email": "me@example.com",
+            "ln_username": ln_username,
+            "ln_address_toggled": True,
+            "fingerprint": server_fp,
+            "new_addresses_needed": needed,
+        }
+
+    # -- destructive re-bind (server_fp != local_fp) ------------------------
+
+    def test_preview_does_not_mutate_or_send_override(self, storage):
+        # confirm=False on a mismatch must PREVIEW only: no address minting,
+        # no POST to /addresses/, and certainly no override query. (AC-3)
+        mgr, wm = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        route = _capturing_route({"/user/": self._profile(server_fp="serverfp")})
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.rebind_wallet("me@example.com", "default", confirm=False)
+        assert out["requires_confirmation"] is True
+        assert out["rebound"] is False
+        assert out["current_fingerprint"] == "serverfp"
+        assert out["new_fingerprint"] == "localfp"
+        assert "serverfp" in out["warning"] and "localfp" in out["warning"]
+        wm.reserve_addresses.assert_not_called()
+        assert not any("override_fingerprint" in u for u in route.calls)
+        assert not any("/addresses/" in u for u in route.calls)
+
+    def test_confirm_executes_and_sends_override(self, storage):
+        # confirm=True on a mismatch must call register with override_fingerprint,
+        # sending ?override_fingerprint=true to /addresses/. (AC-4, AC-5)
+        mgr, wm = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        route = _capturing_route({
+            "/user/": self._profile(server_fp="serverfp", needed=2),
+            "/addresses/": {"addresses": ["a", "b"]},
+        })
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.rebind_wallet("me@example.com", "default", confirm=True)
+        assert out["rebound"] is True
+        assert out["new_fingerprint"] == "localfp"
+        assert out["pool_size"] == 2
+        wm.reserve_addresses.assert_called_once_with("default", 2)
+        assert any(
+            u.endswith("/api/v1/auth/user/addresses/?override_fingerprint=true")
+            for u in route.calls
+        )
+
+    def test_warning_names_ln_address_not_account_email(self, storage):
+        # D6: the warning must surface the Lightning Address (ln_username), never
+        # the JAN3 account login email.
+        mgr, _ = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        route = _capturing_route({
+            "/user/": self._profile(server_fp="serverfp", ln_username="alice@aquabtc.com"),
+        })
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.rebind_wallet("me@example.com", "default", confirm=False)
+        assert "alice@aquabtc.com" in out["warning"]
+        assert "me@example.com" not in out["warning"]
+
+    # -- first bind (server_fp empty) --------------------------------------
+
+    def test_first_bind_preview_has_no_bogus_none(self, storage):
+        # AC-10: no wallet bound yet -> first bind, not a destructive re-bind.
+        # The warning must not render a "None" replaced-fingerprint.
+        mgr, wm = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        route = _capturing_route({"/user/": self._profile(server_fp=None)})
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.rebind_wallet("me@example.com", "default", confirm=False)
+        assert out["state"] == "first_bind"
+        assert out["current_fingerprint"] is None
+        assert out["new_fingerprint"] == "localfp"
+        assert "None" not in out["warning"]
+        wm.reserve_addresses.assert_not_called()
+        assert not any("override_fingerprint" in u for u in route.calls)
+
+    def test_first_bind_confirm_executes(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        route = _capturing_route({
+            "/user/": self._profile(server_fp=None, needed=3),
+            "/addresses/": {"addresses": ["a", "b", "c"]},
+        })
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.rebind_wallet("me@example.com", "default", confirm=True)
+        assert out["rebound"] is True
+        assert any("override_fingerprint=true" in u for u in route.calls)
+
+    # -- already bound (server_fp == local_fp) -----------------------------
+
+    def test_already_bound_is_noop_no_override(self, storage):
+        # AC-11: server fp already equals this wallet -> no-op, no confirmation,
+        # never sends a spurious destructive override.
+        mgr, wm = _ln_manager(storage, fingerprint="samefp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        route = _capturing_route({"/user/": self._profile(server_fp="samefp", needed=0)})
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.rebind_wallet("me@example.com", "default", confirm=False)
+        assert out["already_bound"] is True
+        assert out["requires_confirmation"] is False
+        assert out["rebound"] is False
+        assert not any("override_fingerprint" in u for u in route.calls)
+
+    # -- guards -------------------------------------------------------------
+
+    def test_no_username_raises(self, storage):
+        mgr, _ = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/user/": {"ln_username": None, "fingerprint": "serverfp"}}),
+        ):
+            with pytest.raises(ValueError, match="no LN username"):
+                mgr.rebind_wallet("me@example.com", "default", confirm=True)
+
+    def test_mismatch_skip_points_to_rebind_tool(self, storage):
+        # AC-8: the auto-path skip message must now point at the new self-serve
+        # tool instead of saying re-binding is unavailable.
+        mgr, _ = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        out = mgr.ensure_ln_pool(
+            "me@example.com",
+            profile={
+                "ln_username": "alice@aquabtc.com",
+                "ln_address_toggled": True,
+                "fingerprint": "serverfp",
+                "new_addresses_needed": 3,
+            },
+        )
+        assert out["reason"] == "fingerprint_mismatch"
+        assert "jan3_rebind_wallet" in out["message"]
+        assert "serverfp" in out["message"] and "localfp" in out["message"]
 
 
 class TestEnsureLnPool:

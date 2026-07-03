@@ -1237,6 +1237,7 @@ class TestToolRegistry:
             "jan3_logout",
             "jan3_user_info",
             "jan3_enable_lightning_address",
+            "jan3_rebind_wallet",
             "jan3_ln_check_username",
             "jan3_purchase_ln_username",
         }

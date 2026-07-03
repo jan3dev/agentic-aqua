@@ -2275,6 +2275,36 @@ def jan3_enable_lightning_address(
     )
 
 
+def jan3_rebind_wallet(
+    email: str,
+    wallet_name: str = "default",
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Re-bind the account's Lightning Address to a different local wallet.
+
+    Two-step handshake — DO NOT pass confirm=true on the first call:
+      1. Call with `confirm` omitted/false to get a non-mutating PREVIEW. It
+         returns the Lightning Address (`ln_username`), the `current_fingerprint`
+         → `new_fingerprint`, and a `warning`. SHOW that warning to the user and
+         obtain explicit consent.
+      2. Only after the user confirms, call again with `confirm=true` to execute.
+
+    The Lightning Address shown (`ln_username`, a full user@domain) is NOT the
+    JAN3 account login `email` — never substitute one for the other. If the
+    account is already bound to this wallet the call is a harmless no-op
+    (`already_bound`); if no wallet was bound yet it is a first bind (not
+    destructive). Requires a prior JAN3 login for `email`.
+
+    Args:
+        email: the JAN3 account email (identifies the account/session).
+        wallet_name: the local Liquid wallet to bind delivery to.
+        confirm: False (default) previews without mutating; True executes.
+    """
+    return get_jan3_manager().rebind_wallet(
+        email, wallet_name=wallet_name, confirm=confirm
+    )
+
+
 def jan3_ln_check_username(email: str, ln_username: str) -> dict[str, Any]:
     """Check whether a Lightning username is free before buying it.
 
@@ -2393,6 +2423,7 @@ TOOLS = {
     "jan3_logout": jan3_logout,
     "jan3_user_info": jan3_user_info,
     "jan3_enable_lightning_address": jan3_enable_lightning_address,
+    "jan3_rebind_wallet": jan3_rebind_wallet,
     "jan3_ln_check_username": jan3_ln_check_username,
     "jan3_purchase_ln_username": jan3_purchase_ln_username,
     "qr_decode": qr_decode,

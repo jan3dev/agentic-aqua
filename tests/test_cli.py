@@ -1998,10 +1998,60 @@ class _FakeJAN3Manager:
 
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
+        # When True, rebind_wallet reports an already-bound no-op (no confirm gate).
+        self.rebind_already_bound = False
 
     def login(self, email, language="en"):
         self.calls.append(("login", {"email": email, "language": language}))
         return {"email": email, "message": "OTP sent", "next_step": "verify"}
+
+    def rebind_wallet(self, email, wallet_name="default", confirm=False):
+        self.calls.append((
+            "rebind_wallet",
+            {
+                "email": email,
+                "wallet_name": wallet_name,
+                "confirm": confirm,
+            },
+        ))
+        if self.rebind_already_bound:
+            return {
+                "email": email,
+                "ln_username": "alice@aquabtc.com",
+                "wallet_name": wallet_name,
+                "fingerprint": "samefp",
+                "already_bound": True,
+                "requires_confirmation": False,
+                "rebound": False,
+                "ln_address_pool": {"reason": "pool_full"},
+            }
+        if not confirm:
+            return {
+                "email": email,
+                "ln_username": "alice@aquabtc.com",
+                "wallet_name": wallet_name,
+                "state": "rebind",
+                "current_fingerprint": "serverfp",
+                "new_fingerprint": "localfp",
+                "requires_confirmation": True,
+                "rebound": False,
+                "warning": (
+                    "Re-binding your Lightning Address alice@aquabtc.com to wallet "
+                    f"{wallet_name!r} [localfp] moves delivery away from [serverfp]."
+                ),
+            }
+        return {
+            "email": email,
+            "ln_username": "alice@aquabtc.com",
+            "wallet_name": wallet_name,
+            "state": "rebind",
+            "current_fingerprint": "serverfp",
+            "new_fingerprint": "localfp",
+            "rebound": True,
+            "requires_confirmation": False,
+            "pool_size": 5,
+            "fingerprint": "localfp",
+        }
 
     def verify(self, email, otp_code, fingerprint=None, captcha_exempt=False):
         self.calls.append((
@@ -2148,6 +2198,64 @@ class TestWapuPayCli:
         assert result.exit_code == 0
         assert json.loads(result.output)["logged_in"] is True
         assert auth_cli.calls[-1][1]["otp_code"] == "123456"
+
+    def test_rebind_wallet_yes_skips_prompt(self, runner, auth_cli):
+        """--yes runs the two-step handshake without prompting: preview
+        (confirm=False) then execute (confirm=True)."""
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "jan3", "rebind-wallet",
+             "--email", "u@e.com", "--wallet-name", "new", "--yes"],
+        )
+        assert result.exit_code == 0
+        assert json.loads(result.output)["rebound"] is True
+        rebinds = [c for c in auth_cli.calls if c[0] == "rebind_wallet"]
+        assert rebinds[0][1]["confirm"] is False   # preview first
+        assert rebinds[-1][1]["confirm"] is True    # then execute
+        assert rebinds[-1][1]["wallet_name"] == "new"
+
+    def test_rebind_wallet_decline_aborts_without_executing(self, runner, auth_cli):
+        """Declining the prompt aborts: the destructive confirm=True call is
+        never made."""
+        result = runner.invoke(
+            cli,
+            ["jan3", "rebind-wallet", "--email", "u@e.com", "--wallet-name", "new"],
+            input="n\n",
+        )
+        assert result.exit_code != 0  # click.Abort
+        rebinds = [c for c in auth_cli.calls if c[0] == "rebind_wallet"]
+        assert rebinds and all(c[1]["confirm"] is False for c in rebinds)
+
+    def test_rebind_wallet_accept_executes(self, runner, auth_cli):
+        """Accepting the prompt (y) runs the destructive execute call."""
+        result = runner.invoke(
+            cli,
+            ["jan3", "rebind-wallet", "--email", "u@e.com", "--wallet-name", "new"],
+            input="y\n",
+        )
+        assert result.exit_code == 0
+        # The destructive warning (naming the LN address) is echoed before the
+        # prompt — the distinctive phrase only comes from the warning, not the
+        # result JSON. (The LN-address-vs-email rule is asserted at the manager
+        # level in test_warning_names_ln_address_not_account_email.)
+        assert "moves delivery away" in result.output
+        assert "alice@aquabtc.com" in result.output
+        assert any(
+            c[0] == "rebind_wallet" and c[1]["confirm"] is True for c in auth_cli.calls
+        )
+
+    def test_rebind_wallet_already_bound_is_noop(self, runner, auth_cli):
+        """When already bound to this wallet, no prompt and no destructive
+        execute call."""
+        auth_cli.rebind_already_bound = True
+        result = runner.invoke(
+            cli, ["--format", "json", "jan3", "rebind-wallet", "--email", "u@e.com"]
+        )
+        assert result.exit_code == 0
+        assert json.loads(result.output)["already_bound"] is True
+        assert not any(
+            c[0] == "rebind_wallet" and c[1]["confirm"] is True for c in auth_cli.calls
+        )
 
     def test_create_order_with_yes_skips_confirm(self, runner, wapupay_cli):
         result = runner.invoke(

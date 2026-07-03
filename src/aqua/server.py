@@ -1498,6 +1498,44 @@ TOOL_SCHEMAS = {
             "required": ["email", "enabled"],
         },
     },
+    "jan3_rebind_wallet": {
+        "description": (
+            "Re-bind the account's Lightning Address to a different local wallet "
+            "(the only path that passes override_fingerprint). DESTRUCTIVE: it "
+            "moves inbound Lightning delivery to wallet_name and stops delivery to "
+            "the previously-bound wallet. Use when the account is bound to a wallet "
+            "you no longer have (new seed, old JAN3 account) or to switch which "
+            "wallet receives funds. TWO-STEP HANDSHAKE — do NOT pass confirm=true "
+            "first: (1) call with confirm=false to get a non-mutating preview "
+            "(ln_username, current_fingerprint->new_fingerprint, warning), SHOW the "
+            "warning and get explicit user consent; (2) only then call with "
+            "confirm=true to execute. The ln_username shown is the Lightning Address "
+            "(a user@domain), it isn't the account login email, never substitute one for the other."
+            "already_bound=true means it was a no-op. Requires a prior JAN3 login."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "format": "email",
+                    "description": "JAN3 account email (identifies the account/session).",
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "default": "default",
+                    "description": "Local Liquid wallet to bind LN delivery to.",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "False previews without mutating; True executes "
+                    "the re-bind (override). Only set True after explicit user consent.",
+                },
+            },
+            "required": ["email"],
+        },
+    },
     "jan3_ln_check_username": {
         "description": (
             "Check whether a Lightning username is free before buying it. Call "
