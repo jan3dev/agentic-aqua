@@ -1469,8 +1469,7 @@ TOOL_SCHEMAS = {
             "Lightning Address by handing out a batch of Liquid receive addresses "
             "this tool registers (received BTC lands on those stored Liquid "
             "addresses). On enable, the pool is populated immediately (best-effort, "
-            "under ln_address_pool); a no_ln_username result means the user must "
-            "run jan3_purchase_ln_username first. Requires a prior JAN3 login."
+            "under ln_address_pool). Requires a prior JAN3 login."
         ),
         "inputSchema": {
             "type": "object",
@@ -1530,7 +1529,7 @@ TOOL_SCHEMAS = {
     "jan3_ln_check_username": {
         "description": (
             "Check whether a Lightning username is free before buying it. Call "
-            "before jan3_purchase_ln_username to avoid paying L-BTC on a username "
+            "before jan3_purchase_ln_username to avoid paying for a username "
             "that's already taken. Requires an active JAN3 session for the email."
         ),
         "inputSchema": {
@@ -1548,10 +1547,16 @@ TOOL_SCHEMAS = {
     "jan3_purchase_ln_username": {
         "description": (
             "Purchase / update the Lightning username for a JAN3 account with an "
-            "on-chain L-BTC payment. Creates a payment request, funds it with a "
-            "signed L-BTC tx to AQUA's address, and submits it. Check availability "
-            "first with jan3_ln_check_username. Requires an active JAN3 "
-            "session for the email (either login flow)."
+            "on-chain payment (fund in L-BTC or USDt). TWO-STEP, do NOT pass "
+            "confirm=true first: (1) call with confirm=false (default) to get a "
+            "price quote WITHOUT spending — it returns display_amount (already "
+            "formatted for the user, e.g. '2000 Sats' for L-BTC or '1.50 USDT' "
+            "for USDt), amount_base_units (technical), amount, asset_ticker and "
+            "expires_at; SHOW display_amount to the user and get explicit consent; "
+            "(2) only then call with confirm=true to sign and submit. When telling "
+            "the user the price, use display_amount verbatim — never surface the "
+            "raw amount/amount_base_units. Check availability first with "
+            "jan3_ln_check_username. Requires an active JAN3 session (either flow)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1568,12 +1573,22 @@ TOOL_SCHEMAS = {
                 },
                 "password": {
                     "type": "string",
-                    "description": "Decrypts the wallet mnemonic if encrypted at rest.",
+                    "description": "Decrypts the wallet mnemonic if encrypted at rest "
+                    "(only needed when confirm=true).",
                 },
                 "asset": {
                     "type": "string",
                     "default": "L-BTC",
-                    "description": "Funding asset ticker.",
+                    "enum": ["L-BTC", "USDt"],
+                    "description": "Funding asset — 'L-BTC' or 'USDt'. Ask the user "
+                    "which they prefer; the price is quoted in that asset.",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "False (default) returns a non-spending price "
+                    "quote; True signs and submits the payment. Only set True "
+                    "after the user approves the quoted display_amount.",
                 },
             },
             "required": ["email", "ln_username"],

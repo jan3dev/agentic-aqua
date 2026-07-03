@@ -1462,6 +1462,8 @@ class TestPurchaseLnUsername:
             "address": VAULT_ADDR,
             "amount_base_units": 777,
             "asset_ticker": "L-BTC",
+            "amount": "0.00000777",
+            "expires_at": "2026-07-03T18:13:55Z",
         }
         with (
             patch(
@@ -1473,12 +1475,40 @@ class TestPurchaseLnUsername:
             ),
             patch("aqua.jan3_accounts.lwk.Transaction", return_value=fake_tx),
         ):
-            out = mgr.purchase_ln_username("me@example.com", "alice")
+            out = mgr.purchase_ln_username("me@example.com", "alice", confirm=True)
+        assert out["confirmed"] is True
         assert out["txid"] == "computed-txid"
         assert out["status"] == "PENDING"
         assert out["ln_username"] == "alice"
-        assert out["amount_sats"] == 777
+        assert out["amount_base_units"] == 777
+        assert out["amount"] == "0.00000777"
+        assert out["expires_at"] == "2026-07-03T18:13:55Z"
+        assert out["display_amount"] == "777 Sats"
         wm.craft_raw_tx.assert_called_once()
+
+    def test_dry_run_quote_does_not_sign(self, storage):
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        order = {
+            "payment_id": "pay1",
+            "address": VAULT_ADDR,
+            "amount_base_units": 8_000_000,
+            "asset_ticker": "USDt",
+            "amount": "0.08000000",
+            "expires_at": "2026-07-03T18:13:55Z",
+        }
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/payment-request/ln-username/": order}),
+        ):
+            out = mgr.purchase_ln_username("me@example.com", "alice", asset="USDt")
+        assert out["requires_confirmation"] is True
+        assert out["confirmed"] is False
+        assert out["amount_base_units"] == 8_000_000
+        assert out["display_amount"] == "0.08 USDT"
+        assert out["expires_at"] == "2026-07-03T18:13:55Z"
+        assert "txid" not in out
+        wm.craft_raw_tx.assert_not_called()
 
     def test_missing_fields_raises(self, storage):
         mgr, _ = _ln_manager(storage)
@@ -1489,7 +1519,7 @@ class TestPurchaseLnUsername:
             side_effect=_route({"/payment-request/ln-username/": order}),
         ):
             with pytest.raises(ValueError, match="missing fields"):
-                mgr.purchase_ln_username("me@example.com", "alice")
+                mgr.purchase_ln_username("me@example.com", "alice", confirm=True)
 
     def test_invalid_username_raises_before_network(self, storage):
         mgr, _ = _ln_manager(storage)

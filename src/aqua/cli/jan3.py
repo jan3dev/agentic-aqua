@@ -242,13 +242,45 @@ def ln_check_username(ctx, email, ln_username):
     help="Desired username (local part, before the @domain).",
 )
 @click.option("--wallet-name", default="default", show_default=True)
-@click.option("--asset", default="L-BTC", show_default=True, help="Funding asset ticker.")
+@click.option(
+    "--asset", default="L-BTC", show_default=True,
+    type=click.Choice(["L-BTC", "USDt"], case_sensitive=False),
+    help="Funding asset — L-BTC or USDt.",
+)
+@click.option(
+    "--yes", "assume_yes", is_flag=True, default=False,
+    help="Skip the price confirmation prompt.",
+)
 @click.option(
     "--password-stdin", "password_stdin", is_flag=True, default=False, help=_PASSWORD_HELP
 )
 @click.pass_obj
-def purchase_ln_username(ctx, email, ln_username, wallet_name, asset, password_stdin):
-    """Buy / update the Lightning username with an on-chain L-BTC payment."""
+def purchase_ln_username(ctx, email, ln_username, wallet_name, asset, assume_yes, password_stdin):
+    """Buy / update the Lightning username with an on-chain payment (L-BTC or USDt).
+
+    Quotes the price first and asks for confirmation unless --yes is given.
+    """
+    # 1) Non-spending price quote (no signing, no password).
+    try:
+        quote = jan3_purchase_ln_username(
+            email=email,
+            ln_username=ln_username,
+            wallet_name=wallet_name,
+            asset=asset,
+            confirm=False,
+        )
+    except Exception as e:
+        raise click.UsageError(f"Could not fetch the price quote: {e}") from e
+
+    if not assume_yes:
+        click.echo(
+            f"Lightning Address {ln_username!r} costs "
+            f"{quote.get('display_amount')} (quote expires {quote.get('expires_at')}).",
+            err=True,
+        )
+        click.confirm("Proceed with the payment?", abort=True, err=True)
+
+    # 2) Confirmed — resolve the password and fund the purchase.
     password = resolve_secret(
         "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
     )
@@ -262,6 +294,7 @@ def purchase_ln_username(ctx, email, ln_username, wallet_name, asset, password_s
                 "wallet_name": wallet_name,
                 "asset": asset,
                 "password": password,
+                "confirm": True,
             },
         ),
     )

@@ -2292,19 +2292,30 @@ def jan3_purchase_ln_username(
     wallet_name: str = "default",
     password: str | None = None,
     asset: str = "L-BTC",
+    confirm: bool = False,
 ) -> dict[str, Any]:
-    """Purchase / update the Lightning username for a JAN3 account (on-chain L-BTC).
+    """Purchase / update the Lightning username for a JAN3 account (on-chain).
+
+    Two-step so the user approves the price before any spend:
+
+    * ``confirm=False`` (default) returns a quote — ``requires_confirmation``,
+      ``display_amount`` (e.g. ``"2000 Sats"`` or ``"1.50 USDT"``),
+      ``amount_base_units``, ``amount``, ``expires_at`` — WITHOUT signing.
+    * ``confirm=True`` funds and submits the on-chain payment in ``asset``.
 
     Args:
         email: the JAN3 account email.
         ln_username: the desired username (local part, before the @domain).
         wallet_name: Liquid wallet used to fund the purchase.
-        password: decrypts the wallet mnemonic if encrypted at rest.
-        asset: funding asset ticker (default L-BTC).
+        password: decrypts the wallet mnemonic if encrypted at rest (confirm only).
+        asset: funding asset ticker — "L-BTC" or "USDt" (default L-BTC).
+        confirm: False previews the price; True pays.
 
     Returns:
-        payment_id, status, txid, ln_username, amount_sats, asset_ticker,
-        address, message.
+        Quote (confirm=False): requires_confirmation, ln_username, asset_ticker,
+        amount_base_units, amount, display_amount, expires_at, address, message.
+        Receipt (confirm=True): payment_id, status, txid, plus the same amount
+        fields.
     """
     return get_jan3_manager().purchase_ln_username(
         email,
@@ -2312,6 +2323,7 @@ def jan3_purchase_ln_username(
         wallet_name=wallet_name,
         password=password,
         asset=asset,
+        confirm=confirm,
     )
 
 

@@ -32,6 +32,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional
 
@@ -78,6 +79,24 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # Mirrors aqua-ankara's common.constants.LN_USERNAME_REGEX so we fail fast
 # before a network call: lowercase alphanumerics with at most one dot.
 LN_USERNAME_REGEX = re.compile(r"^[a-z0-9]+(\.[a-z0-9]+)?$")
+
+
+def _format_display_amount(amount_base_units: int, asset_ticker: str) -> str:
+    """Render a human-facing price string for the agent to surface verbatim.
+
+    ``amount_base_units`` is the technical integer the wallet actually funds — the
+    single source of truth — but for the user it must be shown per-asset:
+
+    * **L-BTC** — base units *are* satoshis → ``"2000 Sats"``.
+    * **USDt** (and other 8-decimal Liquid assets) → a 2-decimal fiat-style
+      amount (``base_units / 1e8``) → ``"1.50 USDT"``.
+    """
+    ticker = (asset_ticker or "").strip()
+    if ticker.upper() in ("L-BTC", "LBTC", "BTC"):
+        return f"{amount_base_units} Sats"
+    value = Decimal(amount_base_units) / Decimal(100_000_000)
+    unit = "USDT" if ticker.upper() == "USDT" else ticker
+    return f"{value:.2f} {unit}"
 
 
 def _now_iso() -> str:
@@ -788,7 +807,7 @@ class Jan3AccountsManager:
     def ln_username_available(self, email: str, username: str) -> dict:
         """Check whether an LN username is free to claim (authenticated).
 
-        Call before ``purchase_ln_username`` to avoid paying L-BTC on a username
+        Call before ``purchase_ln_username`` to avoid paying for a username
         that's already taken.
         """
         email = _validate_email(email)
@@ -1052,10 +1071,21 @@ class Jan3AccountsManager:
         wallet_name: str = "default",
         password: Optional[str] = None,
         asset: str = ASSET_TICKER_LBTC,
+        confirm: bool = False,
     ) -> dict:
-        """Buy / update the Lightning username for ``email`` (on-chain L-BTC payment).
+        """Buy / update the Lightning username for ``email`` (on-chain payment).
 
-        Creates a payment request, funds it with a signed L-BTC tx, and submits it.
+        Two-step to avoid spending without consent:
+
+        * ``confirm=False`` (default) — creates a payment request to fetch the
+          live price and returns a **quote** (``requires_confirmation=True``); it
+          does NOT sign or broadcast anything. Show the price to the user first.
+        * ``confirm=True`` — re-quotes and funds it: crafts a signed tx in
+          ``asset`` (``"L-BTC"`` or ``"USDt"``) to AQUA's address and submits it.
+
+        Each call creates a fresh payment request, so the confirmed price is
+        always current (the quote may have expired). Orphaned unfunded orders
+        expire server-side.
         """
         email = _validate_email(email)
         ln_username = _validate_ln_username(ln_username)
@@ -1068,19 +1098,43 @@ class Jan3AccountsManager:
         )
         payment_id = order.get("payment_id")
         address = order.get("address")
-        amount_sats = int(order.get("amount_base_units") or 0)
+        amount_base_units = int(order.get("amount_base_units") or 0)
         asset_ticker = order.get("asset_ticker") or asset
-        if not payment_id or not address or amount_sats <= 0:
+        amount = order.get("amount")
+        expires_at = order.get("expires_at")
+        if not payment_id or not address or amount_base_units <= 0:
             raise ValueError(
                 "AQUA payment-request response is missing fields "
                 f"(payment_id/address/amount): {order!r}"
             )
 
+        display_amount = _format_display_amount(amount_base_units, asset_ticker)
+
+        if not confirm:
+            # Dry-run quote: no signing, no broadcast. The caller must show
+            # ``display_amount`` to the user and re-call with confirm=True.
+            return {
+                "requires_confirmation": True,
+                "confirmed": False,
+                "ln_username": ln_username,
+                "asset_ticker": asset_ticker,
+                "amount_base_units": amount_base_units,
+                "amount": amount,
+                "display_amount": display_amount,
+                "expires_at": expires_at,
+                "address": address,
+                "message": (
+                    f"Purchasing the Lightning Address {ln_username!r} costs "
+                    f"{display_amount}. Show this to the user; on their approval "
+                    "re-call with confirm=true to pay."
+                ),
+            }
+
         asset_id = self._resolve_asset_id(wallet_name, asset_ticker)
         raw_tx = self.wallet_manager.craft_raw_tx(
             wallet_name=wallet_name,
             address=address,
-            amount=amount_sats,
+            amount=amount_base_units,
             asset_id=asset_id,
             password=password,
         )
@@ -1095,15 +1149,19 @@ class Jan3AccountsManager:
             ),
         )
         return {
+            "confirmed": True,
             "payment_id": payment_id,
             "status": result.get("status"),
             "txid": txid,
             "ln_username": ln_username,
-            "amount_sats": amount_sats,
             "asset_ticker": asset_ticker,
+            "amount_base_units": amount_base_units,
+            "amount": amount,
+            "display_amount": display_amount,
+            "expires_at": expires_at,
             "address": address,
             "message": (
-                f"Submitted raw_tx for {ln_username!r}. Server reports "
-                f"{result.get('status', 'UNKNOWN')}."
+                f"Submitted raw_tx for {ln_username!r} ({display_amount}). "
+                f"Server reports {result.get('status', 'UNKNOWN')}."
             ),
         }
