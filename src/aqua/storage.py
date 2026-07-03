@@ -58,14 +58,9 @@ class WalletData:
     encrypted_mnemonic: Optional[str] = None  # Encrypted, if full wallet
     watch_only: bool = False
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
-    # Monotonically-increasing counter of receive addresses handed out via
-    # ``WalletManager.get_address(name, index=None)`` / ``reserve_addresses``.
-    # lwk's "next-unused" tip only advances after the chain observes usage,
-    # which doesn't help for off-chain handouts (LN-address registration,
-    # Boltz claim addresses, …). Every no-arg ``get_address`` bumps this so two
-    # flows never share an address. Single-writer assumption: the MCP server
-    # handles one tool call at a time, so the load→compute→save dance in
-    # ``reserve_addresses`` is safe without a lock.
+    # Monotonically-increasing counter of handed-out receive addresses. Advances
+    # ahead of lwk's "next-unused" tip for off-chain handouts (LN-address pool,
+    # Boltz claims) so two flows never share an index.
     next_address_index: int = 0
 
     def to_dict(self) -> dict:

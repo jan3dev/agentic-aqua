@@ -591,17 +591,13 @@ class Jan3AccountsManager:
                 "You can now make authenticated calls."
             ),
             "access_token_preview": _token_preview(access),
-            # Cue the agent to offer the Lightning Address opt-in right after
-            # login — this is the intended post-login UX. Enabling it stores a
-            # batch of Liquid receive addresses so inbound Lightning payments are
-            # delivered there.
             "next_step": (
                 "Ask the user if they want to activate their Lightning Address. "
                 "If yes, call jan3_enable_lightning_address(email, enabled=true) — this "
                 "stores a batch of Liquid receive addresses so JAN3/AQUA can "
-                "deliver inbound Lightning payments to them. A Lightning username "
-                "(jan3_purchase_ln_username) is required first; run jan3_user_info "
-                "to check current status."
+                "deliver inbound Lightning payments to them. A Lightning Address is assigned "
+                "automatically to the account, run jan3_user_info to check it. The user can change "
+                "it's username (LN Address) through jan3_purchase_ln_username."
             ),
         }
 
@@ -752,14 +748,10 @@ class Jan3AccountsManager:
         wallet_name: str = "default",
         password: Optional[str] = None,
     ) -> dict:
-        """Fetch the AQUA account profile for ``email`` and keep the pool healthy.
+        """Fetch the AQUA account profile for ``email``.
 
-        The returned dict is the backend profile (``ln_username``,
-        ``ln_address_toggled``, ``fingerprint``, ``new_addresses_needed``, …).
-        When the LN-address feature is active we opportunistically top up the
-        unused-address pool — best-effort, never failing the profile read — and
-        attach the outcome under ``ln_address_pool``. This is why there is no
-        user-facing "ensure pool" tool: reading the account self-heals it.
+        Auto-tops-up the LN-address pool when active (result under
+        ``ln_address_pool``); never fails the profile read on pool errors.
         """
         email = _validate_email(email)
         profile = self._with_auth_retry(
@@ -780,11 +772,8 @@ class Jan3AccountsManager:
     ) -> dict:
         """Enable or disable the LN-address feature for ``email``.
 
-        Enabling means AQUA will deliver inbound Lightning payments to the user's
-        Lightning Address by handing out the Liquid receive addresses we register
-        here. So on enable we immediately populate the pool (best-effort) and
-        report the outcome under ``ln_address_pool`` — a ``no_ln_username`` skip
-        just means the user still has to run ``jan3_purchase_ln_username``.
+        On enable, populates the address pool immediately (best-effort, under
+        ``ln_address_pool``).
         """
         email = _validate_email(email)
         resp = self._with_auth_retry(
@@ -822,14 +811,10 @@ class Jan3AccountsManager:
         password: Optional[str] = None,
         profile: Optional[dict] = None,
     ) -> dict:
-        """Mint unused Liquid receive addresses and POST them to /auth/user/addresses/.
+        """Mint ``count`` unused Liquid receive addresses and POST to /auth/user/addresses/.
 
-        Internal — NOT exposed as an MCP tool. The pool is managed automatically
-        via :meth:`ensure_ln_pool` (called by :meth:`get_user` and on
-        :meth:`ln_address_toggle` enable). Without a healthy pool the AQUA
-        backend can't deliver inbound LN payments — it hands out one address per
-        invoice. Raises on hard errors (no username, disabled, fingerprint
-        mismatch); the auto path wraps those into skip dicts.
+        Internal — not an MCP tool. Raises on hard errors (no username, disabled,
+        fingerprint mismatch); callers on the auto path wrap these into skip dicts.
         """
         email = _validate_email(email)
         user = (
@@ -897,11 +882,8 @@ class Jan3AccountsManager:
     ) -> dict:
         """Idempotent LN-address pool top-up (internal — NOT an MCP tool).
 
-        Only POSTs new addresses when the server reports
-        ``new_addresses_needed > 0``. Returns a ``{refilled: False, reason: …}``
-        dict (never raises for policy reasons) when auto-refill doesn't apply:
-        no LN username, toggle off, pool already full, or the local wallet's
-        fingerprint doesn't match the account-bound one.
+        POSTs only when ``new_addresses_needed > 0``; returns a skip dict
+        (``{refilled: False, reason: …}``) for policy non-starters. Never raises.
         """
         email = _validate_email(email)
 
@@ -963,12 +945,10 @@ class Jan3AccountsManager:
         password: Optional[str],
         profile: Optional[dict] = None,
     ) -> dict:
-        """Best-effort wrapper around :meth:`ensure_ln_pool` for the auto paths.
+        """Best-effort wrapper around :meth:`ensure_ln_pool` (auto paths only).
 
-        Used by :meth:`get_user` and by :meth:`ln_address_toggle` on enable, so
-        the pool self-heals without a dedicated user-facing tool. Never raises: a
-        locked/encrypted wallet (no password), an offline backend, etc. are
-        reported as a skip dict rather than failing the caller.
+        Called by :meth:`get_user` and :meth:`ln_address_toggle` on enable.
+        Never raises — errors become a skip dict so the caller is never broken.
         """
         try:
             return self.ensure_ln_pool(
@@ -988,13 +968,9 @@ class Jan3AccountsManager:
         wallet_name: str = "default",
         confirm: bool = False,
     ) -> dict:
-        """Re-bind the account's Lightning Address to ``wallet_name`` (self-serve).
+        """Re-bind Lightning Address delivery to ``wallet_name`` via override_fingerprint.
 
-        This is the only path that passes ``override_fingerprint=true`` — it
-        re-binds the AQUA account to this wallet's fingerprint and re-enables LN
-        delivery. It is reachable in three states, only the last of which is
-        destructive:
-
+        Two-step handshake: ``confirm=False`` returns a non-mutating preview.
         * **first bind** — the account has no wallet bound yet (``fingerprint``
           empty on the profile). Binds ``wallet_name``; not destructive.
         * **already bound** — the account is already bound to this exact wallet
@@ -1003,12 +979,6 @@ class Jan3AccountsManager:
         * **re-bind** — the account is bound to a *different* wallet. Destructive:
           the previously-bound wallet stops receiving inbound Lightning. Requires
           explicit confirmation.
-
-        Two-step handshake: ``confirm=False`` returns a non-mutating preview
-        (``requires_confirmation``, ``warning``, ``current_fingerprint`` →
-        ``new_fingerprint``); ``confirm=True`` executes. The Lightning Address in
-        the preview is ``ln_username`` (a full ``user@domain``) — never the
-        account login ``email``.
         """
         email = _validate_email(email)
         profile = self._with_auth_retry(
@@ -1024,8 +994,7 @@ class Jan3AccountsManager:
         server_fp = profile.get("fingerprint")
         local_fp = self.wallet_manager.fingerprint(wallet_name)
 
-        # Already bound to this exact wallet: nothing to re-bind. Keep the pool
-        # healthy via the normal (non-override) path and report a no-op.
+        # Already bound: no-op, but keep the pool healthy via the non-override path.
         if server_fp and server_fp == local_fp:
             pool = self._auto_ensure_ln_pool(
                 email, wallet_name=wallet_name, password=None, profile=profile
@@ -1092,9 +1061,7 @@ class Jan3AccountsManager:
     ) -> dict:
         """Buy / update the Lightning username for ``email`` (on-chain L-BTC payment).
 
-        Creates an LN_USERNAME_UPDATE payment request, funds it with a signed
-        L-BTC tx to AQUA's address, and submits the raw tx. On a 401 the access
-        token is refreshed and the call retried once (via ``_with_auth_retry``).
+        Creates a payment request, funds it with a signed L-BTC tx, and submits it.
         """
         email = _validate_email(email)
         ln_username = _validate_ln_username(ln_username)

@@ -216,13 +216,10 @@ def enable_lightning_address(ctx, email, enabled, wallet_name, password_stdin):
 )
 @click.pass_obj
 def rebind_wallet(ctx, email, wallet_name, assume_yes):
-    """Re-bind your Lightning Address to a different wallet (DESTRUCTIVE).
+    """Re-bind Lightning Address delivery to --wallet-name (DESTRUCTIVE).
 
-    Moves inbound Lightning delivery to --wallet-name; the previously-bound
-    wallet stops receiving. Previews the change first (showing your Lightning
-    Address and the current→new fingerprint), then asks for confirmation unless
-    --yes is given. If the account is already bound to this wallet it is a no-op.
-    No wallet password is needed — re-binding never signs.
+    Previews the change first; asks for confirmation unless --yes is given.
+    Already-bound to this wallet is a no-op.
     """
     try:
         preview = jan3_rebind_wallet(

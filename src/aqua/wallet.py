@@ -209,17 +209,9 @@ class WalletManager:
         return self._wollets[wallet_name]
 
     def sync_wallet(self, wallet_name: str):
-        """Sync wallet with blockchain.
+        """Sync wallet via full_scan_to_index(next_address_index + 1).
 
-        Scans up to wallet's next_address_index using lwk's full_scan_to_index, not the default full_scan.
-        This ensures all handed-out addresses (including off-chain usage) are checked for funds, beyond gap limit.
-        Prevents missing incoming funds to any address advanced off-chain and saved in next_address_index.
-        Using full_scan_to_index never scans less than default, only equal or more as needed.
-
-        Scans wallet addresses up to next_address_index + 1 to ensure all shown or handed-out addresses are covered.
-        Prevents missing funds on newly generated frontier addresses.
-        This covers all committed handouts and avoids gap limit issues.
-        Ensures no incoming funds fall outside the scan window, regardless of inclusivity rules.
+        Covers off-chain handed-out addresses that lwk's default gap limit would miss.
         """
         wallet = self.storage.load_wallet(wallet_name)
         if not wallet:
@@ -278,23 +270,9 @@ class WalletManager:
     ) -> Address:
         """Get a receive address.
 
-        With no ``index``, hands out the next previously-unhanded-out address
-        and bumps the wallet's persisted ``next_address_index`` counter so two
-        flows never share an address. lwk's own "next-unused" tip only advances
-        after the chain observes usage, which is too slow for off-chain
-        handouts (LN-address registration, Boltz claim addresses, …) — so we
-        max it against our own counter.
-
-        With an explicit ``index``, returns that exact address without
-        advancing the counter. Callers asserting a specific index are assumed
-        to know what they're doing.
-
-        Note: the no-arg path is NOT idempotent — each call writes to disk and
-        consumes an index. This is the right behavior for callers that COMMIT
-        the address to an external party (swap refund/settle, LN-address pool),
-        which must never be reused. For a pure "show me my address" display that
-        should stay idempotent and not grow the counter, use
-        :meth:`peek_address` instead.
+        No-arg advances ``next_address_index`` (not idempotent — commits an
+        index). Explicit ``index`` returns it without advancing. For display,
+        use :meth:`peek_address`.
         """
         if index is None:
             # The load → max(lwk_tip, counter) → derive → advance → save
@@ -309,12 +287,9 @@ class WalletManager:
         wallet_name: str,
         count: int,
     ) -> list[Address]:
-        """Hand out ``count`` fresh receive addresses in one shot.
+        """Hand out ``count`` fresh receive addresses, advancing the persisted counter in one save.
 
-        Same semantics as calling ``get_address(name)`` ``count`` times — each
-        address is distinct and the persisted counter is advanced past all of
-        them — but batched into a single load + save of the wallet record. Use
-        when minting many addresses at once (e.g. for LN-address registration).
+        Batched equivalent of calling ``get_address`` ``count`` times.
         """
         if count <= 0:
             raise ValueError("count must be positive")
@@ -337,9 +312,9 @@ class WalletManager:
         wallet_name: str,
         index: Optional[int] = None,
     ) -> Address:
-        """Return a receive address for display, without advancing the counter or saving state.
-        Without ``index``, returns the next unused address. With ``index``, returns that address.
-        Never returns an address already handed out. Does not write to disk or advance the index.
+        """Return a receive address for display without advancing the counter or writing to disk.
+
+        Without ``index``, returns the frontier (max of lwk tip and ``next_address_index``).
         """
 
         wollet = self._get_wollet(wallet_name)
@@ -361,19 +336,13 @@ class WalletManager:
     ) -> str:
         """Return the BIP32 master fingerprint (8 hex chars) for ``wallet_name``.
 
-        Format matches the AQUA Ankara backend's ``fingerprint`` field on
-        ``UserResponse`` / ``UserLiquidAddressesUpsert``: ``HASH160(master xpub)[:4]``
-        in hex. For hot wallets this comes straight from the LWK signer; for
-        watch-only wallets we parse the embedded ``[fp/derivation]`` block from
-        the stored descriptor.
+        Hot wallets: from the LWK signer. Watch-only: parsed from the
+        ``[fp/derivation]`` block in the descriptor.
         """
         if wallet_name in self._signers:
             return self._signers[wallet_name].fingerprint()
 
-        # ``load_wallet`` decrypts the mnemonic (if needed) and caches the
-        # resulting lwk.Signer in ``self._signers`` as a side effect — so for
-        # hot wallets the next check succeeds and we get the canonical
-        # BIP32-master fingerprint straight from the signer.
+        # Decrypts and caches the signer in self._signers as a side effect.
         wallet = self.load_wallet(wallet_name, password=password)
         if wallet_name in self._signers:
             return self._signers[wallet_name].fingerprint()
