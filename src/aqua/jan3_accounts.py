@@ -176,6 +176,11 @@ class Jan3Session:
     #  "asset_ticker", "amount", "expires_at"}. confirm=True funds THIS order
     # instead of re-quoting; cleared once funded.
     pending_ln_purchase: Optional[dict] = None
+    # LN-address batch whose registration POST failed with unknown outcome:
+    # {"wallet_name", "fingerprint", "addresses"}. Retried verbatim on the next
+    # registration instead of burning fresh indices (the server dedups
+    # re-uploads), cleared once a POST succeeds.
+    pending_ln_registration: Optional[dict] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -188,6 +193,7 @@ class Jan3Session:
         data.setdefault("refreshed_at", None)
         data.setdefault("captcha_exempt", False)
         data.setdefault("pending_ln_purchase", None)
+        data.setdefault("pending_ln_registration", None)
         return cls(**data)
 
 
@@ -848,6 +854,10 @@ class Jan3AccountsManager:
 
         Internal — not an MCP tool. Raises on hard errors (no username, disabled,
         fingerprint mismatch); callers on the auto path wrap these into skip dicts.
+
+        If the previous POST for this wallet failed, its batch (persisted on the
+        session) is re-uploaded verbatim — ``count`` is ignored for that attempt —
+        so retries never mint additional indices.
         """
         email = _validate_email(email)
         user = (
@@ -890,15 +900,48 @@ class Jan3AccountsManager:
                 "(server-side per-call limit)"
             )
 
-        addresses = [
-            a.address for a in self.wallet_manager.reserve_addresses(wallet_name, count)
-        ]
+        # A previous POST for this wallet may have failed with unknown outcome.
+        # Re-upload that exact batch instead of burning fresh indices (the
+        # server ignores duplicates), so a backend outage costs one batch total
+        # rather than one batch per attempt.
+        session = self.load_session(email)
+        pending = session.pending_ln_registration if session else None
+        if (
+            pending
+            and pending.get("addresses")
+            and pending.get("wallet_name") == wallet_name
+            and pending.get("fingerprint") == local_fp
+        ):
+            addresses = list(pending["addresses"])
+        else:
+            addresses = [
+                a.address
+                for a in self.wallet_manager.reserve_addresses(wallet_name, count)
+            ]
+            if session is not None:
+                # Persist before the POST: if it fails (or secretly succeeds),
+                # the batch is retried verbatim next time, never re-minted.
+                session.pending_ln_registration = {
+                    "wallet_name": wallet_name,
+                    "fingerprint": local_fp,
+                    "addresses": addresses,
+                }
+                self.save_session(session)
+
         resp = self._with_auth_retry(
             email,
             lambda access: self._authed_client(access).register_addresses(
                 local_fp, addresses, override_fingerprint=override_fingerprint
             ),
         )
+
+        # Registered — clear the pending batch. Re-load first: the POST may
+        # have refreshed tokens and rewritten the session file.
+        session = self.load_session(email)
+        if session is not None and session.pending_ln_registration is not None:
+            session.pending_ln_registration = None
+            self.save_session(session)
+
         return {
             "requested_count": len(addresses),
             "pool_size": len(resp.get("addresses", [])),

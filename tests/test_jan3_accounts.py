@@ -159,6 +159,21 @@ def _capturing_route(mapping):
     return side_effect
 
 
+def _body_capturing_route(mapping):
+    """Like :func:`_route` but records ``(url, decoded body)`` per request,
+    exposed as ``.bodies``, so a test can assert what a POST actually carried.
+    """
+    bodies: list[tuple[str, str]] = []
+    base = _route(mapping)
+
+    def side_effect(req, timeout=None):
+        bodies.append((req.full_url, req.data.decode() if req.data else ""))
+        return base(req, timeout=timeout)
+
+    side_effect.bodies = bodies
+    return side_effect
+
+
 # ---------------------------------------------------------------------------
 # Pure helpers
 # ---------------------------------------------------------------------------
@@ -1158,6 +1173,110 @@ class TestGetUserAutoPool:
         assert out["ln_address_pool"]["reason"] == "auto_topup_unavailable"
         # The burn-before-POST ordering means reserve was attempted first.
         wm.reserve_addresses.assert_called_once_with("default", 3)
+
+
+class TestPendingBatchReuse:
+    """A failed register POST must not burn a fresh batch per retry.
+
+    The reserved batch is persisted on the session and re-uploaded verbatim
+    (the server ignores duplicate addresses), so an outage costs one batch
+    total instead of one batch per jan3_user_info call.
+    """
+
+    PROFILE = {
+        "ln_username": "alice",
+        "ln_address_toggled": True,
+        "fingerprint": "abcd1234",
+        "new_addresses_needed": 3,
+    }
+
+    @staticmethod
+    def _distinct_batches(wm):
+        """Make each reserve call return a distinguishable batch."""
+        calls = {"n": 0}
+
+        def reserve(name, count):
+            calls["n"] += 1
+            return [
+                MagicMock(address=f"lq1batch{calls['n']}addr{i}")
+                for i in range(count)
+            ]
+
+        wm.reserve_addresses.side_effect = reserve
+
+    def test_retry_reuses_batch_instead_of_burning(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
+        self._distinct_batches(wm)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+
+        # Attempt 1: reserve succeeds, POST 500s — batch 1 is now pending.
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/user/": self.PROFILE,
+                "/addresses/": _http_error(500, "backend down"),
+            }),
+        ):
+            out = mgr.get_user("me@example.com")
+        assert out["ln_address_pool"]["reason"] == "auto_topup_unavailable"
+        assert wm.reserve_addresses.call_count == 1
+
+        # Attempt 2: backend recovered. The SAME batch is re-POSTed; no new
+        # indices are reserved.
+        route = _body_capturing_route({
+            "/user/": self.PROFILE,
+            "/addresses/": {"addresses": ["a", "b", "c"]},
+        })
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.get_user("me@example.com")
+        assert out["ln_address_pool"]["refilled"] is True
+        assert wm.reserve_addresses.call_count == 1  # still just the first burn
+        post_body = next(b for u, b in route.bodies if "/addresses/" in u)
+        assert "lq1batch1addr0" in post_body
+        assert "lq1batch2" not in post_body
+
+    def test_success_clears_pending(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
+        self._distinct_batches(wm)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+
+        ok_route = {
+            "/user/": self.PROFILE,
+            "/addresses/": {"addresses": ["a", "b", "c"]},
+        }
+        with patch("urllib.request.urlopen", side_effect=_route(ok_route)):
+            mgr.get_user("me@example.com")
+        assert (
+            mgr.load_session("me@example.com").pending_ln_registration is None
+        )
+        # Next top-up reserves a fresh batch — pending is not sticky.
+        with patch("urllib.request.urlopen", side_effect=_route(dict(ok_route))):
+            mgr.get_user("me@example.com")
+        assert wm.reserve_addresses.call_count == 2
+
+    def test_pending_for_other_wallet_not_reused(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
+        self._distinct_batches(wm)
+        session = _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        session.pending_ln_registration = {
+            "wallet_name": "other",
+            "fingerprint": "zzzz9999",
+            "addresses": ["lq1stale0", "lq1stale1"],
+        }
+        mgr.save_session(session)
+
+        route = _body_capturing_route({
+            "/user/": self.PROFILE,
+            "/addresses/": {"addresses": ["a", "b", "c"]},
+        })
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.get_user("me@example.com")
+        assert out["ln_address_pool"]["refilled"] is True
+        # The stale batch (different wallet/fingerprint) must not be uploaded.
+        wm.reserve_addresses.assert_called_once_with("default", 3)
+        post_body = next(b for u, b in route.bodies if "/addresses/" in u)
+        assert "lq1stale" not in post_body
+        assert "lq1batch1addr0" in post_body
 
 
 class TestLnAddressToggleManager:
