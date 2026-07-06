@@ -1254,6 +1254,38 @@ class TestPendingBatchReuse:
             mgr.get_user("me@example.com")
         assert wm.reserve_addresses.call_count == 2
 
+    def test_pool_response_reconciles_counter(self, storage):
+        # The register response returns the FULL unused pool. Addresses we did
+        # not just post (a previous install's pool, i.e. reimported seed) must
+        # be fed to ensure_counter_covers so their indices are never re-handed.
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/user/": self.PROFILE,
+                "/addresses/": {
+                    "addresses": ["lq1addr0", "lq1addr1", "lq1addr2", "lq1old9"]
+                },
+            }),
+        ):
+            out = mgr.get_user("me@example.com")
+        assert out["ln_address_pool"]["refilled"] is True
+        wm.ensure_counter_covers.assert_called_once_with("default", ["lq1old9"])
+
+    def test_no_reconciliation_when_pool_matches_posted(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/user/": self.PROFILE,
+                "/addresses/": {"addresses": ["lq1addr0", "lq1addr1", "lq1addr2"]},
+            }),
+        ):
+            mgr.get_user("me@example.com")
+        wm.ensure_counter_covers.assert_not_called()
+
     def test_pending_for_other_wallet_not_reused(self, storage):
         mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
         self._distinct_batches(wm)

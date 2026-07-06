@@ -942,11 +942,28 @@ class Jan3AccountsManager:
             session.pending_ln_registration = None
             self.save_session(session)
 
+        # The response carries the wallet's FULL unused pool. Addresses we did
+        # not just upload can predate this install (seed reimport reset the
+        # local counter to 0 while the server kept delivering to them) —
+        # advance the counter past them so no other flow re-hands them out.
+        pool = resp.get("addresses", []) or []
+        posted = set(addresses)
+        unknown = [a for a in pool if a not in posted]
+        if unknown:
+            try:
+                self.wallet_manager.ensure_counter_covers(wallet_name, unknown)
+            except Exception as e:  # best-effort repair; registration succeeded
+                logger.warning(
+                    "LN-pool counter reconciliation skipped for wallet %r: %s",
+                    wallet_name,
+                    e,
+                )
+
         return {
             "requested_count": len(addresses),
-            "pool_size": len(resp.get("addresses", [])),
+            "pool_size": len(pool),
             "fingerprint": local_fp,
-            "addresses": resp.get("addresses", []),
+            "addresses": pool,
         }
 
     def ensure_ln_pool(

@@ -168,6 +168,14 @@ which now builds a `Jan3AccountsManager`) and delegates provisioning to it.
     `WalletManager.fingerprint` (account↔wallet binding); the no-arg
     `get_address` advances a persisted `WalletData.next_address_index` counter so
     off-chain handouts never reuse an index.
+  - `next_address_index` caveats: the counter lives **only in the local wallet
+    JSON**. A seed reimport (or deleted `~/.aqua`) resets it to 0 while the
+    server still delivers to the previously registered pool; the first
+    successful pool registration repairs it (`ensure_counter_covers` matches
+    the server's unused pool against derivations and bumps the counter), but
+    until then no-arg `get_address` can re-hand pool indices. **Downgrade
+    break**: releases ≤ v0.4.2 construct `WalletData` strictly and crash on
+    wallet files containing this key — call it out in release notes.
 
 ## WapuPay (Argentine direct-fiat)
 

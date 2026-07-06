@@ -1,5 +1,6 @@
 """Wallet management using LWK."""
 
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
@@ -7,6 +8,8 @@ import lwk
 
 from .assets import lookup_asset, resolve_asset_name
 from .storage import Storage, WalletData
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -312,6 +315,50 @@ class WalletManager:
             wallet_record.next_address_index = start + count
             self.storage.save_wallet(wallet_record)
         return addresses
+
+    def ensure_counter_covers(
+        self,
+        wallet_name: str,
+        addresses: list[str],
+    ) -> int:
+        """Bump ``next_address_index`` past any of ``addresses`` this wallet derives.
+
+        Best-effort repair for a reset counter (seed reimport, deleted
+        ``~/.aqua``): the JAN3 backend still holds unused pool addresses from
+        the previous install, and without this the frontier would re-hand
+        those same indices to swaps/receives. Matches the given addresses
+        against derivations within a bounded horizon above the current
+        frontier and returns the (possibly unchanged) counter.
+        """
+        targets = set(addresses)
+        wollet = self._get_wollet(wallet_name)
+        with self.storage.wallet_lock(wallet_name):
+            wallet_record = self.storage.load_wallet(wallet_name)
+            if wallet_record is None:
+                raise ValueError(f"Wallet {wallet_name!r} not found")
+            if not targets:
+                return wallet_record.next_address_index
+            lwk_tip = wollet.address(None).index()
+            frontier = max(lwk_tip, wallet_record.next_address_index)
+            # Pool batches are capped server-side, so anything from a previous
+            # install sits within a modest window above the old frontier.
+            horizon = frontier + 100
+            max_matched = -1
+            for i in range(horizon):
+                if str(wollet.address(i).address()) in targets:
+                    max_matched = i
+            if max_matched + 1 > wallet_record.next_address_index:
+                logger.info(
+                    "Wallet %r: advancing next_address_index %d -> %d to cover "
+                    "server-known pool addresses (counter was behind, e.g. "
+                    "after a seed reimport).",
+                    wallet_name,
+                    wallet_record.next_address_index,
+                    max_matched + 1,
+                )
+                wallet_record.next_address_index = max_matched + 1
+                self.storage.save_wallet(wallet_record)
+            return wallet_record.next_address_index
 
     def peek_address(
         self,

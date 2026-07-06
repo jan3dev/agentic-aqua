@@ -81,6 +81,36 @@ class TestAddressCounter:
         t.join(timeout=5)
         assert got  # proceeded once the lock was released
 
+    def test_ensure_counter_covers_repairs_reset_counter(self, wallet_manager):
+        # Simulate a seed reimport: the server still holds pool addresses at
+        # indices 5..7 but the local counter is 0. Reconciliation must bump
+        # the counter past the highest server-known index.
+        pool = [
+            wallet_manager.peek_address("default", index=i).address
+            for i in (5, 6, 7)
+        ]
+        assert wallet_manager.storage.load_wallet("default").next_address_index == 0
+        new_counter = wallet_manager.ensure_counter_covers("default", pool)
+        assert new_counter == 8
+        rec = wallet_manager.storage.load_wallet("default")
+        assert rec.next_address_index == 8
+        # The next handout must sit above the recovered pool.
+        assert wallet_manager.get_address("default").index >= 8
+
+    def test_ensure_counter_covers_is_idempotent_and_never_lowers(
+        self, wallet_manager
+    ):
+        wallet_manager.reserve_addresses("default", 10)
+        pool = [wallet_manager.peek_address("default", index=2).address]
+        counter = wallet_manager.ensure_counter_covers("default", pool)
+        assert counter == 10  # already covered — unchanged
+
+    def test_ensure_counter_covers_ignores_foreign_addresses(self, wallet_manager):
+        counter = wallet_manager.ensure_counter_covers(
+            "default", ["lq1qqnotfromthiswallet"]
+        )
+        assert counter == 0
+
     def test_concurrent_reserves_never_share_an_index(self, wallet_manager):
         # Two racing reservers must produce disjoint index ranges and a
         # counter equal to the total handed out.
