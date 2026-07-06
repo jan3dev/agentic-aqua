@@ -62,6 +62,17 @@ class TestAddressCounter:
         indices = {one.index} | {a.index for a in batch}
         assert len(indices) == 4  # all distinct — no reuse across the two paths
 
+    def test_counter_promoted_when_lwk_tip_is_higher(self, wallet_manager):
+        """The handout frontier is max(lwk tip, counter): a handed-out index is
+        never below the persisted counter, and the counter advances past it."""
+        record = wallet_manager.storage.load_wallet("default")
+        record.next_address_index = 100
+        wallet_manager.storage.save_wallet(record)
+        out = wallet_manager.get_address("default")
+        assert out.index >= 100
+        after = wallet_manager.storage.load_wallet("default").next_address_index
+        assert after == out.index + 1
+
     def test_reserve_waits_for_wallet_lock(self, wallet_manager):
         # reserve_addresses must hold the cross-process wallet lock for its
         # read-modify-write: while another holder has it, the reserve blocks.

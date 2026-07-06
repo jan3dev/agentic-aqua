@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from aqua.ankara import ANKARA_API_URL, SessionExpiredError
+from aqua.lnurl import resolve_lightning_address
 from aqua.jan3_accounts import (
     ASSET_TICKER_LBTC,
     DEFAULT_LN_ADDRESS_POOL,
@@ -1877,3 +1878,125 @@ class TestPurchaseLnUsername:
         with pytest.raises(ValueError, match="Invalid ln_username"):
             mgr.purchase_ln_username("me@example.com", "bad..name")
 
+
+
+# ---------------------------------------------------------------------------
+# Purchase + LNURL resolution linkage
+# ---------------------------------------------------------------------------
+
+
+def _lnurl_response(data: dict, final_url: str | None = None) -> MagicMock:
+    """urlopen response mock for LNURL-leg patches.
+
+    Distinct from ``_mock_response`` above because ``aqua.lnurl._http_get_json``
+    calls ``resp.geturl()`` to enforce the post-redirect https guard.
+    """
+    resp = MagicMock()
+    resp.read.return_value = json.dumps(data).encode()
+    resp.geturl.return_value = final_url or "https://example.com/x"
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+def _payreq(
+    *,
+    callback: str = "https://test.aqua.net/lnurlp/cb",
+    min_msat: int = 1_000,
+    max_msat: int = 100_000_000_000,
+    metadata: str = '[["text/plain","pay alice"]]',
+) -> dict:
+    return {
+        "tag": "payRequest",
+        "callback": callback,
+        "minSendable": min_msat,
+        "maxSendable": max_msat,
+        "metadata": metadata,
+    }
+
+
+class TestPurchaseThenResolve:
+    """End-to-end (mocked) linkage: buy a JAN3 LN username and resolve the
+    resulting ``<username>@<jan3-domain>`` Lightning Address via aqua.lnurl.
+
+    Proves our code wires the two halves together — that the bare
+    ``ln_username`` returned by ``purchase_ln_username`` composes cleanly
+    into a ``.well-known/lnurlp/`` lookup that yields a payable BOLT11.
+    """
+
+    LN_USERNAME = "alicebob"
+    LN_DOMAIN = "test.aqua.net"
+    AMOUNT_SATS = 100
+    INVOICE = "lnbc1u1ptest_jan3_invoice"
+
+    PR_RESPONSE = {
+        "payment_id": "11111111-1111-1111-1111-111111111111",
+        "status": "PENDING",
+        "product_type": "LN_USERNAME_UPDATE",
+        "asset_ticker": "L-BTC",
+        "amount_base_units": 1000,
+        "address": VAULT_ADDR,
+        "expires_at": "2026-06-16T01:00:00+00:00",
+    }
+    SUBMIT_RESPONSE = {**PR_RESPONSE, "status": "ACCEPTED"}
+
+    def _purchase(self, mgr: Jan3AccountsManager) -> dict:
+        """Drive ``purchase_ln_username`` with all HTTP + signing mocked."""
+        fake_tx = MagicMock()
+        fake_tx.txid.return_value = "computed-txid"
+        with (
+            patch.object(
+                Jan3AccountsClient,
+                "create_ln_username_payment_request",
+                return_value=self.PR_RESPONSE,
+            ),
+            patch.object(
+                Jan3AccountsClient,
+                "submit_raw_tx",
+                return_value=self.SUBMIT_RESPONSE,
+            ),
+            patch("aqua.jan3_accounts.lwk.Transaction", return_value=fake_tx),
+        ):
+            return mgr.purchase_ln_username(
+                email="me@example.com",
+                ln_username=self.LN_USERNAME,
+                wallet_name="default",
+                confirm=True,
+            )
+
+    def test_purchase_then_resolve_returns_invoice(self, storage):
+        """Happy path: buy username → resolve <user>@<domain> → BOLT11."""
+        mgr = _manager(storage, raw_tx="DEADBEEF" * 16)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+
+        purchase = self._purchase(mgr)
+        assert purchase["confirmed"] is True
+        assert purchase["ln_username"] == self.LN_USERNAME
+        address = f"{purchase['ln_username']}@{self.LN_DOMAIN}"
+
+        with (
+            patch("aqua.lnurl.urllib.request.urlopen") as mock_urlopen,
+            patch(
+                "aqua.lnurl.decode_bolt11_amount_sats",
+                return_value=self.AMOUNT_SATS,
+            ),
+        ):
+            mock_urlopen.side_effect = [
+                _lnurl_response(
+                    _payreq(),
+                    final_url=(
+                        f"https://{self.LN_DOMAIN}/.well-known/lnurlp/"
+                        f"{self.LN_USERNAME}"
+                    ),
+                ),
+                _lnurl_response({"pr": self.INVOICE}),
+            ]
+            invoice = resolve_lightning_address(address, self.AMOUNT_SATS)
+
+        assert invoice == self.INVOICE
+        first_req = mock_urlopen.call_args_list[0].args[0]
+        assert first_req.full_url == (
+            f"https://{self.LN_DOMAIN}/.well-known/lnurlp/{self.LN_USERNAME}"
+        )
+        second_req = mock_urlopen.call_args_list[1].args[0]
+        assert f"amount={self.AMOUNT_SATS * 1000}" in second_req.full_url
