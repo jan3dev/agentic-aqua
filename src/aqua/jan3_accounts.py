@@ -1000,7 +1000,24 @@ class Jan3AccountsManager:
             )
 
         server_fp = user.get("fingerprint")
-        local_fp = self.wallet_manager.fingerprint(wallet_name)
+        try:
+            local_fp = self.wallet_manager.fingerprint(wallet_name)
+        except ValueError as e:
+            # Permanent for this wallet (e.g. a watch-only import from a bare
+            # descriptor with no [fingerprint/derivation] block) — unlike a
+            # transient backend error, retrying can never succeed. Use a
+            # distinct reason with remediation so it isn't mistaken for the
+            # generic auto_topup_unavailable.
+            return _skip(
+                "wallet_fingerprint_unavailable",
+                message=(
+                    f"The pool was NOT topped up: wallet {wallet_name!r} cannot "
+                    f"produce a fingerprint ({e}). This is permanent for this "
+                    "wallet — re-import it from its mnemonic, or from a "
+                    "descriptor that includes the [fingerprint/derivation] "
+                    "key-origin block, then retry."
+                ),
+            )
         if server_fp and server_fp != local_fp:
             return _skip(
                 "fingerprint_mismatch",

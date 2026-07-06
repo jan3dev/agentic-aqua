@@ -1596,6 +1596,58 @@ class TestEnsureLnPool:
         out = mgr.ensure_ln_pool("me@example.com", profile={"ln_username": None})
         assert out["reason"] == "no_ln_username"
 
+    def test_fingerprint_unavailable_is_permanent_skip(self, storage):
+        # A bare-xpub watch-only wallet can never produce a fingerprint; the
+        # skip must be distinguishable from a transient backend failure and
+        # carry remediation, not fall through to auto_topup_unavailable.
+        mgr, wm = _ln_manager(storage)
+        wm.fingerprint.side_effect = ValueError(
+            "Cannot determine fingerprint for watch-only wallet 'default': "
+            "descriptor has no [fingerprint/derivation] block."
+        )
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        out = mgr.ensure_ln_pool(
+            "me@example.com",
+            profile={
+                "ln_username": "alice",
+                "ln_address_toggled": True,
+                "fingerprint": "serverfp",
+                "new_addresses_needed": 3,
+            },
+        )
+        assert out["refilled"] is False
+        assert out["reason"] == "wallet_fingerprint_unavailable"
+        assert "permanent" in out["message"]
+        assert "re-import" in out["message"]
+        wm.reserve_addresses.assert_not_called()
+
+    def test_toggle_enable_surfaces_permanent_fingerprint_skip(self, storage):
+        # The enable tool must not report a healthy pool when the wallet can
+        # never register addresses: the toggle succeeds but the pool result
+        # carries the permanent skip.
+        mgr, wm = _ln_manager(storage)
+        wm.fingerprint.side_effect = ValueError(
+            "Cannot determine fingerprint for watch-only wallet 'default': "
+            "descriptor has no [fingerprint/derivation] block."
+        )
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/ln-address-toggle/": {"ln_address_toggled": True},
+                "/user/": {
+                    "ln_username": "alice",
+                    "ln_address_toggled": True,
+                    "fingerprint": "serverfp",
+                    "new_addresses_needed": 3,
+                },
+            }),
+        ):
+            out = mgr.ln_address_toggle("me@example.com", True)
+        assert out["enabled"] is True
+        assert out["ln_address_pool"]["reason"] == "wallet_fingerprint_unavailable"
+        wm.reserve_addresses.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Manager: purchase LN username (on-chain L-BTC)
