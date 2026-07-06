@@ -2053,6 +2053,75 @@ class _FakeJAN3Manager:
             "fingerprint": "localfp",
         }
 
+    def get_user(self, email, wallet_name="default"):
+        self.calls.append(("get_user", {"email": email, "wallet_name": wallet_name}))
+        return {
+            "email": email,
+            "ln_username": "alice@aquabtc.com",
+            "ln_address_toggled": True,
+            "fingerprint": "samefp",
+            "new_addresses_needed": 0,
+            "ln_address_pool": {"refilled": False, "reason": "pool_full"},
+        }
+
+    def ln_address_toggle(self, email, enabled, wallet_name="default"):
+        self.calls.append((
+            "ln_address_toggle",
+            {"email": email, "enabled": enabled, "wallet_name": wallet_name},
+        ))
+        out = {"email": email, "enabled": enabled, "result": {"ln_address_toggled": enabled}}
+        if enabled:
+            out["ln_address_pool"] = {"refilled": True, "pool_size": 5}
+        return out
+
+    def ln_username_available(self, email, username):
+        self.calls.append((
+            "ln_username_available", {"email": email, "username": username}
+        ))
+        return {"is_available": True, "ln_username": username}
+
+    def purchase_ln_username(
+        self,
+        email,
+        ln_username,
+        wallet_name="default",
+        password=None,
+        asset="L-BTC",
+        confirm=False,
+        expected_amount_base_units=None,
+    ):
+        self.calls.append((
+            "purchase_ln_username",
+            {
+                "email": email,
+                "ln_username": ln_username,
+                "wallet_name": wallet_name,
+                "password": password,
+                "asset": asset,
+                "confirm": confirm,
+                "expected_amount_base_units": expected_amount_base_units,
+            },
+        ))
+        if not confirm:
+            return {
+                "requires_confirmation": True,
+                "confirmed": False,
+                "ln_username": ln_username,
+                "asset_ticker": asset,
+                "amount_base_units": 777,
+                "display_amount": "777 Sats",
+                "expires_at": "2026-07-03T18:13:55Z",
+            }
+        return {
+            "confirmed": True,
+            "payment_id": "pay1",
+            "status": "PENDING",
+            "txid": "txid1",
+            "ln_username": ln_username,
+            "amount_base_units": 777,
+            "display_amount": "777 Sats",
+        }
+
     def verify(self, email, otp_code, fingerprint=None, captcha_exempt=False):
         self.calls.append((
             "verify",
@@ -2256,6 +2325,103 @@ class TestWapuPayCli:
         assert not any(
             c[0] == "rebind_wallet" and c[1]["confirm"] is True for c in auth_cli.calls
         )
+
+    def test_user_info(self, runner, auth_cli):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "jan3", "user-info",
+             "--email", "u@e.com", "--wallet-name", "w2"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["ln_username"] == "alice@aquabtc.com"
+        assert data["ln_address_pool"]["reason"] == "pool_full"
+        assert auth_cli.calls[-1] == (
+            "get_user", {"email": "u@e.com", "wallet_name": "w2"}
+        )
+
+    def test_enable_lightning_address(self, runner, auth_cli):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "jan3", "enable-lightning-address",
+             "--email", "u@e.com", "--enable"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["enabled"] is True
+        assert data["ln_address_pool"]["refilled"] is True
+        assert auth_cli.calls[-1] == (
+            "ln_address_toggle",
+            {"email": "u@e.com", "enabled": True, "wallet_name": "default"},
+        )
+
+    def test_disable_lightning_address(self, runner, auth_cli):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "jan3", "enable-lightning-address",
+             "--email", "u@e.com", "--disable"],
+        )
+        assert result.exit_code == 0
+        assert json.loads(result.output)["enabled"] is False
+        assert auth_cli.calls[-1][1]["enabled"] is False
+
+    def test_ln_check_username(self, runner, auth_cli):
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "jan3", "ln-check-username",
+             "--email", "u@e.com", "--ln-username", "alice"],
+        )
+        assert result.exit_code == 0
+        assert json.loads(result.output)["is_available"] is True
+        assert auth_cli.calls[-1] == (
+            "ln_username_available", {"email": "u@e.com", "username": "alice"}
+        )
+
+    def test_purchase_ln_username_accept_binds_quote(self, runner, auth_cli):
+        """Accepting the prompt executes confirm=True bound to the quoted
+        amount (expected_amount_base_units)."""
+        result = runner.invoke(
+            cli,
+            ["jan3", "purchase-ln-username",
+             "--email", "u@e.com", "--ln-username", "alice"],
+            input="y\n",
+        )
+        assert result.exit_code == 0
+        assert "777 Sats" in result.output  # quote echoed before the prompt
+        purchases = [c for c in auth_cli.calls if c[0] == "purchase_ln_username"]
+        assert purchases[0][1]["confirm"] is False   # quote first
+        assert purchases[-1][1]["confirm"] is True   # then execute
+        assert purchases[-1][1]["expected_amount_base_units"] == 777
+
+    def test_purchase_ln_username_decline_aborts_without_spending(
+        self, runner, auth_cli
+    ):
+        """Declining the price prompt aborts: the spending confirm=True call
+        is never made."""
+        result = runner.invoke(
+            cli,
+            ["jan3", "purchase-ln-username",
+             "--email", "u@e.com", "--ln-username", "alice"],
+            input="n\n",
+        )
+        assert result.exit_code != 0  # click.Abort
+        purchases = [c for c in auth_cli.calls if c[0] == "purchase_ln_username"]
+        assert purchases and all(c[1]["confirm"] is False for c in purchases)
+
+    def test_purchase_ln_username_yes_skips_quote(self, runner, auth_cli):
+        """--yes goes straight to the confirmed purchase: no quote call (which
+        would create an orphaned server-side order) and no amount bound."""
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "jan3", "purchase-ln-username",
+             "--email", "u@e.com", "--ln-username", "alice", "--yes"],
+        )
+        assert result.exit_code == 0
+        assert json.loads(result.output)["confirmed"] is True
+        purchases = [c for c in auth_cli.calls if c[0] == "purchase_ln_username"]
+        assert len(purchases) == 1
+        assert purchases[0][1]["confirm"] is True
+        assert purchases[0][1]["expected_amount_base_units"] is None
 
     def test_create_order_with_yes_skips_confirm(self, runner, wapupay_cli):
         result = runner.invoke(
