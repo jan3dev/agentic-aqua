@@ -258,27 +258,32 @@ def ln_check_username(ctx, email, ln_username):
 def purchase_ln_username(ctx, email, ln_username, wallet_name, asset, assume_yes, password_stdin):
     """Buy / update the Lightning username with an on-chain payment (L-BTC or USDt).
 
-    Quotes the price first and asks for confirmation unless --yes is given.
+    Quotes the price and asks for confirmation; the payment then funds that
+    exact quoted order (aborting if it expired). --yes skips the quote and
+    accepts the current price.
     """
-    # 1) Non-spending price quote (no signing, no password).
-    try:
-        quote = jan3_purchase_ln_username(
-            email=email,
-            ln_username=ln_username,
-            wallet_name=wallet_name,
-            asset=asset,
-            confirm=False,
-        )
-    except Exception as e:
-        raise click.UsageError(f"Could not fetch the price quote: {e}") from e
-
+    expected_amount_base_units = None
     if not assume_yes:
+        # 1) Non-spending price quote (no signing, no password). The server
+        # locks the price on this order; the confirm step funds it verbatim.
+        try:
+            quote = jan3_purchase_ln_username(
+                email=email,
+                ln_username=ln_username,
+                wallet_name=wallet_name,
+                asset=asset,
+                confirm=False,
+            )
+        except Exception as e:
+            raise click.UsageError(f"Could not fetch the price quote: {e}") from e
+
         click.echo(
             f"Lightning Address {ln_username!r} costs "
             f"{quote.get('display_amount')} (quote expires {quote.get('expires_at')}).",
             err=True,
         )
         click.confirm("Proceed with the payment?", abort=True, err=True)
+        expected_amount_base_units = quote.get("amount_base_units")
 
     # 2) Confirmed — resolve the password and fund the purchase.
     password = resolve_secret(
@@ -295,6 +300,7 @@ def purchase_ln_username(ctx, email, ln_username, wallet_name, asset, assume_yes
                 "asset": asset,
                 "password": password,
                 "confirm": True,
+                "expected_amount_base_units": expected_amount_base_units,
             },
         ),
     )

@@ -103,6 +103,17 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _order_expired(iso_ts: Optional[str]) -> bool:
+    """True when an order's ISO ``expires_at`` is in the past (unparseable → False)."""
+    if not iso_ts:
+        return False
+    try:
+        dt = datetime.fromisoformat(str(iso_ts).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return dt <= datetime.now(UTC)
+
+
 def _token_preview(token: str) -> str:
     """Return a short, log-safe preview of a token (``abcd…wxyz``).
 
@@ -160,6 +171,11 @@ class Jan3Session:
     created_at: str
     refreshed_at: Optional[str] = None
     captcha_exempt: bool = False
+    # Locked quote from purchase_ln_username(confirm=False):
+    # {"ln_username", "payment_id", "address", "amount_base_units",
+    #  "asset_ticker", "amount", "expires_at"}. confirm=True funds THIS order
+    # instead of re-quoting; cleared once funded.
+    pending_ln_purchase: Optional[dict] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -171,6 +187,7 @@ class Jan3Session:
         data = {k: v for k, v in data.items() if k in known}
         data.setdefault("refreshed_at", None)
         data.setdefault("captcha_exempt", False)
+        data.setdefault("pending_ln_purchase", None)
         return cls(**data)
 
 
@@ -1072,69 +1089,130 @@ class Jan3AccountsManager:
         password: Optional[str] = None,
         asset: str = ASSET_TICKER_LBTC,
         confirm: bool = False,
+        expected_amount_base_units: Optional[int] = None,
     ) -> dict:
         """Buy / update the Lightning username for ``email`` (on-chain payment).
 
         Two-step to avoid spending without consent:
 
-        * ``confirm=False`` (default) — creates a payment request to fetch the
-          live price and returns a **quote** (``requires_confirmation=True``); it
-          does NOT sign or broadcast anything. Show the price to the user first.
-        * ``confirm=True`` — re-quotes and funds it: crafts a signed tx in
-          ``asset`` (``"L-BTC"`` or ``"USDt"``) to AQUA's address and submits it.
-
-        Each call creates a fresh payment request, so the confirmed price is
-        always current (the quote may have expired). Orphaned unfunded orders
-        expire server-side.
+        * ``confirm=False`` (default) — creates a payment request (the server
+          locks the price and expiry on that order) and returns a **quote**
+          including its ``payment_id``; nothing is signed or broadcast. The
+          quote is remembered on the session.
+        * ``confirm=True`` — funds the quoted order exactly: same
+          ``payment_id``, same amount the user approved. The backend rejects
+          expired orders and any tx whose amount/address differ from the
+          order's. Without a prior matching quote (e.g. CLI ``--yes``), it
+          creates a fresh order and funds it in one go —
+          ``expected_amount_base_units`` bounds what that path may spend.
         """
         email = _validate_email(email)
         ln_username = _validate_ln_username(ln_username)
 
-        order = self._with_auth_retry(
-            email,
-            lambda access: self._authed_client(
-                access
-            ).create_ln_username_payment_request(asset, ln_username),
-        )
-        payment_id = order.get("payment_id")
-        address = order.get("address")
-        amount_base_units = int(order.get("amount_base_units") or 0)
-        asset_ticker = order.get("asset_ticker") or asset
-        amount = order.get("amount")
-        expires_at = order.get("expires_at")
-        if not payment_id or not address or amount_base_units <= 0:
-            raise ValueError(
-                "AQUA payment-request response is missing fields "
-                f"(payment_id/address/amount): {order!r}"
-            )
+        def _parse_order(order: dict) -> dict:
+            payment_id = order.get("payment_id")
+            address = order.get("address")
+            amount_base_units = int(order.get("amount_base_units") or 0)
+            if not payment_id or not address or amount_base_units <= 0:
+                raise ValueError(
+                    "AQUA payment-request response is missing fields "
+                    f"(payment_id/address/amount): {order!r}"
+                )
+            return {
+                "payment_id": payment_id,
+                "address": address,
+                "amount_base_units": amount_base_units,
+                "asset_ticker": order.get("asset_ticker") or asset,
+                "amount": order.get("amount"),
+                "expires_at": order.get("expires_at"),
+            }
 
-        display_amount = _format_display_amount(amount_base_units, asset_ticker)
+        def _create_order() -> dict:
+            # NOTE: the backend expires any previous pending LN_USERNAME order
+            # for this user before creating the new one.
+            return _parse_order(
+                self._with_auth_retry(
+                    email,
+                    lambda access: self._authed_client(
+                        access
+                    ).create_ln_username_payment_request(asset, ln_username),
+                )
+            )
 
         if not confirm:
             # Dry-run quote: no signing, no broadcast. The caller must show
             # ``display_amount`` to the user and re-call with confirm=True.
+            fields = _create_order()
+            display_amount = _format_display_amount(
+                fields["amount_base_units"], fields["asset_ticker"]
+            )
+            session = self.load_session(email)
+            if session is not None:
+                session.pending_ln_purchase = {"ln_username": ln_username, **fields}
+                self.save_session(session)
             return {
                 "requires_confirmation": True,
                 "confirmed": False,
                 "ln_username": ln_username,
-                "asset_ticker": asset_ticker,
-                "amount_base_units": amount_base_units,
-                "amount": amount,
+                **fields,
                 "display_amount": display_amount,
-                "expires_at": expires_at,
-                "address": address,
                 "message": (
                     f"Purchasing the Lightning Address {ln_username!r} costs "
-                    f"{display_amount}. Show this to the user; on their approval "
-                    "re-call with confirm=true to pay."
+                    f"{display_amount} (quote locked until "
+                    f"{fields['expires_at']}). Show this to the user; on their "
+                    "approval re-call with confirm=true to pay exactly this."
                 ),
             }
 
-        asset_id = self._resolve_asset_id(wallet_name, asset_ticker)
+        # confirm=True — prefer funding the order quoted in step 1.
+        session = self.load_session(email)
+        pending = session.pending_ln_purchase if session else None
+        fields = None
+        if (
+            pending
+            and pending.get("ln_username") == ln_username
+            and (pending.get("asset_ticker") or "").strip().upper()
+            == (asset or "").strip().upper()
+        ):
+            if _order_expired(pending.get("expires_at")):
+                raise ValueError(
+                    f"The approved quote expired at {pending['expires_at']!r}. "
+                    "Nothing was signed or spent — re-quote with confirm=false "
+                    "and show the new price to the user."
+                )
+            fields = {k: v for k, v in pending.items() if k != "ln_username"}
+
+        if fields is None:
+            # No matching quote (--yes / stateless path): create and fund in
+            # one go, bounded by the caller-approved ceiling when given.
+            fields = _create_order()
+
+        if (
+            expected_amount_base_units is not None
+            and fields["amount_base_units"] > int(expected_amount_base_units)
+        ):
+            expected_display = _format_display_amount(
+                int(expected_amount_base_units), fields["asset_ticker"]
+            )
+            current_display = _format_display_amount(
+                fields["amount_base_units"], fields["asset_ticker"]
+            )
+            raise ValueError(
+                f"Price changed: the approved quote was {expected_display} but "
+                f"the current price is {current_display}. Nothing was signed "
+                "or spent. Show the new price to the user and, on their "
+                "approval, re-call with confirm=true and the updated "
+                f"expected_amount_base_units={fields['amount_base_units']}."
+            )
+
+        display_amount = _format_display_amount(
+            fields["amount_base_units"], fields["asset_ticker"]
+        )
+        asset_id = self._resolve_asset_id(wallet_name, fields["asset_ticker"])
         raw_tx = self.wallet_manager.craft_raw_tx(
             wallet_name=wallet_name,
-            address=address,
-            amount=amount_base_units,
+            address=fields["address"],
+            amount=fields["amount_base_units"],
             asset_id=asset_id,
             password=password,
         )
@@ -1145,21 +1223,24 @@ class Jan3AccountsManager:
         result = self._with_auth_retry(
             email,
             lambda access: self._authed_client(access).submit_raw_tx(
-                payment_id=payment_id, raw_tx=raw_tx
+                payment_id=fields["payment_id"], raw_tx=raw_tx
             ),
         )
+
+        # Funded — consume the quote. Re-load first: the submit may have
+        # refreshed tokens and rewritten the session file.
+        session = self.load_session(email)
+        if session is not None and session.pending_ln_purchase is not None:
+            session.pending_ln_purchase = None
+            self.save_session(session)
+
         return {
             "confirmed": True,
-            "payment_id": payment_id,
             "status": result.get("status"),
             "txid": txid,
             "ln_username": ln_username,
-            "asset_ticker": asset_ticker,
-            "amount_base_units": amount_base_units,
-            "amount": amount,
+            **fields,
             "display_amount": display_amount,
-            "expires_at": expires_at,
-            "address": address,
             "message": (
                 f"Submitted raw_tx for {ln_username!r} ({display_amount}). "
                 f"Server reports {result.get('status', 'UNKNOWN')}."

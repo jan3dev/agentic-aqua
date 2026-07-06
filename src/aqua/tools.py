@@ -2293,6 +2293,7 @@ def jan3_purchase_ln_username(
     password: str | None = None,
     asset: str = "L-BTC",
     confirm: bool = False,
+    expected_amount_base_units: int | None = None,
 ) -> dict[str, Any]:
     """Purchase / update the Lightning username for a JAN3 account (on-chain).
 
@@ -2300,8 +2301,12 @@ def jan3_purchase_ln_username(
 
     * ``confirm=False`` (default) returns a quote — ``requires_confirmation``,
       ``display_amount`` (e.g. ``"2000 Sats"`` or ``"1.50 USDT"``),
-      ``amount_base_units``, ``amount``, ``expires_at`` — WITHOUT signing.
-    * ``confirm=True`` funds and submits the on-chain payment in ``asset``.
+      ``amount_base_units``, ``amount``, ``payment_id``, ``expires_at`` —
+      WITHOUT signing. The server locks the price on that order.
+    * ``confirm=True`` funds the quoted order exactly (same payment_id, same
+      amount) and errors if the quote expired. Without a prior quote it
+      creates a fresh order and funds it, bounded by
+      ``expected_amount_base_units`` when given.
 
     Args:
         email: the JAN3 account email.
@@ -2310,10 +2315,14 @@ def jan3_purchase_ln_username(
         password: decrypts the wallet mnemonic if encrypted at rest (confirm only).
         asset: funding asset ticker — "L-BTC" or "USDt" (default L-BTC).
         confirm: False previews the price; True pays.
+        expected_amount_base_units: the ``amount_base_units`` the user approved;
+            a no-prior-quote confirm aborts (nothing spent) if the current
+            price exceeds it.
 
     Returns:
         Quote (confirm=False): requires_confirmation, ln_username, asset_ticker,
-        amount_base_units, amount, display_amount, expires_at, address, message.
+        amount_base_units, amount, display_amount, payment_id, expires_at,
+        address, message.
         Receipt (confirm=True): payment_id, status, txid, plus the same amount
         fields.
     """
@@ -2324,6 +2333,7 @@ def jan3_purchase_ln_username(
         password=password,
         asset=asset,
         confirm=confirm,
+        expected_amount_base_units=expected_amount_base_units,
     )
 
 

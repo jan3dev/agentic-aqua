@@ -1521,6 +1521,153 @@ class TestPurchaseLnUsername:
             with pytest.raises(ValueError, match="missing fields"):
                 mgr.purchase_ln_username("me@example.com", "alice", confirm=True)
 
+    def _order(self, amount_base_units, payment_id="pay1", expires_at="2030-01-01T00:00:00Z"):
+        return {
+            "payment_id": payment_id,
+            "address": VAULT_ADDR,
+            "amount_base_units": amount_base_units,
+            "asset_ticker": "L-BTC",
+            "amount": "0.00000777",
+            "expires_at": expires_at,
+        }
+
+    def test_confirm_funds_the_quoted_order(self, storage):
+        # The quote locks an order server-side; confirm must fund THAT order —
+        # no second payment request, no repriced amount.
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        fake_tx = MagicMock()
+        fake_tx.txid.return_value = "computed-txid"
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/payment-request/ln-username/": self._order(777)}),
+        ):
+            quote = mgr.purchase_ln_username("me@example.com", "alice")
+        assert quote["payment_id"] == "pay1"
+        assert mgr.load_session("me@example.com").pending_ln_purchase is not None
+
+        # The confirm route has NO payment-request mapping: any attempt to
+        # create a second order would fail the test.
+        route = _capturing_route({"/payment/submit-raw-tx/": {"status": "PENDING"}})
+        with (
+            patch("urllib.request.urlopen", side_effect=route),
+            patch("aqua.jan3_accounts.lwk.Transaction", return_value=fake_tx),
+        ):
+            out = mgr.purchase_ln_username("me@example.com", "alice", confirm=True)
+        assert out["confirmed"] is True
+        assert out["payment_id"] == "pay1"       # the quoted order was funded
+        assert out["amount_base_units"] == 777   # exactly the approved amount
+        wm.craft_raw_tx.assert_called_once()
+        assert wm.craft_raw_tx.call_args.kwargs["amount"] == 777
+        assert not any("/payment-request/" in u for u in route.calls)
+        # The quote is consumed once funded.
+        assert mgr.load_session("me@example.com").pending_ln_purchase is None
+
+    def test_confirm_raises_when_quote_expired(self, storage):
+        # An expired locked quote must not be silently repriced: fail loudly
+        # and spend nothing.
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/payment-request/ln-username/": self._order(
+                    777, expires_at="2020-01-01T00:00:00Z"
+                ),
+            }),
+        ):
+            mgr.purchase_ln_username("me@example.com", "alice")
+        with pytest.raises(ValueError, match="quote expired"):
+            mgr.purchase_ln_username("me@example.com", "alice", confirm=True)
+        wm.craft_raw_tx.assert_not_called()
+
+    def test_confirm_for_different_username_ignores_pending(self, storage):
+        # A pending quote for another username must not be funded (its order
+        # would set THAT username): fall back to a fresh order.
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        fake_tx = MagicMock()
+        fake_tx.txid.return_value = "computed-txid"
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/payment-request/ln-username/": self._order(777)}),
+        ):
+            mgr.purchase_ln_username("me@example.com", "alice")
+
+        route = _capturing_route({
+            "/payment-request/ln-username/": self._order(888, payment_id="pay2"),
+            "/payment/submit-raw-tx/": {"status": "PENDING"},
+        })
+        with (
+            patch("urllib.request.urlopen", side_effect=route),
+            patch("aqua.jan3_accounts.lwk.Transaction", return_value=fake_tx),
+        ):
+            out = mgr.purchase_ln_username("me@example.com", "bobby", confirm=True)
+        assert out["payment_id"] == "pay2"
+        assert any("/payment-request/" in u for u in route.calls)
+
+    def test_confirm_without_quote_aborts_when_price_exceeds_approved(self, storage):
+        # Stateless path (no prior quote): the caller-approved ceiling bounds
+        # the spend. Nothing may be signed or submitted above it.
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        route = _capturing_route({"/payment-request/ln-username/": self._order(2000)})
+        with patch("urllib.request.urlopen", side_effect=route):
+            with pytest.raises(ValueError, match="Price changed"):
+                mgr.purchase_ln_username(
+                    "me@example.com",
+                    "alice",
+                    confirm=True,
+                    expected_amount_base_units=777,
+                )
+        wm.craft_raw_tx.assert_not_called()
+        assert not any("submit-raw-tx" in u for u in route.calls)
+
+    def test_confirm_without_quote_proceeds_when_price_within_approved(self, storage):
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        fake_tx = MagicMock()
+        fake_tx.txid.return_value = "computed-txid"
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=_route({
+                    "/payment-request/ln-username/": self._order(777),
+                    "/payment/submit-raw-tx/": {"status": "PENDING"},
+                }),
+            ),
+            patch("aqua.jan3_accounts.lwk.Transaction", return_value=fake_tx),
+        ):
+            out = mgr.purchase_ln_username(
+                "me@example.com",
+                "alice",
+                confirm=True,
+                expected_amount_base_units=1000,
+            )
+        assert out["confirmed"] is True
+        assert out["amount_base_units"] == 777
+        wm.craft_raw_tx.assert_called_once()
+
+    def test_quote_ignores_expected_amount(self, storage):
+        # The ceiling applies to the spending step only; a dry-run quote with
+        # a stale expectation must still return the fresh price, not raise.
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/payment-request/ln-username/": self._order(2000)}),
+        ):
+            out = mgr.purchase_ln_username(
+                "me@example.com",
+                "alice",
+                confirm=False,
+                expected_amount_base_units=777,
+            )
+        assert out["requires_confirmation"] is True
+        assert out["amount_base_units"] == 2000
+        wm.craft_raw_tx.assert_not_called()
+
     def test_invalid_username_raises_before_network(self, storage):
         mgr, _ = _ln_manager(storage)
         _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
