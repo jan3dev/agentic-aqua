@@ -294,17 +294,23 @@ class WalletManager:
         if count <= 0:
             raise ValueError("count must be positive")
         wollet = self._get_wollet(wallet_name)
-        wallet_record = self.storage.load_wallet(wallet_name)
-        if wallet_record is None:
-            raise ValueError(f"Wallet {wallet_name!r} not found")
-        lwk_tip = wollet.address(None).index()
-        start = max(lwk_tip, wallet_record.next_address_index)
-        addresses: list[Address] = []
-        for offset in range(count):
-            addr = wollet.address(start + offset)
-            addresses.append(Address(address=str(addr.address()), index=addr.index()))
-        wallet_record.next_address_index = start + count
-        self.storage.save_wallet(wallet_record)
+        # The counter update is a read-modify-write; hold the cross-process
+        # lock so a concurrent CLI/MCP-server pair can't hand out the same
+        # index or roll the counter back (last-writer-wins save).
+        with self.storage.wallet_lock(wallet_name):
+            wallet_record = self.storage.load_wallet(wallet_name)
+            if wallet_record is None:
+                raise ValueError(f"Wallet {wallet_name!r} not found")
+            lwk_tip = wollet.address(None).index()
+            start = max(lwk_tip, wallet_record.next_address_index)
+            addresses: list[Address] = []
+            for offset in range(count):
+                addr = wollet.address(start + offset)
+                addresses.append(
+                    Address(address=str(addr.address()), index=addr.index())
+                )
+            wallet_record.next_address_index = start + count
+            self.storage.save_wallet(wallet_record)
         return addresses
 
     def peek_address(

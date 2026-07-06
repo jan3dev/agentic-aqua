@@ -7,6 +7,8 @@ import os
 import re
 import shutil
 import sys
+import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +17,11 @@ from typing import Optional
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 logger = logging.getLogger(__name__)
 
@@ -360,6 +367,52 @@ class Storage:
         """Get path to wallet file."""
         _validate_wallet_name(name)
         return self.wallets_dir / f"{name}.json"
+
+    @contextmanager
+    def wallet_lock(self, name: str, timeout_seconds: float = 30.0):
+        """Cross-process exclusive lock for read-modify-write of a wallet record.
+
+        ``save_wallet`` is a whole-record last-writer-wins overwrite, so any
+        writer that derives new state from the current file contents (e.g.
+        advancing ``next_address_index``) must load AND save while holding
+        this lock — otherwise a concurrent CLI/MCP-server process against the
+        same ``~/.aqua`` can interleave and hand out the same index twice.
+
+        The OS releases the lock automatically if the holder dies. Raises
+        ``TimeoutError`` if the lock cannot be acquired in ``timeout_seconds``.
+        """
+        _validate_wallet_name(name)
+        lock_path = self.wallets_dir / f"{name}.lock"
+        # "a" creates the file if missing without ever truncating it.
+        fh = open(lock_path, "a")
+        try:
+            deadline = time.monotonic() + timeout_seconds
+            while True:
+                try:
+                    if sys.platform == "win32":
+                        fh.seek(0)
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"Could not lock wallet {name!r} within "
+                            f"{timeout_seconds:.0f}s — another aqua process "
+                            "is holding it."
+                        ) from None
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                if sys.platform == "win32":
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
 
     def wallet_exists(self, name: str) -> bool:
         """Check if wallet exists."""
