@@ -115,8 +115,6 @@ All tool names accepted in `enabled_tools`:
 | `sideswap_quote` | `aqua sideswap quote` | |
 | `sideswap_execute_swap` | `aqua sideswap swap` | |
 | `sideswap_swap_status` | `aqua sideswap swap-status` | |
-| `pix_receive` | MCP only | Brazilian Pix on-ramp |
-| `pix_status` | MCP only | Brazilian Pix on-ramp |
 
 ### Shipping a tool disabled by default
 

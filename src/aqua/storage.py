@@ -135,7 +135,6 @@ class Storage:
         self.swaps_dir = self.base_dir / "swaps"
         self.ankara_swaps_dir = self.base_dir / "ankara_swaps"
         self.lightning_swaps_dir = self.base_dir / "lightning_swaps"
-        self.pix_swaps_dir = self.base_dir / "pix_swaps"
         self.changelly_swaps_dir = self.base_dir / "changelly_swaps"
         self.sideshift_shifts_dir = self.base_dir / "sideshift_shifts"
         self.sideswap_pegs_dir = self.base_dir / "sideswap_pegs"
@@ -162,8 +161,6 @@ class Storage:
         restrict_permissions(self.ankara_swaps_dir, 0o700)
         self.lightning_swaps_dir.mkdir(exist_ok=True, mode=0o700)
         restrict_permissions(self.lightning_swaps_dir, 0o700)
-        self.pix_swaps_dir.mkdir(exist_ok=True, mode=0o700)
-        restrict_permissions(self.pix_swaps_dir, 0o700)
         self.changelly_swaps_dir.mkdir(exist_ok=True, mode=0o700)
         restrict_permissions(self.changelly_swaps_dir, 0o700)
         self.sideshift_shifts_dir.mkdir(exist_ok=True, mode=0o700)
@@ -480,40 +477,6 @@ class Storage:
         return [
             p.stem
             for p in self.lightning_swaps_dir.glob("*.json")
-            if SWAP_ID_PATTERN.fullmatch(p.stem)
-        ]
-
-    # Pix swap operations
-
-    def _pix_swap_path(self, swap_id: str) -> Path:
-        """Get path to Pix swap file, validating the ID to prevent path traversal."""
-        if not SWAP_ID_PATTERN.fullmatch(swap_id):
-            raise ValueError(
-                f"Invalid swap ID '{swap_id}'. "
-                "Use only letters, numbers, hyphens and underscores (max 128 chars)."
-            )
-        return self.pix_swaps_dir / f"{swap_id}.json"
-
-    def save_pix_swap(self, swap) -> None:
-        """Save Pix swap data for recovery."""
-        path = self._pix_swap_path(swap.swap_id)
-        self._atomic_write_json(path, swap.to_dict())
-
-    def load_pix_swap(self, swap_id: str):
-        """Load Pix swap data. Returns PixSwap or None."""
-        from .pix import PixSwap
-
-        path = self._pix_swap_path(swap_id)
-        if not path.exists():
-            return None
-        with open(path) as f:
-            return PixSwap.from_dict(json.load(f))
-
-    def list_pix_swaps(self) -> list[str]:
-        """List all Pix swap IDs."""
-        return [
-            p.stem
-            for p in self.pix_swaps_dir.glob("*.json")
             if SWAP_ID_PATTERN.fullmatch(p.stem)
         ]
 

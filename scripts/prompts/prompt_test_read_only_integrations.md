@@ -2,7 +2,7 @@
 
 Manual test prompts for validating Aqua MCP **integration tools** (SideSwap, SideShift, ChangeChangelly) without spending coins or broadcasting transactions. Covers read-only flows: server status, asset listings, quotes, pair info, and recommendations.
 
-Use an agent with Haiku model to run these prompts. For Pix/DePix there is no purely read-only path (it requires creating a charge); see `prompt_test_real_pix.md`.
+Use an agent with Haiku model to run these prompts.
 
 ## Prerequisites
 

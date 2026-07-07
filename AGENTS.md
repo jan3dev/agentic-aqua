@@ -12,7 +12,7 @@ networks (unified wallet).
 AI Assistant ──MCP──▶ aqua.server ──▶ tools.py ──▶ wallet.py  (LWK ─ Electrum/Esplora)
                                               └─▶ bitcoin.py (BDK ─ Esplora)
                                               └─▶ lightning.py / sideshift /
-                                                  changelly / pix / wapupay  (third-party clients)
+                                                  changelly / wapupay  (third-party clients)
 ```
 
 No local node. Liquid: Blockstream Electrum/Esplora. Bitcoin: Esplora only.
@@ -91,7 +91,7 @@ Use `grep`/`Glob` only for exact strings or config lookups.
 - **MCP tool / prompt / resource schemas** — live in `src/aqua/server.py`. The MCP server is
   self-describing; don't duplicate the schema in markdown.
 - **Third-party protocol semantics** (Boltz status state machines, SideShift wire format,
-  Changelly endpoints, Eulen Pix endpoints) — captured as docstrings
+  Changelly endpoints) — captured as docstrings
   and constants inside the relevant module.
 - **On-disk JSON schemas** (wallet file, swap files) — the `@dataclass` definitions in
   `storage.py`, `lightning.py`, etc. are the source of truth. Read the
