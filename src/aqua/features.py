@@ -15,22 +15,10 @@ from .tools import TOOLS
 logger = logging.getLogger(__name__)
 
 
-# Tools shipped disabled-by-default. Users can re-enable any of these in
-# ~/.aqua/config.json under `enabled_tools`. SideSwap is gated behind manual
-# opt-in until the broader rollout.
-_SHIPPED_DISABLED: frozenset[str] = frozenset({
-    # SideSwap (swap + peg-in/peg-out)
-    "sideswap_server_status",
-    "sideswap_recommend",
-    "sideswap_peg_quote",
-    "sideswap_peg_in",
-    "sideswap_peg_out",
-    "sideswap_peg_status",
-    "sideswap_list_assets",
-    "sideswap_quote",
-    "sideswap_execute_swap",
-    "sideswap_swap_status",
-})
+# Tools shipped disabled-by-default. Empty: every known tool ships enabled.
+# To release a tool in an opt-in state, add its name here; users can re-enable
+# it via `enabled_tools` in ~/.aqua/config.json.
+_SHIPPED_DISABLED: frozenset[str] = frozenset()
 
 assert _SHIPPED_DISABLED <= TOOLS.keys(), (
     f"unknown tool in _SHIPPED_DISABLED: {_SHIPPED_DISABLED - TOOLS.keys()}"
