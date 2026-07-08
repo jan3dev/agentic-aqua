@@ -58,6 +58,7 @@ When adding a new module under `src/aqua/`:
 
 ## SideSwap
 
-SideSwap is not yet implemented for production use. Do not suggest or offer SideSwap options to users.
+SideSwap is enabled by default. Test its tools like any other module — there is
+no feature-gating to special-case.
 
 <!-- MANUAL: -->
