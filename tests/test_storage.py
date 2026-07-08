@@ -6,6 +6,8 @@ import os
 import stat
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -63,6 +65,61 @@ class TestWalletDataAddressCounter:
         })
         assert w.next_address_index == 0
         assert not hasattr(w, "some_future_field")
+
+
+class TestWalletLock:
+    """Cross-process lock guarding wallet-record read-modify-writes."""
+
+    def test_serializes_concurrent_holders(self, temp_storage):
+        order = []
+
+        def holder():
+            with temp_storage.wallet_lock("w"):
+                order.append("a-in")
+                time.sleep(0.3)
+                order.append("a-out")
+
+        t = threading.Thread(target=holder)
+        t.start()
+        time.sleep(0.1)  # let the thread grab the lock first
+        with temp_storage.wallet_lock("w"):
+            order.append("b-in")
+        t.join(timeout=5)
+        assert order == ["a-in", "a-out", "b-in"]
+
+    def test_timeout_raises(self, temp_storage):
+        release = threading.Event()
+        held = threading.Event()
+
+        def holder():
+            with temp_storage.wallet_lock("w"):
+                held.set()
+                release.wait(timeout=5)
+
+        t = threading.Thread(target=holder)
+        t.start()
+        assert held.wait(timeout=5)
+        with pytest.raises(TimeoutError, match="another aqua process"):
+            with temp_storage.wallet_lock("w", timeout_seconds=0.15):
+                pass
+        release.set()
+        t.join(timeout=5)
+
+    def test_reacquire_after_release(self, temp_storage):
+        for _ in range(2):
+            with temp_storage.wallet_lock("w"):
+                pass
+
+    def test_locks_are_per_wallet(self, temp_storage):
+        # A lock on wallet "a" must not exclude wallet "b".
+        with temp_storage.wallet_lock("a"):
+            with temp_storage.wallet_lock("b", timeout_seconds=0.5):
+                pass
+
+    def test_lock_file_not_listed_as_wallet(self, temp_storage):
+        with temp_storage.wallet_lock("w"):
+            pass
+        assert "w" not in temp_storage.list_wallets()
 
 
 class TestStorage:

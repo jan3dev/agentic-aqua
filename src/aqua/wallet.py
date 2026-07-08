@@ -1,5 +1,6 @@
 """Wallet management using LWK."""
 
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
@@ -7,6 +8,8 @@ import lwk
 
 from .assets import lookup_asset, resolve_asset_name
 from .storage import Storage, WalletData
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -270,13 +273,11 @@ class WalletManager:
     ) -> Address:
         """Get a receive address.
 
-        No-arg advances ``next_address_index`` (not idempotent — commits an
-        index). Explicit ``index`` returns it without advancing. For display,
-        use :meth:`peek_address`.
+        No-arg advances ``next_address_index`` (not idempotent). Explicit
+        ``index`` returns it without advancing; for display use :meth:`peek_address`.
         """
         if index is None:
-            # The load → max(lwk_tip, counter) → derive → advance → save
-            # sequence lives once, in reserve_addresses.
+            # The load/derive/advance/save sequence lives once, in reserve_addresses.
             return self.reserve_addresses(wallet_name, 1)[0]
         wollet = self._get_wollet(wallet_name)
         addr = wollet.address(index)
@@ -294,18 +295,61 @@ class WalletManager:
         if count <= 0:
             raise ValueError("count must be positive")
         wollet = self._get_wollet(wallet_name)
-        wallet_record = self.storage.load_wallet(wallet_name)
-        if wallet_record is None:
-            raise ValueError(f"Wallet {wallet_name!r} not found")
-        lwk_tip = wollet.address(None).index()
-        start = max(lwk_tip, wallet_record.next_address_index)
-        addresses: list[Address] = []
-        for offset in range(count):
-            addr = wollet.address(start + offset)
-            addresses.append(Address(address=str(addr.address()), index=addr.index()))
-        wallet_record.next_address_index = start + count
-        self.storage.save_wallet(wallet_record)
+        # Hold the cross-process lock so two writers can't hand out the same index.
+        with self.storage.wallet_lock(wallet_name):
+            wallet_record = self.storage.load_wallet(wallet_name)
+            if wallet_record is None:
+                raise ValueError(f"Wallet {wallet_name!r} not found")
+            lwk_tip = wollet.address(None).index()
+            start = max(lwk_tip, wallet_record.next_address_index)
+            addresses: list[Address] = []
+            for offset in range(count):
+                addr = wollet.address(start + offset)
+                addresses.append(
+                    Address(address=str(addr.address()), index=addr.index())
+                )
+            wallet_record.next_address_index = start + count
+            self.storage.save_wallet(wallet_record)
         return addresses
+
+    def ensure_counter_covers(
+        self,
+        wallet_name: str,
+        addresses: list[str],
+    ) -> int:
+        """Bump ``next_address_index`` past any of ``addresses`` this wallet derives.
+
+        Best-effort repair for a reset counter (e.g. seed reimport) so the frontier
+        never re-hands out indices the server already delivered to.
+        """
+        targets = set(addresses)
+        wollet = self._get_wollet(wallet_name)
+        with self.storage.wallet_lock(wallet_name):
+            wallet_record = self.storage.load_wallet(wallet_name)
+            if wallet_record is None:
+                raise ValueError(f"Wallet {wallet_name!r} not found")
+            if not targets:
+                return wallet_record.next_address_index
+            lwk_tip = wollet.address(None).index()
+            frontier = max(lwk_tip, wallet_record.next_address_index)
+            # Server-side pool batches are capped, so matches sit within a modest window.
+            horizon = frontier + 100
+            max_matched = -1
+            for i in range(horizon):
+                if str(wollet.address(i).address()) in targets:
+                    max_matched = i
+            if max_matched + 1 > wallet_record.next_address_index:
+                logger.info(
+                    "Wallet %r: advancing next_address_index %d -> %d to cover "
+                    "server-known pool addresses (counter was behind, e.g. "
+                    "after a seed reimport).",
+                    wallet_name,
+                    wallet_record.next_address_index,
+                    max_matched + 1,
+                )
+                wallet_record.next_address_index = max_matched + 1
+                self.storage.save_wallet(wallet_record)
+            return wallet_record.next_address_index
 
     def peek_address(
         self,

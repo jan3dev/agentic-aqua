@@ -2293,15 +2293,14 @@ def jan3_purchase_ln_username(
     password: str | None = None,
     asset: str = "L-BTC",
     confirm: bool = False,
+    expected_amount_base_units: int | None = None,
 ) -> dict[str, Any]:
     """Purchase / update the Lightning username for a JAN3 account (on-chain).
 
-    Two-step so the user approves the price before any spend:
-
-    * ``confirm=False`` (default) returns a quote — ``requires_confirmation``,
-      ``display_amount`` (e.g. ``"2000 Sats"`` or ``"1.50 USDT"``),
-      ``amount_base_units``, ``amount``, ``expires_at`` — WITHOUT signing.
-    * ``confirm=True`` funds and submits the on-chain payment in ``asset``.
+    Two-step so the user approves the price before any spend: ``confirm=False``
+    (default) locks in a quote without signing; ``confirm=True`` funds that exact
+    quoted order, erroring if it expired. Without a prior quote it creates and
+    funds a fresh order, bounded by ``expected_amount_base_units`` when given.
 
     Args:
         email: the JAN3 account email.
@@ -2310,12 +2309,11 @@ def jan3_purchase_ln_username(
         password: decrypts the wallet mnemonic if encrypted at rest (confirm only).
         asset: funding asset ticker — "L-BTC" or "USDt" (default L-BTC).
         confirm: False previews the price; True pays.
+        expected_amount_base_units: ceiling on confirm=True when there's no prior quote.
 
     Returns:
-        Quote (confirm=False): requires_confirmation, ln_username, asset_ticker,
-        amount_base_units, amount, display_amount, expires_at, address, message.
-        Receipt (confirm=True): payment_id, status, txid, plus the same amount
-        fields.
+        Quote (confirm=False): display_amount, amount_base_units, payment_id, expires_at.
+        Receipt (confirm=True): payment_id, status, txid.
     """
     return get_jan3_manager().purchase_ln_username(
         email,
@@ -2324,6 +2322,7 @@ def jan3_purchase_ln_username(
         password=password,
         asset=asset,
         confirm=confirm,
+        expected_amount_base_units=expected_amount_base_units,
     )
 
 

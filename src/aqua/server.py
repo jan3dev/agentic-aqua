@@ -1549,13 +1549,16 @@ TOOL_SCHEMAS = {
             "Purchase / update the Lightning username for a JAN3 account with an "
             "on-chain payment (fund in L-BTC or USDt). TWO-STEP, do NOT pass "
             "confirm=true first: (1) call with confirm=false (default) to get a "
-            "price quote WITHOUT spending — it returns display_amount (already "
-            "formatted for the user, e.g. '2000 Sats' for L-BTC or '1.50 USDT' "
-            "for USDt), amount_base_units (technical), amount, asset_ticker and "
-            "expires_at; SHOW display_amount to the user and get explicit consent; "
-            "(2) only then call with confirm=true to sign and submit. When telling "
-            "the user the price, use display_amount verbatim — never surface the "
-            "raw amount/amount_base_units. Check availability first with "
+            "price quote WITHOUT spending — the server locks the price on that "
+            "order; it returns display_amount (already formatted for the user, "
+            "e.g. '2000 Sats' for L-BTC or '1.50 USDT' for USDt), "
+            "amount_base_units (technical), amount, asset_ticker, payment_id "
+            "and expires_at; SHOW display_amount to the user and get explicit "
+            "consent; (2) only then call with confirm=true — it funds exactly "
+            "the quoted order (same payment_id and amount) and errors if the "
+            "quote expired (re-quote and re-confirm). When telling the user "
+            "the price, use display_amount verbatim — never surface the raw "
+            "amount/amount_base_units. Check availability first with "
             "jan3_ln_check_username. Requires an active JAN3 session (either flow)."
         ),
         "inputSchema": {
@@ -1587,8 +1590,14 @@ TOOL_SCHEMAS = {
                     "type": "boolean",
                     "default": False,
                     "description": "False (default) returns a non-spending price "
-                    "quote; True signs and submits the payment. Only set True "
-                    "after the user approves the quoted display_amount.",
+                    "quote; True funds the previously quoted order. Only set "
+                    "True after the user approves the quoted display_amount.",
+                },
+                "expected_amount_base_units": {
+                    "type": "integer",
+                    "description": "With confirm=true and no prior quote, the "
+                    "amount_base_units the user approved; the purchase aborts "
+                    "(nothing spent) if the current price exceeds it.",
                 },
             },
             "required": ["email", "ln_username"],

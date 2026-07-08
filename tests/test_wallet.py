@@ -62,6 +62,89 @@ class TestAddressCounter:
         indices = {one.index} | {a.index for a in batch}
         assert len(indices) == 4  # all distinct — no reuse across the two paths
 
+    def test_counter_promoted_when_lwk_tip_is_higher(self, wallet_manager):
+        """The handout frontier is max(lwk tip, counter): a handed-out index is
+        never below the persisted counter, and the counter advances past it."""
+        record = wallet_manager.storage.load_wallet("default")
+        record.next_address_index = 100
+        wallet_manager.storage.save_wallet(record)
+        out = wallet_manager.get_address("default")
+        assert out.index >= 100
+        after = wallet_manager.storage.load_wallet("default").next_address_index
+        assert after == out.index + 1
+
+    def test_reserve_waits_for_wallet_lock(self, wallet_manager):
+        # reserve_addresses must hold the cross-process wallet lock for its
+        # read-modify-write: while another holder has it, the reserve blocks.
+        import threading
+        import time
+
+        got: list[int] = []
+
+        def reserve():
+            got.append(wallet_manager.get_address("default").index)
+
+        with wallet_manager.storage.wallet_lock("default"):
+            t = threading.Thread(target=reserve)
+            t.start()
+            time.sleep(0.3)
+            assert not got  # blocked while the lock is held elsewhere
+        t.join(timeout=5)
+        assert got  # proceeded once the lock was released
+
+    def test_ensure_counter_covers_repairs_reset_counter(self, wallet_manager):
+        # Simulate a seed reimport: server pool holds indices 5..7 but the
+        # local counter is 0; reconciliation must bump it past the highest.
+        pool = [
+            wallet_manager.peek_address("default", index=i).address
+            for i in (5, 6, 7)
+        ]
+        assert wallet_manager.storage.load_wallet("default").next_address_index == 0
+        new_counter = wallet_manager.ensure_counter_covers("default", pool)
+        assert new_counter == 8
+        rec = wallet_manager.storage.load_wallet("default")
+        assert rec.next_address_index == 8
+        # The next handout must sit above the recovered pool.
+        assert wallet_manager.get_address("default").index >= 8
+
+    def test_ensure_counter_covers_is_idempotent_and_never_lowers(
+        self, wallet_manager
+    ):
+        wallet_manager.reserve_addresses("default", 10)
+        pool = [wallet_manager.peek_address("default", index=2).address]
+        counter = wallet_manager.ensure_counter_covers("default", pool)
+        assert counter == 10  # already covered — unchanged
+
+    def test_ensure_counter_covers_ignores_foreign_addresses(self, wallet_manager):
+        counter = wallet_manager.ensure_counter_covers(
+            "default", ["lq1qqnotfromthiswallet"]
+        )
+        assert counter == 0
+
+    def test_concurrent_reserves_never_share_an_index(self, wallet_manager):
+        # Two racing reservers must produce disjoint index ranges and a
+        # counter equal to the total handed out.
+        import threading
+
+        results: list[list[int]] = [[], []]
+
+        def reserve(slot):
+            results[slot] = [
+                a.index for a in wallet_manager.reserve_addresses("default", 5)
+            ]
+
+        threads = [
+            threading.Thread(target=reserve, args=(i,)) for i in range(2)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+        all_indices = results[0] + results[1]
+        assert len(set(all_indices)) == 10  # no shared index
+        rec = wallet_manager.storage.load_wallet("default")
+        assert rec.next_address_index == max(all_indices) + 1
+
 
 class TestFingerprint:
     def test_hot_wallet_fingerprint_is_8_hex(self, wallet_manager):
