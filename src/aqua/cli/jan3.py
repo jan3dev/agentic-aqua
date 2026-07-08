@@ -264,8 +264,7 @@ def purchase_ln_username(ctx, email, ln_username, wallet_name, asset, assume_yes
     """
     expected_amount_base_units = None
     if not assume_yes:
-        # 1) Non-spending price quote (no signing, no password). The server
-        # locks the price on this order; the confirm step funds it verbatim.
+        # 1) Non-spending price quote — the server locks the price on this order.
         try:
             quote = jan3_purchase_ln_username(
                 email=email,

@@ -143,12 +143,8 @@ def _route(mapping):
 
 
 def _capturing_route(mapping):
-    """Like :func:`_route` but records every request URL (with query string).
-
-    The returned side_effect exposes ``.calls`` — a list of ``req.full_url``
-    strings — so a test can assert whether ``?override_fingerprint=true`` was
-    (or was not) sent.
-    """
+    """Like :func:`_route` but also records each request's full URL in
+    ``.calls``, so a test can assert whether a query string was sent."""
     urls: list[str] = []
     base = _route(mapping)
 
@@ -1145,13 +1141,9 @@ class TestGetUserAutoPool:
         wm.reserve_addresses.assert_not_called()
 
     def test_topup_backend_failure_never_breaks_read(self, storage):
-        # A REAL failure mode: the local reserve succeeds but the backend
-        # register POST fails (transient 500). It must be swallowed into a skip,
-        # not raised — the profile read still returns. (The previous version of
-        # this test injected a "password required" error from fingerprint(),
-        # which the real code cannot produce for an encrypted hot wallet:
-        # address derivation needs only the descriptor, not the mnemonic —
-        # see test_wallet.py::TestEncryptedWalletNoPassword.)
+        # A REAL failure mode: the backend register POST can fail (transient
+        # 500); it must be swallowed into a skip, not raised — the profile
+        # read still returns.
         mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
         _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
         profile = {
@@ -1256,9 +1248,8 @@ class TestPendingBatchReuse:
         assert wm.reserve_addresses.call_count == 2
 
     def test_pool_response_reconciles_counter(self, storage):
-        # The register response returns the FULL unused pool. Addresses we did
-        # not just post (a previous install's pool, i.e. reimported seed) must
-        # be fed to ensure_counter_covers so their indices are never re-handed.
+        # The register response returns the FULL unused pool; addresses we
+        # didn't just post (e.g. from a reimported seed) must reach ensure_counter_covers.
         mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
         _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
         with patch(
@@ -1586,8 +1577,7 @@ class TestEnsureLnPool:
         assert out["reason"] == "fingerprint_mismatch"
         assert out["server_fingerprint"] == "serverfp"
         assert out["local_fingerprint"] == "localfp"
-        # The skip must carry actionable guidance naming both fingerprints
-        # (the reason alone is a dead-end; there is no self-serve re-bind tool).
+        # The skip must carry actionable guidance naming both fingerprints.
         assert "serverfp" in out["message"] and "localfp" in out["message"]
         wm.reserve_addresses.assert_not_called()
 
@@ -1598,9 +1588,8 @@ class TestEnsureLnPool:
         assert out["reason"] == "no_ln_username"
 
     def test_fingerprint_unavailable_is_permanent_skip(self, storage):
-        # A bare-xpub watch-only wallet can never produce a fingerprint; the
-        # skip must be distinguishable from a transient backend failure and
-        # carry remediation, not fall through to auto_topup_unavailable.
+        # A bare-xpub watch-only wallet can never fingerprint; the skip must
+        # be distinguishable from a transient failure and carry remediation.
         mgr, wm = _ln_manager(storage)
         wm.fingerprint.side_effect = ValueError(
             "Cannot determine fingerprint for watch-only wallet 'default': "
@@ -1623,9 +1612,8 @@ class TestEnsureLnPool:
         wm.reserve_addresses.assert_not_called()
 
     def test_toggle_enable_surfaces_permanent_fingerprint_skip(self, storage):
-        # The enable tool must not report a healthy pool when the wallet can
-        # never register addresses: the toggle succeeds but the pool result
-        # carries the permanent skip.
+        # The toggle succeeding must not mask a wallet that can never
+        # register addresses: the pool result carries the permanent skip.
         mgr, wm = _ln_manager(storage)
         wm.fingerprint.side_effect = ValueError(
             "Cannot determine fingerprint for watch-only wallet 'default': "

@@ -79,16 +79,12 @@ class WalletData:
         data = {**data}
         data.setdefault("btc_descriptor", None)
         data.setdefault("btc_change_descriptor", None)
-        # The address counter used to be named ``ln_addr_next_index`` when it
-        # only tracked LN-address registrations. Migrate the legacy key in-place
-        # so existing wallets keep their burned-index history; it's dropped on
-        # the next save.
+        # Migrate the legacy ``ln_addr_next_index`` key so wallets keep their history.
         legacy = data.pop("ln_addr_next_index", None)
         if "next_address_index" not in data and legacy is not None:
             data["next_address_index"] = legacy
         data.setdefault("next_address_index", 0)
-        # Forward compatibility: drop any other unknown keys written by future
-        # branches so this branch can still load the wallet file.
+        # Forward compatibility: drop unknown keys written by future branches.
         known = {f.name for f in fields(cls)}
         data = {k: v for k, v in data.items() if k in known}
         return cls(**data)
@@ -372,14 +368,9 @@ class Storage:
     def wallet_lock(self, name: str, timeout_seconds: float = 30.0):
         """Cross-process exclusive lock for read-modify-write of a wallet record.
 
-        ``save_wallet`` is a whole-record last-writer-wins overwrite, so any
-        writer that derives new state from the current file contents (e.g.
-        advancing ``next_address_index``) must load AND save while holding
-        this lock — otherwise a concurrent CLI/MCP-server process against the
-        same ``~/.aqua`` can interleave and hand out the same index twice.
-
-        The OS releases the lock automatically if the holder dies. Raises
-        ``TimeoutError`` if the lock cannot be acquired in ``timeout_seconds``.
+        ``save_wallet`` is a last-writer-wins overwrite, so counter-advancing
+        writers must load-and-save while holding this lock to avoid two
+        processes handing out the same index. Raises ``TimeoutError`` on timeout.
         """
         _validate_wallet_name(name)
         lock_path = self.wallets_dir / f"{name}.lock"

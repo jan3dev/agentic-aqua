@@ -273,13 +273,11 @@ class WalletManager:
     ) -> Address:
         """Get a receive address.
 
-        No-arg advances ``next_address_index`` (not idempotent — commits an
-        index). Explicit ``index`` returns it without advancing. For display,
-        use :meth:`peek_address`.
+        No-arg advances ``next_address_index`` (not idempotent). Explicit
+        ``index`` returns it without advancing; for display use :meth:`peek_address`.
         """
         if index is None:
-            # The load → max(lwk_tip, counter) → derive → advance → save
-            # sequence lives once, in reserve_addresses.
+            # The load/derive/advance/save sequence lives once, in reserve_addresses.
             return self.reserve_addresses(wallet_name, 1)[0]
         wollet = self._get_wollet(wallet_name)
         addr = wollet.address(index)
@@ -297,9 +295,7 @@ class WalletManager:
         if count <= 0:
             raise ValueError("count must be positive")
         wollet = self._get_wollet(wallet_name)
-        # The counter update is a read-modify-write; hold the cross-process
-        # lock so a concurrent CLI/MCP-server pair can't hand out the same
-        # index or roll the counter back (last-writer-wins save).
+        # Hold the cross-process lock so two writers can't hand out the same index.
         with self.storage.wallet_lock(wallet_name):
             wallet_record = self.storage.load_wallet(wallet_name)
             if wallet_record is None:
@@ -323,12 +319,8 @@ class WalletManager:
     ) -> int:
         """Bump ``next_address_index`` past any of ``addresses`` this wallet derives.
 
-        Best-effort repair for a reset counter (seed reimport, deleted
-        ``~/.aqua``): the JAN3 backend still holds unused pool addresses from
-        the previous install, and without this the frontier would re-hand
-        those same indices to swaps/receives. Matches the given addresses
-        against derivations within a bounded horizon above the current
-        frontier and returns the (possibly unchanged) counter.
+        Best-effort repair for a reset counter (e.g. seed reimport) so the frontier
+        never re-hands out indices the server already delivered to.
         """
         targets = set(addresses)
         wollet = self._get_wollet(wallet_name)
@@ -340,8 +332,7 @@ class WalletManager:
                 return wallet_record.next_address_index
             lwk_tip = wollet.address(None).index()
             frontier = max(lwk_tip, wallet_record.next_address_index)
-            # Pool batches are capped server-side, so anything from a previous
-            # install sits within a modest window above the old frontier.
+            # Server-side pool batches are capped, so matches sit within a modest window.
             horizon = frontier + 100
             max_matched = -1
             for i in range(horizon):

@@ -2303,10 +2303,7 @@ class TestWapuPayCli:
             input="y\n",
         )
         assert result.exit_code == 0
-        # The destructive warning (naming the LN address) is echoed before the
-        # prompt — the distinctive phrase only comes from the warning, not the
-        # result JSON. (The LN-address-vs-email rule is asserted at the manager
-        # level in test_warning_names_ln_address_not_account_email.)
+        # These phrases only come from the pre-prompt warning, not the result JSON.
         assert "moves delivery away" in result.output
         assert "alice@aquabtc.com" in result.output
         assert any(

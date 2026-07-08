@@ -67,8 +67,7 @@ ASSET_TICKER_USDT = "USDt"
 LN_USERNAME_PAYMENT_REQUEST_PATH = "/api/v1/liquid-wallet/payment-request/ln-username/"
 SUBMIT_RAW_TX_PATH = "/api/v1/liquid-wallet/payment/submit-raw-tx/"
 
-# Server-side per-call cap on address registration, and the app's default pool
-# size to register when the server doesn't report how many are needed.
+# Server-side per-call cap on address registration; default pool size otherwise.
 MAX_ADDRESSES_PER_REGISTRATION = 15
 DEFAULT_LN_ADDRESS_POOL = 5
 
@@ -76,20 +75,14 @@ DEFAULT_LN_ADDRESS_POOL = 5
 # catches obvious mistakes before we make a network call.
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-# Mirrors aqua-ankara's common.constants.LN_USERNAME_REGEX so we fail fast
-# before a network call: lowercase alphanumerics with at most one dot.
+# Mirrors aqua-ankara's LN_USERNAME_REGEX to fail fast before a network call.
 LN_USERNAME_REGEX = re.compile(r"^[a-z0-9]+(\.[a-z0-9]+)?$")
 
 
 def _format_display_amount(amount_base_units: int, asset_ticker: str) -> str:
     """Render a human-facing price string for the agent to surface verbatim.
 
-    ``amount_base_units`` is the technical integer the wallet actually funds — the
-    single source of truth — but for the user it must be shown per-asset:
-
-    * **L-BTC** — base units *are* satoshis → ``"2000 Sats"``.
-    * **USDt** (and other 8-decimal Liquid assets) → a 2-decimal fiat-style
-      amount (``base_units / 1e8``) → ``"1.50 USDT"``.
+    L-BTC is shown in Sats; other assets (e.g. USDt) as a 2-decimal fiat-style amount.
     """
     ticker = (asset_ticker or "").strip()
     if ticker.upper() in ("L-BTC", "LBTC", "BTC"):
@@ -852,12 +845,8 @@ class Jan3AccountsManager:
     ) -> dict:
         """Mint ``count`` unused Liquid receive addresses and POST to /auth/user/addresses/.
 
-        Internal — not an MCP tool. Raises on hard errors (no username, disabled,
-        fingerprint mismatch); callers on the auto path wrap these into skip dicts.
-
-        If the previous POST for this wallet failed, its batch (persisted on the
-        session) is re-uploaded verbatim — ``count`` is ignored for that attempt —
-        so retries never mint additional indices.
+        Internal — not an MCP tool. A previously failed POST's batch is re-uploaded
+        verbatim (``count`` ignored) so retries never mint additional indices.
         """
         email = _validate_email(email)
         user = (
@@ -900,10 +889,7 @@ class Jan3AccountsManager:
                 "(server-side per-call limit)"
             )
 
-        # A previous POST for this wallet may have failed with unknown outcome.
-        # Re-upload that exact batch instead of burning fresh indices (the
-        # server ignores duplicates), so a backend outage costs one batch total
-        # rather than one batch per attempt.
+        # Re-upload a batch left pending by a previous failed POST (the server dedups).
         session = self.load_session(email)
         pending = session.pending_ln_registration if session else None
         if (
@@ -919,8 +905,7 @@ class Jan3AccountsManager:
                 for a in self.wallet_manager.reserve_addresses(wallet_name, count)
             ]
             if session is not None:
-                # Persist before the POST: if it fails (or secretly succeeds),
-                # the batch is retried verbatim next time, never re-minted.
+                # Persist before the POST so a failed/unknown outcome retries verbatim.
                 session.pending_ln_registration = {
                     "wallet_name": wallet_name,
                     "fingerprint": local_fp,
@@ -935,17 +920,13 @@ class Jan3AccountsManager:
             ),
         )
 
-        # Registered — clear the pending batch. Re-load first: the POST may
-        # have refreshed tokens and rewritten the session file.
+        # Clear the pending batch; re-load since the POST may have rewritten the session.
         session = self.load_session(email)
         if session is not None and session.pending_ln_registration is not None:
             session.pending_ln_registration = None
             self.save_session(session)
 
-        # The response carries the wallet's FULL unused pool. Addresses we did
-        # not just upload can predate this install (seed reimport reset the
-        # local counter to 0 while the server kept delivering to them) —
-        # advance the counter past them so no other flow re-hands them out.
+        # Advance past pool addresses we didn't just upload (e.g. post-reimport).
         pool = resp.get("addresses", []) or []
         posted = set(addresses)
         unknown = [a for a in pool if a not in posted]
@@ -1003,11 +984,7 @@ class Jan3AccountsManager:
         try:
             local_fp = self.wallet_manager.fingerprint(wallet_name)
         except ValueError as e:
-            # Permanent for this wallet (e.g. a watch-only import from a bare
-            # descriptor with no [fingerprint/derivation] block) — unlike a
-            # transient backend error, retrying can never succeed. Use a
-            # distinct reason with remediation so it isn't mistaken for the
-            # generic auto_topup_unavailable.
+            # Distinct from auto_topup_unavailable: this is permanent, not transient.
             return _skip(
                 "wallet_fingerprint_unavailable",
                 message=(
@@ -1170,18 +1147,11 @@ class Jan3AccountsManager:
     ) -> dict:
         """Buy / update the Lightning username for ``email`` (on-chain payment).
 
-        Two-step to avoid spending without consent:
-
-        * ``confirm=False`` (default) — creates a payment request (the server
-          locks the price and expiry on that order) and returns a **quote**
-          including its ``payment_id``; nothing is signed or broadcast. The
-          quote is remembered on the session.
-        * ``confirm=True`` — funds the quoted order exactly: same
-          ``payment_id``, same amount the user approved. The backend rejects
-          expired orders and any tx whose amount/address differ from the
-          order's. Without a prior matching quote (e.g. CLI ``--yes``), it
-          creates a fresh order and funds it in one go —
-          ``expected_amount_base_units`` bounds what that path may spend.
+        Two-step to avoid spending without consent: ``confirm=False`` (default)
+        locks in a price quote without signing/broadcasting; ``confirm=True`` funds
+        that exact quoted order (rejecting it if expired or altered). Without a
+        prior matching quote it creates and funds a fresh order in one go, bounded
+        by ``expected_amount_base_units``.
         """
         email = _validate_email(email)
         ln_username = _validate_ln_username(ln_username)
@@ -1205,8 +1175,7 @@ class Jan3AccountsManager:
             }
 
         def _create_order() -> dict:
-            # NOTE: the backend expires any previous pending LN_USERNAME order
-            # for this user before creating the new one.
+            # The backend expires any previous pending LN_USERNAME order for this user.
             return _parse_order(
                 self._with_auth_retry(
                     email,
@@ -1217,8 +1186,7 @@ class Jan3AccountsManager:
             )
 
         if not confirm:
-            # Dry-run quote: no signing, no broadcast. The caller must show
-            # ``display_amount`` to the user and re-call with confirm=True.
+            # Dry-run quote: no signing/broadcast; caller re-calls with confirm=True.
             fields = _create_order()
             display_amount = _format_display_amount(
                 fields["amount_base_units"], fields["asset_ticker"]
@@ -1260,8 +1228,7 @@ class Jan3AccountsManager:
             fields = {k: v for k, v in pending.items() if k != "ln_username"}
 
         if fields is None:
-            # No matching quote (--yes / stateless path): create and fund in
-            # one go, bounded by the caller-approved ceiling when given.
+            # No matching quote (--yes / stateless path): create and fund in one go.
             fields = _create_order()
 
         if (
@@ -1293,8 +1260,7 @@ class Jan3AccountsManager:
             asset_id=asset_id,
             password=password,
         )
-        # The API response omits the txid; compute it locally from the finalized
-        # raw tx so the caller has something to track on a block explorer.
+        # The API response omits the txid; compute it locally from the finalized raw tx.
         txid = str(lwk.Transaction(raw_tx).txid())
 
         result = self._with_auth_retry(
@@ -1304,8 +1270,7 @@ class Jan3AccountsManager:
             ),
         )
 
-        # Funded — consume the quote. Re-load first: the submit may have
-        # refreshed tokens and rewritten the session file.
+        # Funded — consume the quote; re-load since the submit may have rewritten the session.
         session = self.load_session(email)
         if session is not None and session.pending_ln_purchase is not None:
             session.pending_ln_purchase = None

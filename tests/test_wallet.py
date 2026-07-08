@@ -93,9 +93,8 @@ class TestAddressCounter:
         assert got  # proceeded once the lock was released
 
     def test_ensure_counter_covers_repairs_reset_counter(self, wallet_manager):
-        # Simulate a seed reimport: the server still holds pool addresses at
-        # indices 5..7 but the local counter is 0. Reconciliation must bump
-        # the counter past the highest server-known index.
+        # Simulate a seed reimport: server pool holds indices 5..7 but the
+        # local counter is 0; reconciliation must bump it past the highest.
         pool = [
             wallet_manager.peek_address("default", index=i).address
             for i in (5, 6, 7)
