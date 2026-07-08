@@ -15,7 +15,7 @@ uv run python -m pytest tests/smoke/                # network-touching smoke tes
 uv run python -m pytest --cov=src/aqua tests/       # with coverage
 ```
 
-`tests/conftest.py` loads `.env` so credentials (`SIGNER_MNEMONIC`, `EULEN_API_TOKEN`,
+`tests/conftest.py` loads `.env` so credentials (`SIGNER_MNEMONIC`,
 `AQUA_PASSWORD`, etc.) are available without manual export.
 
 ## Fixture conventions
@@ -27,7 +27,7 @@ uv run python -m pytest --cov=src/aqua tests/       # with coverage
   - LWK: patch `Wollet.sync_txs` / `Wollet.balance` / `ElectrumClient` on the manager
     (see `test_tools.py::test_unified_balance` for the canonical pattern).
   - BDK: patch `EsploraClient` or the `bdk.Wallet.full_scan` call.
-  - Boltz / Ankara / SideShift / Changelly / Eulen: patch the HTTP method on the client
+  - Boltz / Ankara / SideShift / Changelly: patch the HTTP method on the client
     class (`BoltzClient._post`, etc.) — don't `urlopen.mock`.
 - **Allowlist drift tests** — `test_sideshift.py::TestAllowedPairs::test_allowlist_matches_aqua_flutter`
   and the Changelly equivalent compare against checked-in copies of AQUA Flutter's Dart

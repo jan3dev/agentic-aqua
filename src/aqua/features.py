@@ -16,12 +16,9 @@ logger = logging.getLogger(__name__)
 
 
 # Tools shipped disabled-by-default. Users can re-enable any of these in
-# ~/.aqua/config.json under `enabled_tools`. SideSwap and Depix (PIX) are
-# gated behind manual opt-in until the broader rollout.
+# ~/.aqua/config.json under `enabled_tools`. SideSwap is gated behind manual
+# opt-in until the broader rollout.
 _SHIPPED_DISABLED: frozenset[str] = frozenset({
-    # PIX / Depix (MCP-only, agent-driven)
-    "pix_receive",
-    "pix_status",
     # SideSwap (swap + peg-in/peg-out)
     "sideswap_server_status",
     "sideswap_recommend",
@@ -147,9 +144,8 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
 
 
 # Tools available only via MCP — no Click command in `src/aqua/cli/`.
-# The PIX endpoints are agent-only by design (Brazilian instant-pay flows
-# triggered from chat); intentionally not exposed in the CLI.
-MCP_ONLY_TOOLS: frozenset[str] = frozenset({"pix_receive", "pix_status"})
+# Currently every MCP tool has a corresponding CLI command.
+MCP_ONLY_TOOLS: frozenset[str] = frozenset()
 
 
 def is_tool_enabled(name: str, config: Config) -> bool:

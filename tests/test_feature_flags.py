@@ -213,14 +213,13 @@ def test_enabled_tools_invalid_types_are_coerced(caplog):
     assert sum("Dropping invalid" in r.message for r in caplog.records) == 3
 
 
-def test_sideswap_and_pix_disabled_by_default():
-    """Only SideSwap + PIX tools ship disabled-by-default (manual opt-in).
+def test_sideswap_disabled_by_default():
+    """Only SideSwap tools ship disabled-by-default (manual opt-in).
 
     WapuPay and the AQUA account login (`aqua_*`) are now enabled by default;
     business calls still require WAPUPAY_API_KEY (env or provisioned).
     """
     expected_disabled = {
-        "pix_receive", "pix_status",
         "sideswap_server_status", "sideswap_recommend",
         "sideswap_peg_quote", "sideswap_peg_in", "sideswap_peg_out",
         "sideswap_peg_status", "sideswap_list_assets", "sideswap_quote",
