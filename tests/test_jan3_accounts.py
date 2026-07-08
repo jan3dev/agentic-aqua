@@ -22,14 +22,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from aqua.ankara import ANKARA_API_URL, SessionExpiredError
+from aqua.lnurl import resolve_lightning_address
 from aqua.jan3_accounts import (
     ASSET_TICKER_LBTC,
+    DEFAULT_LN_ADDRESS_POOL,
+    MAX_ADDRESSES_PER_REGISTRATION,
     Jan3AccountsClient,
     Jan3AccountsManager,
     Jan3Session,
     _email_to_filename,
     _token_preview,
     _validate_email,
+    _validate_ln_username,
 )
 from aqua.storage import Storage
 
@@ -135,6 +139,35 @@ def _route(mapping):
                 return _mock_response(val)
         raise AssertionError(f"unexpected request to {path}")
 
+    return side_effect
+
+
+def _capturing_route(mapping):
+    """Like :func:`_route` but also records each request's full URL in
+    ``.calls``, so a test can assert whether a query string was sent."""
+    urls: list[str] = []
+    base = _route(mapping)
+
+    def side_effect(req, timeout=None):
+        urls.append(req.full_url)
+        return base(req, timeout=timeout)
+
+    side_effect.calls = urls
+    return side_effect
+
+
+def _body_capturing_route(mapping):
+    """Like :func:`_route` but records ``(url, decoded body)`` per request,
+    exposed as ``.bodies``, so a test can assert what a POST actually carried.
+    """
+    bodies: list[tuple[str, str]] = []
+    base = _route(mapping)
+
+    def side_effect(req, timeout=None):
+        bodies.append((req.full_url, req.data.decode() if req.data else ""))
+        return base(req, timeout=timeout)
+
+    side_effect.bodies = bodies
     return side_effect
 
 
@@ -524,6 +557,20 @@ class TestVerify:
         assert result["captcha_exempt"] is True
         assert mgr.load_session("me@example.com").captcha_exempt is True
 
+    def test_verify_cues_ln_address_offer(self, storage):
+        # The post-login UX: verify's return must cue the agent to offer the
+        # Lightning Address opt-in (this is why the toggle is user-facing).
+        mgr = _manager(storage)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route(
+                {"/api/v1/auth/verify/": {"access": "A" * 40, "refresh": "R" * 40}}
+            ),
+        ):
+            result = mgr.verify("me@example.com", "123456")
+        assert "lightning address" in result["next_step"].lower()
+        assert "jan3_enable_lightning_address" in result["next_step"]
+
     def test_propagates_invalid_otp_and_saves_nothing(self, storage):
         mgr = _manager(storage)
         with patch(
@@ -900,3 +947,1044 @@ class TestProvisionWapupayToken:
             with pytest.raises(ValueError, match="token missing"):
                 mgr.provision_wapupay_token("me@example.com")
 
+
+# ---------------------------------------------------------------------------
+# LN username validation
+# ---------------------------------------------------------------------------
+
+
+class TestLnUsernameValidation:
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("alice", "alice"),
+            ("ALICE", "alice"),
+            ("bob.smith", "bob.smith"),
+            ("user1234", "user1234"),
+            ("  Trimmed  ", "trimmed"),
+        ],
+    )
+    def test_valid_normalizes(self, raw, expected):
+        assert _validate_ln_username(raw) == expected
+
+    @pytest.mark.parametrize(
+        "bad",
+        ["abc", "", "a_b", "ab.cd.ef", "with space", "under_score", "x" * 65, "no-dash"],
+    )
+    def test_invalid_rejected(self, bad):
+        with pytest.raises(ValueError, match="Invalid ln_username"):
+            _validate_ln_username(bad)
+
+
+# ---------------------------------------------------------------------------
+# LN client HTTP methods (urlopen seam)
+# ---------------------------------------------------------------------------
+
+
+class TestLnClientHttp:
+    @patch("urllib.request.urlopen")
+    def test_get_user_sends_bearer(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response(
+            {"email": "me@x.com", "ln_username": "alice"}
+        )
+        client = Jan3AccountsClient(base_url=BASE_URL, access_token="jwt.acc")
+        out = client.get_user()
+        assert out["ln_username"] == "alice"
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url.endswith("/api/v1/auth/user/")
+        assert req.get_method() == "GET"
+        assert req.get_header("Authorization") == "Bearer jwt.acc"
+
+    @patch("urllib.request.urlopen")
+    def test_ln_address_toggle_posts_enabled(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"ln_address_toggled": True})
+        client = Jan3AccountsClient(base_url=BASE_URL, access_token="jwt")
+        client.ln_address_toggle(True)
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url.endswith("/api/v1/auth/user/ln-address-toggle/")
+        assert json.loads(req.data.decode()) == {"enabled": True}
+
+    @patch("urllib.request.urlopen")
+    def test_ln_username_available_quotes_and_forwards_token(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"available": True})
+        client = Jan3AccountsClient(base_url=BASE_URL, access_token="jwt")
+        client.ln_username_available("alice.bob")
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url.endswith(
+            "/api/v1/auth/user/ln-username/alice.bob/is-available"
+        )
+        assert req.get_header("Authorization") == "Bearer jwt"
+
+    @patch("urllib.request.urlopen")
+    def test_ln_username_available_anonymous_without_token(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"available": True})
+        client = Jan3AccountsClient(base_url=BASE_URL)  # no access token
+        client.ln_username_available("alice")
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_header("Authorization") is None
+
+    @patch("urllib.request.urlopen")
+    def test_register_addresses_override_adds_query(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"addresses": ["a", "b"]})
+        client = Jan3AccountsClient(base_url=BASE_URL, access_token="jwt")
+        client.register_addresses("fp1234", ["a", "b"], override_fingerprint=True)
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url.endswith("/api/v1/auth/user/addresses/?override_fingerprint=true")
+        assert json.loads(req.data.decode()) == {
+            "fingerprint": "fp1234",
+            "addresses": ["a", "b"],
+        }
+
+    @patch("urllib.request.urlopen")
+    def test_register_addresses_no_override_no_query(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"addresses": []})
+        client = Jan3AccountsClient(base_url=BASE_URL, access_token="jwt")
+        client.register_addresses("fp", [])
+        req = mock_urlopen.call_args[0][0]
+        assert "override_fingerprint" not in req.full_url
+
+    @patch("urllib.request.urlopen")
+    def test_create_payment_request_posts_body(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response(
+            {"payment_id": "p1", "address": VAULT_ADDR, "amount_base_units": 500}
+        )
+        client = Jan3AccountsClient(base_url=BASE_URL, access_token="jwt")
+        client.create_ln_username_payment_request("L-BTC", "alice")
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url.endswith(
+            "/api/v1/liquid-wallet/payment-request/ln-username/"
+        )
+        assert json.loads(req.data.decode()) == {"asset": "L-BTC", "ln_username": "alice"}
+
+    @patch("urllib.request.urlopen")
+    def test_submit_raw_tx_posts_body(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"status": "PENDING"})
+        client = Jan3AccountsClient(base_url=BASE_URL, access_token="jwt")
+        client.submit_raw_tx("p1", "deadbeef")
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url.endswith("/api/v1/liquid-wallet/payment/submit-raw-tx/")
+        assert json.loads(req.data.decode()) == {"payment_id": "p1", "raw_tx": "deadbeef"}
+
+
+# ---------------------------------------------------------------------------
+# Manager: LN-address pool (get_user auto-heal + toggle + register/ensure)
+# ---------------------------------------------------------------------------
+
+
+def _ln_manager(storage, *, fingerprint="abcd1234", raw_tx="0200deadbeef"):
+    """Manager wired to a wallet stub with controllable fingerprint + addresses."""
+    wm = _fake_wallet_manager(raw_tx)
+    wm.fingerprint.return_value = fingerprint
+    wm.reserve_addresses.side_effect = lambda name, count: [
+        MagicMock(address=f"lq1addr{i}") for i in range(count)
+    ]
+    mgr = Jan3AccountsManager(
+        storage=storage, wallet_manager=wm, base_url=BASE_URL
+    )
+    return mgr, wm
+
+
+class TestGetUserAutoPool:
+    def test_auto_refills_when_active(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        profile = {
+            "email": "me@example.com",
+            "ln_username": "alice",
+            "ln_address_toggled": True,
+            "fingerprint": "abcd1234",
+            "new_addresses_needed": 3,
+        }
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/addresses/": {"addresses": ["a", "b", "c"]},
+                "/user/": profile,
+            }),
+        ):
+            out = mgr.get_user("me@example.com")
+        assert out["ln_username"] == "alice"
+        assert out["ln_address_pool"]["refilled"] is True
+        assert out["ln_address_pool"]["requested_count"] == 3
+        wm.reserve_addresses.assert_called_once_with("default", 3)
+
+    def test_skips_when_toggle_off(self, storage):
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        profile = {
+            "ln_username": "alice",
+            "ln_address_toggled": False,
+            "fingerprint": "abcd1234",
+            "new_addresses_needed": 5,
+        }
+        with patch(
+            "urllib.request.urlopen", side_effect=_route({"/user/": profile})
+        ):
+            out = mgr.get_user("me@example.com")
+        assert out["ln_address_pool"]["reason"] == "ln_address_disabled"
+        wm.reserve_addresses.assert_not_called()
+
+    def test_pool_full_no_register(self, storage):
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        profile = {
+            "ln_username": "alice",
+            "ln_address_toggled": True,
+            "fingerprint": "abcd1234",
+            "new_addresses_needed": 0,
+        }
+        with patch(
+            "urllib.request.urlopen", side_effect=_route({"/user/": profile})
+        ):
+            out = mgr.get_user("me@example.com")
+        assert out["ln_address_pool"]["reason"] == "pool_full"
+        wm.reserve_addresses.assert_not_called()
+
+    def test_topup_backend_failure_never_breaks_read(self, storage):
+        # A REAL failure mode: the backend register POST can fail (transient
+        # 500); it must be swallowed into a skip, not raised — the profile
+        # read still returns.
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        profile = {
+            "ln_username": "alice",
+            "ln_address_toggled": True,
+            "fingerprint": "abcd1234",
+            "new_addresses_needed": 3,
+        }
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/user/": profile,
+                "/addresses/": _http_error(500, "backend down"),
+            }),
+        ):
+            out = mgr.get_user("me@example.com")
+        # Profile still returned; the topup failure is reported, not raised.
+        assert out["ln_username"] == "alice"
+        assert out["ln_address_pool"]["refilled"] is False
+        assert out["ln_address_pool"]["reason"] == "auto_topup_unavailable"
+        # The burn-before-POST ordering means reserve was attempted first.
+        wm.reserve_addresses.assert_called_once_with("default", 3)
+
+
+class TestPendingBatchReuse:
+    """A failed register POST must not burn a fresh batch per retry.
+
+    The reserved batch is persisted on the session and re-uploaded verbatim
+    (the server ignores duplicate addresses), so an outage costs one batch
+    total instead of one batch per jan3_user_info call.
+    """
+
+    PROFILE = {
+        "ln_username": "alice",
+        "ln_address_toggled": True,
+        "fingerprint": "abcd1234",
+        "new_addresses_needed": 3,
+    }
+
+    @staticmethod
+    def _distinct_batches(wm):
+        """Make each reserve call return a distinguishable batch."""
+        calls = {"n": 0}
+
+        def reserve(name, count):
+            calls["n"] += 1
+            return [
+                MagicMock(address=f"lq1batch{calls['n']}addr{i}")
+                for i in range(count)
+            ]
+
+        wm.reserve_addresses.side_effect = reserve
+
+    def test_retry_reuses_batch_instead_of_burning(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
+        self._distinct_batches(wm)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+
+        # Attempt 1: reserve succeeds, POST 500s — batch 1 is now pending.
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/user/": self.PROFILE,
+                "/addresses/": _http_error(500, "backend down"),
+            }),
+        ):
+            out = mgr.get_user("me@example.com")
+        assert out["ln_address_pool"]["reason"] == "auto_topup_unavailable"
+        assert wm.reserve_addresses.call_count == 1
+
+        # Attempt 2: backend recovered. The SAME batch is re-POSTed; no new
+        # indices are reserved.
+        route = _body_capturing_route({
+            "/user/": self.PROFILE,
+            "/addresses/": {"addresses": ["a", "b", "c"]},
+        })
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.get_user("me@example.com")
+        assert out["ln_address_pool"]["refilled"] is True
+        assert wm.reserve_addresses.call_count == 1  # still just the first burn
+        post_body = next(b for u, b in route.bodies if "/addresses/" in u)
+        assert "lq1batch1addr0" in post_body
+        assert "lq1batch2" not in post_body
+
+    def test_success_clears_pending(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
+        self._distinct_batches(wm)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+
+        ok_route = {
+            "/user/": self.PROFILE,
+            "/addresses/": {"addresses": ["a", "b", "c"]},
+        }
+        with patch("urllib.request.urlopen", side_effect=_route(ok_route)):
+            mgr.get_user("me@example.com")
+        assert (
+            mgr.load_session("me@example.com").pending_ln_registration is None
+        )
+        # Next top-up reserves a fresh batch — pending is not sticky.
+        with patch("urllib.request.urlopen", side_effect=_route(dict(ok_route))):
+            mgr.get_user("me@example.com")
+        assert wm.reserve_addresses.call_count == 2
+
+    def test_pool_response_reconciles_counter(self, storage):
+        # The register response returns the FULL unused pool; addresses we
+        # didn't just post (e.g. from a reimported seed) must reach ensure_counter_covers.
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/user/": self.PROFILE,
+                "/addresses/": {
+                    "addresses": ["lq1addr0", "lq1addr1", "lq1addr2", "lq1old9"]
+                },
+            }),
+        ):
+            out = mgr.get_user("me@example.com")
+        assert out["ln_address_pool"]["refilled"] is True
+        wm.ensure_counter_covers.assert_called_once_with("default", ["lq1old9"])
+
+    def test_no_reconciliation_when_pool_matches_posted(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/user/": self.PROFILE,
+                "/addresses/": {"addresses": ["lq1addr0", "lq1addr1", "lq1addr2"]},
+            }),
+        ):
+            mgr.get_user("me@example.com")
+        wm.ensure_counter_covers.assert_not_called()
+
+    def test_pending_for_other_wallet_not_reused(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
+        self._distinct_batches(wm)
+        session = _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        session.pending_ln_registration = {
+            "wallet_name": "other",
+            "fingerprint": "zzzz9999",
+            "addresses": ["lq1stale0", "lq1stale1"],
+        }
+        mgr.save_session(session)
+
+        route = _body_capturing_route({
+            "/user/": self.PROFILE,
+            "/addresses/": {"addresses": ["a", "b", "c"]},
+        })
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.get_user("me@example.com")
+        assert out["ln_address_pool"]["refilled"] is True
+        # The stale batch (different wallet/fingerprint) must not be uploaded.
+        wm.reserve_addresses.assert_called_once_with("default", 3)
+        post_body = next(b for u, b in route.bodies if "/addresses/" in u)
+        assert "lq1stale" not in post_body
+        assert "lq1batch1addr0" in post_body
+
+
+class TestLnAddressToggleManager:
+    def test_enable_populates_pool(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="abcd1234")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        profile = {
+            "ln_username": "alice",
+            "ln_address_toggled": True,
+            "fingerprint": "abcd1234",
+            "new_addresses_needed": 2,
+        }
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/ln-address-toggle/": {"ln_address_toggled": True},
+                "/addresses/": {"addresses": ["a", "b"]},
+                "/user/": profile,
+            }),
+        ):
+            out = mgr.ln_address_toggle("me@example.com", True)
+        assert out["enabled"] is True
+        assert out["ln_address_pool"]["refilled"] is True
+        wm.reserve_addresses.assert_called_once_with("default", 2)
+
+    def test_disable_does_not_touch_pool(self, storage):
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/ln-address-toggle/": {"ln_address_toggled": False}}),
+        ):
+            out = mgr.ln_address_toggle("me@example.com", False)
+        assert out["enabled"] is False
+        assert "ln_address_pool" not in out
+        wm.reserve_addresses.assert_not_called()
+
+    def test_enable_without_username_reports_skip(self, storage):
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        profile = {"ln_username": None, "ln_address_toggled": True, "fingerprint": "fp"}
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/ln-address-toggle/": {"ok": True},
+                "/user/": profile,
+            }),
+        ):
+            out = mgr.ln_address_toggle("me@example.com", True)
+        assert out["ln_address_pool"]["reason"] == "no_ln_username"
+        wm.reserve_addresses.assert_not_called()
+
+
+class TestRegisterLnAddresses:
+    def test_raises_without_username(self, storage):
+        mgr, _ = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with pytest.raises(ValueError, match="no LN username"):
+            mgr.register_ln_addresses(
+                "me@example.com",
+                profile={"ln_username": None, "ln_address_toggled": True},
+            )
+
+    def test_fingerprint_mismatch_raises(self, storage):
+        mgr, _ = _ln_manager(storage, fingerprint="local999")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with pytest.raises(ValueError, match="fingerprint mismatch"):
+            mgr.register_ln_addresses(
+                "me@example.com",
+                profile={
+                    "ln_username": "alice",
+                    "ln_address_toggled": True,
+                    "fingerprint": "server111",
+                    "new_addresses_needed": 2,
+                },
+            )
+
+    def test_caps_count_at_max(self, storage):
+        mgr, _ = _ln_manager(storage, fingerprint="fp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with pytest.raises(ValueError, match="cannot exceed"):
+            mgr.register_ln_addresses(
+                "me@example.com",
+                count=MAX_ADDRESSES_PER_REGISTRATION + 1,
+                profile={
+                    "ln_username": "alice",
+                    "ln_address_toggled": True,
+                    "fingerprint": "fp",
+                },
+            )
+
+    def test_default_count_when_none_needed(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="fp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/addresses/": {"addresses": ["x"] * 5}}),
+        ):
+            out = mgr.register_ln_addresses(
+                "me@example.com",
+                profile={
+                    "ln_username": "alice",
+                    "ln_address_toggled": True,
+                    "fingerprint": "fp",
+                    "new_addresses_needed": 0,
+                },
+            )
+        wm.reserve_addresses.assert_called_once_with("default", DEFAULT_LN_ADDRESS_POOL)
+        assert out["requested_count"] == DEFAULT_LN_ADDRESS_POOL
+
+
+# ---------------------------------------------------------------------------
+# Manager: rebind_wallet (self-serve override_fingerprint)
+# ---------------------------------------------------------------------------
+
+
+class TestRebindWallet:
+    """`rebind_wallet` re-binds the account's Lightning Address to a different
+    local wallet. Three states: first-bind (no server fp), no-op (server==local),
+    destructive re-bind (server!=local). confirm=False previews without mutating;
+    confirm=True executes with override_fingerprint=true.
+    """
+
+    def _profile(self, *, server_fp="serverfp", needed=2, ln_username="alice@aquabtc.com"):
+        return {
+            "email": "me@example.com",
+            "ln_username": ln_username,
+            "ln_address_toggled": True,
+            "fingerprint": server_fp,
+            "new_addresses_needed": needed,
+        }
+
+    # -- destructive re-bind (server_fp != local_fp) ------------------------
+
+    def test_preview_does_not_mutate_or_send_override(self, storage):
+        # confirm=False on a mismatch must PREVIEW only: no address minting,
+        # no POST to /addresses/, and certainly no override query. (AC-3)
+        mgr, wm = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        route = _capturing_route({"/user/": self._profile(server_fp="serverfp")})
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.rebind_wallet("me@example.com", "default", confirm=False)
+        assert out["requires_confirmation"] is True
+        assert out["rebound"] is False
+        assert out["current_fingerprint"] == "serverfp"
+        assert out["new_fingerprint"] == "localfp"
+        assert "serverfp" in out["warning"] and "localfp" in out["warning"]
+        wm.reserve_addresses.assert_not_called()
+        assert not any("override_fingerprint" in u for u in route.calls)
+        assert not any("/addresses/" in u for u in route.calls)
+
+    def test_confirm_executes_and_sends_override(self, storage):
+        # confirm=True on a mismatch must call register with override_fingerprint,
+        # sending ?override_fingerprint=true to /addresses/. (AC-4, AC-5)
+        mgr, wm = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        route = _capturing_route({
+            "/user/": self._profile(server_fp="serverfp", needed=2),
+            "/addresses/": {"addresses": ["a", "b"]},
+        })
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.rebind_wallet("me@example.com", "default", confirm=True)
+        assert out["rebound"] is True
+        assert out["new_fingerprint"] == "localfp"
+        assert out["pool_size"] == 2
+        wm.reserve_addresses.assert_called_once_with("default", 2)
+        assert any(
+            u.endswith("/api/v1/auth/user/addresses/?override_fingerprint=true")
+            for u in route.calls
+        )
+
+    def test_warning_names_ln_address_not_account_email(self, storage):
+        # D6: the warning must surface the Lightning Address (ln_username), never
+        # the JAN3 account login email.
+        mgr, _ = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        route = _capturing_route({
+            "/user/": self._profile(server_fp="serverfp", ln_username="alice@aquabtc.com"),
+        })
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.rebind_wallet("me@example.com", "default", confirm=False)
+        assert "alice@aquabtc.com" in out["warning"]
+        assert "me@example.com" not in out["warning"]
+
+    # -- first bind (server_fp empty) --------------------------------------
+
+    def test_first_bind_preview_has_no_bogus_none(self, storage):
+        # AC-10: no wallet bound yet -> first bind, not a destructive re-bind.
+        # The warning must not render a "None" replaced-fingerprint.
+        mgr, wm = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        route = _capturing_route({"/user/": self._profile(server_fp=None)})
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.rebind_wallet("me@example.com", "default", confirm=False)
+        assert out["state"] == "first_bind"
+        assert out["current_fingerprint"] is None
+        assert out["new_fingerprint"] == "localfp"
+        assert "None" not in out["warning"]
+        wm.reserve_addresses.assert_not_called()
+        assert not any("override_fingerprint" in u for u in route.calls)
+
+    def test_first_bind_confirm_executes(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        route = _capturing_route({
+            "/user/": self._profile(server_fp=None, needed=3),
+            "/addresses/": {"addresses": ["a", "b", "c"]},
+        })
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.rebind_wallet("me@example.com", "default", confirm=True)
+        assert out["rebound"] is True
+        assert any("override_fingerprint=true" in u for u in route.calls)
+
+    # -- already bound (server_fp == local_fp) -----------------------------
+
+    def test_already_bound_is_noop_no_override(self, storage):
+        # AC-11: server fp already equals this wallet -> no-op, no confirmation,
+        # never sends a spurious destructive override.
+        mgr, wm = _ln_manager(storage, fingerprint="samefp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        route = _capturing_route({"/user/": self._profile(server_fp="samefp", needed=0)})
+        with patch("urllib.request.urlopen", side_effect=route):
+            out = mgr.rebind_wallet("me@example.com", "default", confirm=False)
+        assert out["already_bound"] is True
+        assert out["requires_confirmation"] is False
+        assert out["rebound"] is False
+        assert not any("override_fingerprint" in u for u in route.calls)
+
+    # -- guards -------------------------------------------------------------
+
+    def test_no_username_raises(self, storage):
+        mgr, _ = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/user/": {"ln_username": None, "fingerprint": "serverfp"}}),
+        ):
+            with pytest.raises(ValueError, match="no LN username"):
+                mgr.rebind_wallet("me@example.com", "default", confirm=True)
+
+    def test_mismatch_skip_points_to_rebind_tool(self, storage):
+        # AC-8: the auto-path skip message must now point at the new self-serve
+        # tool instead of saying re-binding is unavailable.
+        mgr, _ = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        out = mgr.ensure_ln_pool(
+            "me@example.com",
+            profile={
+                "ln_username": "alice@aquabtc.com",
+                "ln_address_toggled": True,
+                "fingerprint": "serverfp",
+                "new_addresses_needed": 3,
+            },
+        )
+        assert out["reason"] == "fingerprint_mismatch"
+        assert "jan3_rebind_wallet" in out["message"]
+        assert "serverfp" in out["message"] and "localfp" in out["message"]
+
+
+class TestEnsureLnPool:
+    def test_fingerprint_mismatch_skips(self, storage):
+        mgr, wm = _ln_manager(storage, fingerprint="localfp")
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        out = mgr.ensure_ln_pool(
+            "me@example.com",
+            profile={
+                "ln_username": "alice",
+                "ln_address_toggled": True,
+                "fingerprint": "serverfp",
+                "new_addresses_needed": 3,
+            },
+        )
+        assert out["refilled"] is False
+        assert out["reason"] == "fingerprint_mismatch"
+        assert out["server_fingerprint"] == "serverfp"
+        assert out["local_fingerprint"] == "localfp"
+        # The skip must carry actionable guidance naming both fingerprints.
+        assert "serverfp" in out["message"] and "localfp" in out["message"]
+        wm.reserve_addresses.assert_not_called()
+
+    def test_no_username_skips(self, storage):
+        mgr, _ = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        out = mgr.ensure_ln_pool("me@example.com", profile={"ln_username": None})
+        assert out["reason"] == "no_ln_username"
+
+    def test_fingerprint_unavailable_is_permanent_skip(self, storage):
+        # A bare-xpub watch-only wallet can never fingerprint; the skip must
+        # be distinguishable from a transient failure and carry remediation.
+        mgr, wm = _ln_manager(storage)
+        wm.fingerprint.side_effect = ValueError(
+            "Cannot determine fingerprint for watch-only wallet 'default': "
+            "descriptor has no [fingerprint/derivation] block."
+        )
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        out = mgr.ensure_ln_pool(
+            "me@example.com",
+            profile={
+                "ln_username": "alice",
+                "ln_address_toggled": True,
+                "fingerprint": "serverfp",
+                "new_addresses_needed": 3,
+            },
+        )
+        assert out["refilled"] is False
+        assert out["reason"] == "wallet_fingerprint_unavailable"
+        assert "permanent" in out["message"]
+        assert "re-import" in out["message"]
+        wm.reserve_addresses.assert_not_called()
+
+    def test_toggle_enable_surfaces_permanent_fingerprint_skip(self, storage):
+        # The toggle succeeding must not mask a wallet that can never
+        # register addresses: the pool result carries the permanent skip.
+        mgr, wm = _ln_manager(storage)
+        wm.fingerprint.side_effect = ValueError(
+            "Cannot determine fingerprint for watch-only wallet 'default': "
+            "descriptor has no [fingerprint/derivation] block."
+        )
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/ln-address-toggle/": {"ln_address_toggled": True},
+                "/user/": {
+                    "ln_username": "alice",
+                    "ln_address_toggled": True,
+                    "fingerprint": "serverfp",
+                    "new_addresses_needed": 3,
+                },
+            }),
+        ):
+            out = mgr.ln_address_toggle("me@example.com", True)
+        assert out["enabled"] is True
+        assert out["ln_address_pool"]["reason"] == "wallet_fingerprint_unavailable"
+        wm.reserve_addresses.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Manager: purchase LN username (on-chain L-BTC)
+# ---------------------------------------------------------------------------
+
+
+class TestPurchaseLnUsername:
+    def test_happy_path(self, storage):
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        fake_tx = MagicMock()
+        fake_tx.txid.return_value = "computed-txid"
+        order = {
+            "payment_id": "pay1",
+            "address": VAULT_ADDR,
+            "amount_base_units": 777,
+            "asset_ticker": "L-BTC",
+            "amount": "0.00000777",
+            "expires_at": "2026-07-03T18:13:55Z",
+        }
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=_route({
+                    "/payment-request/ln-username/": order,
+                    "/payment/submit-raw-tx/": {"status": "PENDING"},
+                }),
+            ),
+            patch("aqua.jan3_accounts.lwk.Transaction", return_value=fake_tx),
+        ):
+            out = mgr.purchase_ln_username("me@example.com", "alice", confirm=True)
+        assert out["confirmed"] is True
+        assert out["txid"] == "computed-txid"
+        assert out["status"] == "PENDING"
+        assert out["ln_username"] == "alice"
+        assert out["amount_base_units"] == 777
+        assert out["amount"] == "0.00000777"
+        assert out["expires_at"] == "2026-07-03T18:13:55Z"
+        assert out["display_amount"] == "777 Sats"
+        wm.craft_raw_tx.assert_called_once()
+
+    def test_dry_run_quote_does_not_sign(self, storage):
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        order = {
+            "payment_id": "pay1",
+            "address": VAULT_ADDR,
+            "amount_base_units": 8_000_000,
+            "asset_ticker": "USDt",
+            "amount": "0.08000000",
+            "expires_at": "2026-07-03T18:13:55Z",
+        }
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/payment-request/ln-username/": order}),
+        ):
+            out = mgr.purchase_ln_username("me@example.com", "alice", asset="USDt")
+        assert out["requires_confirmation"] is True
+        assert out["confirmed"] is False
+        assert out["amount_base_units"] == 8_000_000
+        assert out["display_amount"] == "0.08 USDT"
+        assert out["expires_at"] == "2026-07-03T18:13:55Z"
+        assert "txid" not in out
+        wm.craft_raw_tx.assert_not_called()
+
+    def test_missing_fields_raises(self, storage):
+        mgr, _ = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        order = {"payment_id": None, "address": None, "amount_base_units": 0}
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/payment-request/ln-username/": order}),
+        ):
+            with pytest.raises(ValueError, match="missing fields"):
+                mgr.purchase_ln_username("me@example.com", "alice", confirm=True)
+
+    def _order(self, amount_base_units, payment_id="pay1", expires_at="2030-01-01T00:00:00Z"):
+        return {
+            "payment_id": payment_id,
+            "address": VAULT_ADDR,
+            "amount_base_units": amount_base_units,
+            "asset_ticker": "L-BTC",
+            "amount": "0.00000777",
+            "expires_at": expires_at,
+        }
+
+    def test_confirm_funds_the_quoted_order(self, storage):
+        # The quote locks an order server-side; confirm must fund THAT order —
+        # no second payment request, no repriced amount.
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        fake_tx = MagicMock()
+        fake_tx.txid.return_value = "computed-txid"
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/payment-request/ln-username/": self._order(777)}),
+        ):
+            quote = mgr.purchase_ln_username("me@example.com", "alice")
+        assert quote["payment_id"] == "pay1"
+        assert mgr.load_session("me@example.com").pending_ln_purchase is not None
+
+        # The confirm route has NO payment-request mapping: any attempt to
+        # create a second order would fail the test.
+        route = _capturing_route({"/payment/submit-raw-tx/": {"status": "PENDING"}})
+        with (
+            patch("urllib.request.urlopen", side_effect=route),
+            patch("aqua.jan3_accounts.lwk.Transaction", return_value=fake_tx),
+        ):
+            out = mgr.purchase_ln_username("me@example.com", "alice", confirm=True)
+        assert out["confirmed"] is True
+        assert out["payment_id"] == "pay1"       # the quoted order was funded
+        assert out["amount_base_units"] == 777   # exactly the approved amount
+        wm.craft_raw_tx.assert_called_once()
+        assert wm.craft_raw_tx.call_args.kwargs["amount"] == 777
+        assert not any("/payment-request/" in u for u in route.calls)
+        # The quote is consumed once funded.
+        assert mgr.load_session("me@example.com").pending_ln_purchase is None
+
+    def test_confirm_raises_when_quote_expired(self, storage):
+        # An expired locked quote must not be silently repriced: fail loudly
+        # and spend nothing.
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({
+                "/payment-request/ln-username/": self._order(
+                    777, expires_at="2020-01-01T00:00:00Z"
+                ),
+            }),
+        ):
+            mgr.purchase_ln_username("me@example.com", "alice")
+        with pytest.raises(ValueError, match="quote expired"):
+            mgr.purchase_ln_username("me@example.com", "alice", confirm=True)
+        wm.craft_raw_tx.assert_not_called()
+
+    def test_confirm_for_different_username_ignores_pending(self, storage):
+        # A pending quote for another username must not be funded (its order
+        # would set THAT username): fall back to a fresh order.
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        fake_tx = MagicMock()
+        fake_tx.txid.return_value = "computed-txid"
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/payment-request/ln-username/": self._order(777)}),
+        ):
+            mgr.purchase_ln_username("me@example.com", "alice")
+
+        route = _capturing_route({
+            "/payment-request/ln-username/": self._order(888, payment_id="pay2"),
+            "/payment/submit-raw-tx/": {"status": "PENDING"},
+        })
+        with (
+            patch("urllib.request.urlopen", side_effect=route),
+            patch("aqua.jan3_accounts.lwk.Transaction", return_value=fake_tx),
+        ):
+            out = mgr.purchase_ln_username("me@example.com", "bobby", confirm=True)
+        assert out["payment_id"] == "pay2"
+        assert any("/payment-request/" in u for u in route.calls)
+
+    def test_confirm_without_quote_aborts_when_price_exceeds_approved(self, storage):
+        # Stateless path (no prior quote): the caller-approved ceiling bounds
+        # the spend. Nothing may be signed or submitted above it.
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        route = _capturing_route({"/payment-request/ln-username/": self._order(2000)})
+        with patch("urllib.request.urlopen", side_effect=route):
+            with pytest.raises(ValueError, match="Price changed"):
+                mgr.purchase_ln_username(
+                    "me@example.com",
+                    "alice",
+                    confirm=True,
+                    expected_amount_base_units=777,
+                )
+        wm.craft_raw_tx.assert_not_called()
+        assert not any("submit-raw-tx" in u for u in route.calls)
+
+    def test_confirm_without_quote_proceeds_when_price_within_approved(self, storage):
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        fake_tx = MagicMock()
+        fake_tx.txid.return_value = "computed-txid"
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=_route({
+                    "/payment-request/ln-username/": self._order(777),
+                    "/payment/submit-raw-tx/": {"status": "PENDING"},
+                }),
+            ),
+            patch("aqua.jan3_accounts.lwk.Transaction", return_value=fake_tx),
+        ):
+            out = mgr.purchase_ln_username(
+                "me@example.com",
+                "alice",
+                confirm=True,
+                expected_amount_base_units=1000,
+            )
+        assert out["confirmed"] is True
+        assert out["amount_base_units"] == 777
+        wm.craft_raw_tx.assert_called_once()
+
+    def test_quote_ignores_expected_amount(self, storage):
+        # The ceiling applies to the spending step only; a dry-run quote with
+        # a stale expectation must still return the fresh price, not raise.
+        mgr, wm = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_route({"/payment-request/ln-username/": self._order(2000)}),
+        ):
+            out = mgr.purchase_ln_username(
+                "me@example.com",
+                "alice",
+                confirm=False,
+                expected_amount_base_units=777,
+            )
+        assert out["requires_confirmation"] is True
+        assert out["amount_base_units"] == 2000
+        wm.craft_raw_tx.assert_not_called()
+
+    def test_invalid_username_raises_before_network(self, storage):
+        mgr, _ = _ln_manager(storage)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+        with pytest.raises(ValueError, match="Invalid ln_username"):
+            mgr.purchase_ln_username("me@example.com", "bad..name")
+
+
+
+# ---------------------------------------------------------------------------
+# Purchase + LNURL resolution linkage
+# ---------------------------------------------------------------------------
+
+
+def _lnurl_response(data: dict, final_url: str | None = None) -> MagicMock:
+    """urlopen response mock for LNURL-leg patches.
+
+    Distinct from ``_mock_response`` above because ``aqua.lnurl._http_get_json``
+    calls ``resp.geturl()`` to enforce the post-redirect https guard.
+    """
+    resp = MagicMock()
+    resp.read.return_value = json.dumps(data).encode()
+    resp.geturl.return_value = final_url or "https://example.com/x"
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+def _payreq(
+    *,
+    callback: str = "https://test.aqua.net/lnurlp/cb",
+    min_msat: int = 1_000,
+    max_msat: int = 100_000_000_000,
+    metadata: str = '[["text/plain","pay alice"]]',
+) -> dict:
+    return {
+        "tag": "payRequest",
+        "callback": callback,
+        "minSendable": min_msat,
+        "maxSendable": max_msat,
+        "metadata": metadata,
+    }
+
+
+class TestPurchaseThenResolve:
+    """End-to-end (mocked) linkage: buy a JAN3 LN username and resolve the
+    resulting ``<username>@<jan3-domain>`` Lightning Address via aqua.lnurl.
+
+    Proves our code wires the two halves together — that the bare
+    ``ln_username`` returned by ``purchase_ln_username`` composes cleanly
+    into a ``.well-known/lnurlp/`` lookup that yields a payable BOLT11.
+    """
+
+    LN_USERNAME = "alicebob"
+    LN_DOMAIN = "test.aqua.net"
+    AMOUNT_SATS = 100
+    INVOICE = "lnbc1u1ptest_jan3_invoice"
+
+    PR_RESPONSE = {
+        "payment_id": "11111111-1111-1111-1111-111111111111",
+        "status": "PENDING",
+        "product_type": "LN_USERNAME_UPDATE",
+        "asset_ticker": "L-BTC",
+        "amount_base_units": 1000,
+        "address": VAULT_ADDR,
+        "expires_at": "2026-06-16T01:00:00+00:00",
+    }
+    SUBMIT_RESPONSE = {**PR_RESPONSE, "status": "ACCEPTED"}
+
+    def _purchase(self, mgr: Jan3AccountsManager) -> dict:
+        """Drive ``purchase_ln_username`` with all HTTP + signing mocked."""
+        fake_tx = MagicMock()
+        fake_tx.txid.return_value = "computed-txid"
+        with (
+            patch.object(
+                Jan3AccountsClient,
+                "create_ln_username_payment_request",
+                return_value=self.PR_RESPONSE,
+            ),
+            patch.object(
+                Jan3AccountsClient,
+                "submit_raw_tx",
+                return_value=self.SUBMIT_RESPONSE,
+            ),
+            patch("aqua.jan3_accounts.lwk.Transaction", return_value=fake_tx),
+        ):
+            return mgr.purchase_ln_username(
+                email="me@example.com",
+                ln_username=self.LN_USERNAME,
+                wallet_name="default",
+                confirm=True,
+            )
+
+    def test_purchase_then_resolve_returns_invoice(self, storage):
+        """Happy path: buy username → resolve <user>@<domain> → BOLT11."""
+        mgr = _manager(storage, raw_tx="DEADBEEF" * 16)
+        _seed_session(mgr, "me@example.com", access=FUTURE_JWT)
+
+        purchase = self._purchase(mgr)
+        assert purchase["confirmed"] is True
+        assert purchase["ln_username"] == self.LN_USERNAME
+        address = f"{purchase['ln_username']}@{self.LN_DOMAIN}"
+
+        with (
+            patch("aqua.lnurl.urllib.request.urlopen") as mock_urlopen,
+            patch(
+                "aqua.lnurl.decode_bolt11_amount_sats",
+                return_value=self.AMOUNT_SATS,
+            ),
+        ):
+            mock_urlopen.side_effect = [
+                _lnurl_response(
+                    _payreq(),
+                    final_url=(
+                        f"https://{self.LN_DOMAIN}/.well-known/lnurlp/"
+                        f"{self.LN_USERNAME}"
+                    ),
+                ),
+                _lnurl_response({"pr": self.INVOICE}),
+            ]
+            invoice = resolve_lightning_address(address, self.AMOUNT_SATS)
+
+        assert invoice == self.INVOICE
+        first_req = mock_urlopen.call_args_list[0].args[0]
+        assert first_req.full_url == (
+            f"https://{self.LN_DOMAIN}/.well-known/lnurlp/{self.LN_USERNAME}"
+        )
+        second_req = mock_urlopen.call_args_list[1].args[0]
+        assert f"amount={self.AMOUNT_SATS * 1000}" in second_req.full_url

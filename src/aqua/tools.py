@@ -317,7 +317,7 @@ def lw_address(
 
     Args:
         wallet_name: Name of the wallet. Default: "default"
-        index: Specific address index. Default: next unused
+        index: Address index. If omitted, returns next unused address (read-only, idempotent).
 
     Returns:
         address: The Liquid address
@@ -325,7 +325,7 @@ def lw_address(
         qr_code_path: Path to a PNG QR of the address (or qr_error on failure)
     """
     manager = get_manager()
-    addr = manager.get_address(wallet_name, index)
+    addr = manager.peek_address(wallet_name, index)
     return _attach_deposit_qr(addr.to_dict(), "address")
 
 
@@ -2026,7 +2026,8 @@ def jan3_verify(
 
     Returns:
         email, logged_in, captcha_exempt (False for this free flow), message,
-        access_token_preview.
+        access_token_preview, and next_step — which cues you to offer the user
+        the Lightning Address opt-in (jan3_enable_lightning_address).
     """
     return get_jan3_manager().verify(
         email, otp_code, fingerprint=fingerprint, captcha_exempt=False
@@ -2081,7 +2082,9 @@ def jan3_login_complete(
 
     Returns:
         email, logged_in, captcha_exempt (True for this paid flow), message,
-        access_token_preview. Full tokens are NEVER echoed.
+        access_token_preview, and next_step — which cues you to offer the user
+        the Lightning Address opt-in (jan3_enable_lightning_address). Full tokens are
+        NEVER echoed.
     """
     return get_jan3_manager().verify(
         email, otp_code, fingerprint=fingerprint, captcha_exempt=True
@@ -2116,6 +2119,114 @@ def jan3_list_sessions() -> dict[str, Any]:
 def jan3_logout(email: str) -> dict[str, Any]:
     """Delete the persisted JAN3 session for `email`. Idempotent."""
     return get_jan3_manager().logout(email)
+
+
+def jan3_user_info(
+    email: str,
+    wallet_name: str = "default",
+) -> dict[str, Any]:
+    """Get the AQUA account profile for `email` (Lightning Address status included).
+
+    ``ln_username`` is the full Lightning Address verbatim from the backend.
+    Auto-tops-up the LN-address pool when active (result under ``ln_address_pool``).
+    The top-up derives Liquid addresses from the wallet descriptor, so no password
+    is needed even for a wallet encrypted at rest.
+
+    Args:
+        email: the JAN3 account email.
+        wallet_name: Liquid wallet whose addresses back the LN-address pool.
+    """
+    return get_jan3_manager().get_user(email, wallet_name=wallet_name)
+
+
+def jan3_enable_lightning_address(
+    email: str,
+    enabled: bool,
+    wallet_name: str = "default",
+) -> dict[str, Any]:
+    """Enable or disable the user's Lightning Address for `email`.
+
+    On enable, registers Liquid receive addresses and populates the pool
+    (result under ``ln_address_pool``). Addresses are derived from the wallet descriptor.
+
+    Args:
+        email: the JAN3 account email.
+        enabled: True to opt in (and populate the pool), False to opt out.
+        wallet_name: Liquid wallet whose addresses back the pool.
+    """
+    return get_jan3_manager().ln_address_toggle(
+        email, enabled, wallet_name=wallet_name
+    )
+
+
+def jan3_rebind_wallet(
+    email: str,
+    wallet_name: str = "default",
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Re-bind Lightning Address delivery to a different local wallet (DESTRUCTIVE).
+
+    Two-step: ``confirm=False`` returns a preview (``ln_username``, fingerprint diff,
+    ``warning``); ``confirm=True`` executes after user consent.
+
+    Args:
+        email: the JAN3 account email (identifies the account/session).
+        wallet_name: the local Liquid wallet to bind delivery to.
+        confirm: False (default) previews without mutating; True executes.
+    """
+    return get_jan3_manager().rebind_wallet(
+        email, wallet_name=wallet_name, confirm=confirm
+    )
+
+
+def jan3_ln_check_username(email: str, ln_username: str) -> dict[str, Any]:
+    """Check whether a Lightning username is free before buying it.
+
+    Args:
+        email: the JAN3 account email (session used to authenticate the check).
+        ln_username: the desired username (local part, before the @domain).
+    """
+    return get_jan3_manager().ln_username_available(email, ln_username)
+
+
+def jan3_purchase_ln_username(
+    email: str,
+    ln_username: str,
+    wallet_name: str = "default",
+    password: str | None = None,
+    asset: str = "L-BTC",
+    confirm: bool = False,
+    expected_amount_base_units: int | None = None,
+) -> dict[str, Any]:
+    """Purchase / update the Lightning username for a JAN3 account (on-chain).
+
+    Two-step so the user approves the price before any spend: ``confirm=False``
+    (default) locks in a quote without signing; ``confirm=True`` funds that exact
+    quoted order, erroring if it expired. Without a prior quote it creates and
+    funds a fresh order, bounded by ``expected_amount_base_units`` when given.
+
+    Args:
+        email: the JAN3 account email.
+        ln_username: the desired username (local part, before the @domain).
+        wallet_name: Liquid wallet used to fund the purchase.
+        password: decrypts the wallet mnemonic if encrypted at rest (confirm only).
+        asset: funding asset ticker — "L-BTC" or "USDt" (default L-BTC).
+        confirm: False previews the price; True pays.
+        expected_amount_base_units: ceiling on confirm=True when there's no prior quote.
+
+    Returns:
+        Quote (confirm=False): display_amount, amount_base_units, payment_id, expires_at.
+        Receipt (confirm=True): payment_id, status, txid.
+    """
+    return get_jan3_manager().purchase_ln_username(
+        email,
+        ln_username,
+        wallet_name=wallet_name,
+        password=password,
+        asset=asset,
+        confirm=confirm,
+        expected_amount_base_units=expected_amount_base_units,
+    )
 
 
 # Tool registry for MCP
@@ -2185,5 +2296,10 @@ TOOLS = {
     "jan3_session_info": jan3_session_info,
     "jan3_list_sessions": jan3_list_sessions,
     "jan3_logout": jan3_logout,
+    "jan3_user_info": jan3_user_info,
+    "jan3_enable_lightning_address": jan3_enable_lightning_address,
+    "jan3_rebind_wallet": jan3_rebind_wallet,
+    "jan3_ln_check_username": jan3_ln_check_username,
+    "jan3_purchase_ln_username": jan3_purchase_ln_username,
     "qr_decode": qr_decode,
 }

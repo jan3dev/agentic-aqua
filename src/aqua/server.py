@@ -132,7 +132,10 @@ TOOL_SCHEMAS = {
                 },
                 "index": {
                     "type": "integer",
-                    "description": "Specific address index (optional)",
+                    "description": (
+                        "If index is omitted, returns the next unused receive address (idempotent). "
+                        "Specifying an index gets the address at that index. "
+                    ),
                 },
             },
         },
@@ -1292,7 +1295,8 @@ TOOL_SCHEMAS = {
         "description": (
             "Verify the OTP emailed by jan3_login and persist the JAN3 session "
             "for that email (multi-account, 0o600). Ask the user for the 6-digit "
-            "code from their email."
+            "code from their email. The result's next_step cues you to offer the "
+            "user the Lightning Address opt-in (jan3_enable_lightning_address)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1349,7 +1353,9 @@ TOOL_SCHEMAS = {
         "description": (
             "Step 2 of the paid captchaless login. Exchanges the OTP for JWT "
             "tokens and saves the session to ~/.aqua/jan3/{email}.json (0o600). "
-            "Only token previews are echoed back — never the full tokens."
+            "Only token previews are echoed back — never the full tokens. The "
+            "result's next_step cues you to offer the user the Lightning Address "
+            "opt-in (jan3_enable_lightning_address)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1396,6 +1402,170 @@ TOOL_SCHEMAS = {
                 "email": {"type": "string", "format": "email"},
             },
             "required": ["email"],
+        },
+    },
+    "jan3_user_info": {
+        "description": (
+            "Get the AQUA account profile (email, ln_username, fingerprint, "
+            "feature flags). The ln_username field is the user's full Lightning "
+            "Address as returned by the backend — surface it verbatim, never "
+            "append a domain. Carries the LN-address state (ln_address_toggled, "
+            "new_addresses_needed, fingerprint). When LN-address is active this "
+            "auto-tops-up the unused-address pool (best-effort, under "
+            "ln_address_pool). Requires a prior JAN3 login for the email."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "format": "email"},
+                "wallet_name": {
+                    "type": "string",
+                    "default": "default",
+                    "description": "Liquid wallet whose addresses back the LN-address pool.",
+                },
+            },
+            "required": ["email"],
+        },
+    },
+    "jan3_enable_lightning_address": {
+        "description": (
+            "Enable or disable the user's Lightning Address. Ask the user first: "
+            "enabling means JAN3/AQUA delivers inbound Lightning payments to their "
+            "Lightning Address by handing out a batch of Liquid receive addresses "
+            "this tool registers (received BTC lands on those stored Liquid "
+            "addresses). On enable, the pool is populated immediately (best-effort, "
+            "under ln_address_pool). Requires a prior JAN3 login."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "format": "email"},
+                "enabled": {
+                    "type": "boolean",
+                    "description": "True to opt in (and populate the pool), False to opt out.",
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "default": "default",
+                    "description": "Liquid wallet whose addresses back the pool.",
+                },
+            },
+            "required": ["email", "enabled"],
+        },
+    },
+    "jan3_rebind_wallet": {
+        "description": (
+            "Re-bind the account's Lightning Address to a different local wallet "
+            "(the only path that passes override_fingerprint). DESTRUCTIVE: it "
+            "moves inbound Lightning delivery to wallet_name and stops delivery to "
+            "the previously-bound wallet. Use when the account is bound to a wallet "
+            "you no longer have (new seed, old JAN3 account) or to switch which "
+            "wallet receives funds. TWO-STEP HANDSHAKE — do NOT pass confirm=true "
+            "first: (1) call with confirm=false to get a non-mutating preview "
+            "(ln_username, current_fingerprint->new_fingerprint, warning), SHOW the "
+            "warning and get explicit user consent; (2) only then call with "
+            "confirm=true to execute. The ln_username shown is the Lightning Address "
+            "(a user@domain), it isn't the account login email, never substitute one for the other."
+            "already_bound=true means it was a no-op. Requires a prior JAN3 login."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "format": "email",
+                    "description": "JAN3 account email (identifies the account/session).",
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "default": "default",
+                    "description": "Local Liquid wallet to bind LN delivery to.",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "False previews without mutating; True executes "
+                    "the re-bind (override). Only set True after explicit user consent.",
+                },
+            },
+            "required": ["email"],
+        },
+    },
+    "jan3_ln_check_username": {
+        "description": (
+            "Check whether a Lightning username is free before buying it. Call "
+            "before jan3_purchase_ln_username to avoid paying for a username "
+            "that's already taken. Requires an active JAN3 session for the email."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "format": "email"},
+                "ln_username": {
+                    "type": "string",
+                    "description": "Desired username (the local part, before the @domain).",
+                },
+            },
+            "required": ["email", "ln_username"],
+        },
+    },
+    "jan3_purchase_ln_username": {
+        "description": (
+            "Purchase / update the Lightning username for a JAN3 account with an "
+            "on-chain payment (fund in L-BTC or USDt). TWO-STEP, do NOT pass "
+            "confirm=true first: (1) call with confirm=false (default) to get a "
+            "price quote WITHOUT spending — the server locks the price on that "
+            "order; it returns display_amount (already formatted for the user, "
+            "e.g. '2000 Sats' for L-BTC or '1.50 USDT' for USDt), "
+            "amount_base_units (technical), amount, asset_ticker, payment_id "
+            "and expires_at; SHOW display_amount to the user and get explicit "
+            "consent; (2) only then call with confirm=true — it funds exactly "
+            "the quoted order (same payment_id and amount) and errors if the "
+            "quote expired (re-quote and re-confirm). When telling the user "
+            "the price, use display_amount verbatim — never surface the raw "
+            "amount/amount_base_units. Check availability first with "
+            "jan3_ln_check_username. Requires an active JAN3 session (either flow)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "format": "email"},
+                "ln_username": {
+                    "type": "string",
+                    "description": "Desired username (the local part, before the @domain).",
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "default": "default",
+                    "description": "Liquid wallet used to fund the purchase.",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Decrypts the wallet mnemonic if encrypted at rest "
+                    "(only needed when confirm=true).",
+                },
+                "asset": {
+                    "type": "string",
+                    "default": "L-BTC",
+                    "enum": ["L-BTC", "USDt"],
+                    "description": "Funding asset — 'L-BTC' or 'USDt'. Ask the user "
+                    "which they prefer; the price is quoted in that asset.",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "False (default) returns a non-spending price "
+                    "quote; True funds the previously quoted order. Only set "
+                    "True after the user approves the quoted display_amount.",
+                },
+                "expected_amount_base_units": {
+                    "type": "integer",
+                    "description": "With confirm=true and no prior quote, the "
+                    "amount_base_units the user approved; the purchase aborts "
+                    "(nothing spent) if the current price exceeds it.",
+                },
+            },
+            "required": ["email", "ln_username"],
         },
     },
 }
