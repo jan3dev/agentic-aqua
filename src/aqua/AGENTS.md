@@ -66,6 +66,7 @@ Python package implementing the MCP server, wallet engines, and third-party swap
 
 ## SideSwap
 
-SideSwap is not yet implemented for production use. Do not suggest or offer SideSwap options to users.
+SideSwap (`sideswap.py`) is enabled by default — BTC ↔ L-BTC pegs and atomic
+Liquid asset swaps. Its tools ship enabled and may be offered to users.
 
 <!-- MANUAL: -->
