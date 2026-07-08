@@ -17,12 +17,17 @@ import logging
 import click
 
 from ..tools import (
+    jan3_enable_lightning_address,
     jan3_list_sessions,
+    jan3_ln_check_username,
     jan3_login,
     jan3_login_complete,
     jan3_login_start,
     jan3_logout,
+    jan3_purchase_ln_username,
+    jan3_rebind_wallet,
     jan3_session_info,
+    jan3_user_info,
     jan3_verify,
 )
 from .output import run_tool
@@ -138,3 +143,163 @@ def list_sessions(ctx):
 def logout(ctx, email):
     """Delete a persisted JAN3 session."""
     run_tool(ctx, lambda: jan3_logout(email))
+
+
+@jan3.command("user-info")
+@click.option("--email", required=True, help="JAN3 account email.")
+@click.option("--wallet-name", default="default", show_default=True)
+@click.pass_obj
+def user_info(ctx, email, wallet_name):
+    """Show the AQUA account profile + Lightning Address status.
+
+    When LN-address is active this also tops up the Liquid address pool
+    (best-effort, reported under `ln_address_pool`).
+    """
+    run_tool(ctx, lambda: jan3_user_info(email=email, wallet_name=wallet_name))
+
+
+@jan3.command("enable-lightning-address")
+@click.option("--email", required=True)
+@click.option(
+    "--enable/--disable", "enabled", required=True,
+    help="Enable or disable the Lightning Address.",
+)
+@click.option("--wallet-name", default="default", show_default=True)
+@click.pass_obj
+def enable_lightning_address(ctx, email, enabled, wallet_name):
+    """Enable/disable the Lightning Address.
+
+    Enabling populates a batch of Liquid receive addresses so AQUA can deliver
+    inbound Lightning payments to those addresses.
+    """
+    run_tool(
+        ctx,
+        lambda: jan3_enable_lightning_address(
+            email=email, enabled=enabled, wallet_name=wallet_name
+        ),
+    )
+
+
+@jan3.command("rebind-wallet")
+@click.option("--email", required=True, help="Your JAN3 account email (account/session).")
+@click.option(
+    "--wallet-name", default="default", show_default=True,
+    help="Local Liquid wallet to bind Lightning-Address delivery to.",
+)
+@click.option(
+    "--yes", "assume_yes", is_flag=True, default=False,
+    help="Skip the confirmation prompt (overwrites existing binding).",
+)
+@click.pass_obj
+def rebind_wallet(ctx, email, wallet_name, assume_yes):
+    """Re-bind Lightning Address delivery to --wallet-name (DESTRUCTIVE).
+
+    Previews the change first; asks for confirmation unless --yes is given.
+    Already-bound to this wallet is a no-op.
+    """
+    try:
+        preview = jan3_rebind_wallet(
+            email=email, wallet_name=wallet_name, confirm=False
+        )
+    except Exception as e:
+        raise click.UsageError(f"Could not read account/wallet state: {e}") from e
+
+    # No-op (already bound to this wallet): nothing to confirm — show the result.
+    if not preview.get("requires_confirmation"):
+        run_tool(ctx, lambda: preview)
+        return
+
+    if not assume_yes:
+        click.echo(preview.get("warning", ""), err=True)
+        click.confirm("Continue?", abort=True, err=True)
+
+    run_tool(
+        ctx,
+        lambda: jan3_rebind_wallet(
+            email=email, wallet_name=wallet_name, confirm=True
+        ),
+    )
+
+
+@jan3.command("ln-check-username")
+@click.option("--email", required=True)
+@click.option(
+    "--ln-username", required=True,
+    help="Desired username (local part, before the @domain).",
+)
+@click.pass_obj
+def ln_check_username(ctx, email, ln_username):
+    """Check whether a Lightning username is available before purchasing."""
+    run_tool(
+        ctx, lambda: jan3_ln_check_username(email=email, ln_username=ln_username)
+    )
+
+
+@jan3.command("purchase-ln-username")
+@click.option("--email", required=True)
+@click.option(
+    "--ln-username", required=True,
+    help="Desired username (local part, before the @domain).",
+)
+@click.option("--wallet-name", default="default", show_default=True)
+@click.option(
+    "--asset", default="L-BTC", show_default=True,
+    type=click.Choice(["L-BTC", "USDt"], case_sensitive=False),
+    help="Funding asset — L-BTC or USDt.",
+)
+@click.option(
+    "--yes", "assume_yes", is_flag=True, default=False,
+    help="Skip the price confirmation prompt.",
+)
+@click.option(
+    "--password-stdin", "password_stdin", is_flag=True, default=False, help=_PASSWORD_HELP
+)
+@click.pass_obj
+def purchase_ln_username(ctx, email, ln_username, wallet_name, asset, assume_yes, password_stdin):
+    """Buy / update the Lightning username with an on-chain payment (L-BTC or USDt).
+
+    Quotes the price and asks for confirmation; the payment then funds that
+    exact quoted order (aborting if it expired). --yes skips the quote and
+    accepts the current price.
+    """
+    expected_amount_base_units = None
+    if not assume_yes:
+        # 1) Non-spending price quote — the server locks the price on this order.
+        try:
+            quote = jan3_purchase_ln_username(
+                email=email,
+                ln_username=ln_username,
+                wallet_name=wallet_name,
+                asset=asset,
+                confirm=False,
+            )
+        except Exception as e:
+            raise click.UsageError(f"Could not fetch the price quote: {e}") from e
+
+        click.echo(
+            f"Lightning Address {ln_username!r} costs "
+            f"{quote.get('display_amount')} (quote expires {quote.get('expires_at')}).",
+            err=True,
+        )
+        click.confirm("Proceed with the payment?", abort=True, err=True)
+        expected_amount_base_units = quote.get("amount_base_units")
+
+    # 2) Confirmed — resolve the password and fund the purchase.
+    password = resolve_secret(
+        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+    )
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            jan3_purchase_ln_username,
+            {
+                "email": email,
+                "ln_username": ln_username,
+                "wallet_name": wallet_name,
+                "asset": asset,
+                "password": password,
+                "confirm": True,
+                "expected_amount_base_units": expected_amount_base_units,
+            },
+        ),
+    )

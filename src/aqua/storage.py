@@ -7,6 +7,8 @@ import os
 import re
 import shutil
 import sys
+import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +17,11 @@ from typing import Optional
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +65,10 @@ class WalletData:
     encrypted_mnemonic: Optional[str] = None  # Encrypted, if full wallet
     watch_only: bool = False
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    # Monotonically-increasing counter of handed-out receive addresses. Advances
+    # ahead of lwk's "next-unused" tip for off-chain handouts (LN-address pool,
+    # Boltz claims) so two flows never share an index.
+    next_address_index: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -68,9 +79,12 @@ class WalletData:
         data = {**data}
         data.setdefault("btc_descriptor", None)
         data.setdefault("btc_change_descriptor", None)
-        # Forward compatibility: drop unknown keys written by other branches
-        # (e.g. next_address_index from an in-flight PR) so this branch can
-        # still load the wallet file.
+        # Migrate the legacy ``ln_addr_next_index`` key so wallets keep their history.
+        legacy = data.pop("ln_addr_next_index", None)
+        if "next_address_index" not in data and legacy is not None:
+            data["next_address_index"] = legacy
+        data.setdefault("next_address_index", 0)
+        # Forward compatibility: drop unknown keys written by future branches.
         known = {f.name for f in fields(cls)}
         data = {k: v for k, v in data.items() if k in known}
         return cls(**data)
@@ -349,6 +363,47 @@ class Storage:
         """Get path to wallet file."""
         _validate_wallet_name(name)
         return self.wallets_dir / f"{name}.json"
+
+    @contextmanager
+    def wallet_lock(self, name: str, timeout_seconds: float = 30.0):
+        """Cross-process exclusive lock for read-modify-write of a wallet record.
+
+        ``save_wallet`` is a last-writer-wins overwrite, so counter-advancing
+        writers must load-and-save while holding this lock to avoid two
+        processes handing out the same index. Raises ``TimeoutError`` on timeout.
+        """
+        _validate_wallet_name(name)
+        lock_path = self.wallets_dir / f"{name}.lock"
+        # "a" creates the file if missing without ever truncating it.
+        fh = open(lock_path, "a")
+        try:
+            deadline = time.monotonic() + timeout_seconds
+            while True:
+                try:
+                    if sys.platform == "win32":
+                        fh.seek(0)
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"Could not lock wallet {name!r} within "
+                            f"{timeout_seconds:.0f}s — another aqua process "
+                            "is holding it."
+                        ) from None
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                if sys.platform == "win32":
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
 
     def wallet_exists(self, name: str) -> bool:
         """Check if wallet exists."""

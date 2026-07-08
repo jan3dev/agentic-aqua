@@ -1,5 +1,6 @@
 """Wallet management using LWK."""
 
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
@@ -7,6 +8,8 @@ import lwk
 
 from .assets import lookup_asset, resolve_asset_name
 from .storage import Storage, WalletData
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -209,14 +212,17 @@ class WalletManager:
         return self._wollets[wallet_name]
 
     def sync_wallet(self, wallet_name: str):
-        """Sync wallet with blockchain."""
+        """Sync wallet via full_scan_to_index(next_address_index + 1).
+
+        Covers off-chain handed-out addresses that lwk's default gap limit would miss.
+        """
         wallet = self.storage.load_wallet(wallet_name)
         if not wallet:
             raise ValueError(f"Wallet '{wallet_name}' not found")
 
         wollet = self._get_wollet(wallet_name)
         client = self._get_client(wallet.network)
-        update = client.full_scan(wollet)
+        update = client.full_scan_to_index(wollet, wallet.next_address_index + 1)
         if update:
             wollet.apply_update(update)
 
@@ -265,13 +271,137 @@ class WalletManager:
         wallet_name: str,
         index: Optional[int] = None,
     ) -> Address:
-        """Get receive address."""
+        """Get a receive address.
+
+        No-arg advances ``next_address_index`` (not idempotent). Explicit
+        ``index`` returns it without advancing; for display use :meth:`peek_address`.
+        """
+        if index is None:
+            # The load/derive/advance/save sequence lives once, in reserve_addresses.
+            return self.reserve_addresses(wallet_name, 1)[0]
         wollet = self._get_wollet(wallet_name)
         addr = wollet.address(index)
-        return Address(
-            address=str(addr.address()),
-            index=addr.index(),
-        )
+        return Address(address=str(addr.address()), index=addr.index())
+
+    def reserve_addresses(
+        self,
+        wallet_name: str,
+        count: int,
+    ) -> list[Address]:
+        """Hand out ``count`` fresh receive addresses, advancing the persisted counter in one save.
+
+        Batched equivalent of calling ``get_address`` ``count`` times.
+        """
+        if count <= 0:
+            raise ValueError("count must be positive")
+        wollet = self._get_wollet(wallet_name)
+        # Hold the cross-process lock so two writers can't hand out the same index.
+        with self.storage.wallet_lock(wallet_name):
+            wallet_record = self.storage.load_wallet(wallet_name)
+            if wallet_record is None:
+                raise ValueError(f"Wallet {wallet_name!r} not found")
+            lwk_tip = wollet.address(None).index()
+            start = max(lwk_tip, wallet_record.next_address_index)
+            addresses: list[Address] = []
+            for offset in range(count):
+                addr = wollet.address(start + offset)
+                addresses.append(
+                    Address(address=str(addr.address()), index=addr.index())
+                )
+            wallet_record.next_address_index = start + count
+            self.storage.save_wallet(wallet_record)
+        return addresses
+
+    def ensure_counter_covers(
+        self,
+        wallet_name: str,
+        addresses: list[str],
+    ) -> int:
+        """Bump ``next_address_index`` past any of ``addresses`` this wallet derives.
+
+        Best-effort repair for a reset counter (e.g. seed reimport) so the frontier
+        never re-hands out indices the server already delivered to.
+        """
+        targets = set(addresses)
+        wollet = self._get_wollet(wallet_name)
+        with self.storage.wallet_lock(wallet_name):
+            wallet_record = self.storage.load_wallet(wallet_name)
+            if wallet_record is None:
+                raise ValueError(f"Wallet {wallet_name!r} not found")
+            if not targets:
+                return wallet_record.next_address_index
+            lwk_tip = wollet.address(None).index()
+            frontier = max(lwk_tip, wallet_record.next_address_index)
+            # Server-side pool batches are capped, so matches sit within a modest window.
+            horizon = frontier + 100
+            max_matched = -1
+            for i in range(horizon):
+                if str(wollet.address(i).address()) in targets:
+                    max_matched = i
+            if max_matched + 1 > wallet_record.next_address_index:
+                logger.info(
+                    "Wallet %r: advancing next_address_index %d -> %d to cover "
+                    "server-known pool addresses (counter was behind, e.g. "
+                    "after a seed reimport).",
+                    wallet_name,
+                    wallet_record.next_address_index,
+                    max_matched + 1,
+                )
+                wallet_record.next_address_index = max_matched + 1
+                self.storage.save_wallet(wallet_record)
+            return wallet_record.next_address_index
+
+    def peek_address(
+        self,
+        wallet_name: str,
+        index: Optional[int] = None,
+    ) -> Address:
+        """Return a receive address for display without advancing the counter or writing to disk.
+
+        Without ``index``, returns the frontier (max of lwk tip and ``next_address_index``).
+        """
+
+        wollet = self._get_wollet(wallet_name)
+        if index is not None:
+            addr = wollet.address(index)
+            return Address(address=str(addr.address()), index=addr.index())
+        wallet_record = self.storage.load_wallet(wallet_name)
+        if wallet_record is None:
+            raise ValueError(f"Wallet {wallet_name!r} not found")
+        lwk_tip = wollet.address(None).index()
+        frontier = max(lwk_tip, wallet_record.next_address_index)
+        addr = wollet.address(frontier)
+        return Address(address=str(addr.address()), index=addr.index())
+
+    def fingerprint(
+        self,
+        wallet_name: str,
+        password: Optional[str] = None,
+    ) -> str:
+        """Return the BIP32 master fingerprint (8 hex chars) for ``wallet_name``.
+
+        Hot wallets: from the LWK signer. Watch-only: parsed from the
+        ``[fp/derivation]`` block in the descriptor.
+        """
+        if wallet_name in self._signers:
+            return self._signers[wallet_name].fingerprint()
+
+        # Decrypts and caches the signer in self._signers as a side effect.
+        wallet = self.load_wallet(wallet_name, password=password)
+        if wallet_name in self._signers:
+            return self._signers[wallet_name].fingerprint()
+
+        # Watch-only: best-effort parse of the [fp/derivation]xpub block.
+        from .bitcoin import _extract_xpub_metadata
+
+        meta = _extract_xpub_metadata(wallet.descriptor)
+        fp = meta.get("fingerprint")
+        if not fp:
+            raise ValueError(
+                f"Cannot determine fingerprint for watch-only wallet {wallet_name!r}: "
+                "descriptor has no [fingerprint/derivation] block."
+            )
+        return fp
 
     def get_transactions(
         self,

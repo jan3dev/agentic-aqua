@@ -32,8 +32,11 @@ import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional
+
+import lwk
 
 from .ankara import (
     ANKARA_API_URL,
@@ -60,13 +63,48 @@ PRODUCT_TYPE_CAPTCHALESS_LOGIN = "CAPTCHALESS_LOGIN"
 ASSET_TICKER_LBTC = "L-BTC"
 ASSET_TICKER_USDT = "USDt"
 
+# LN-username / LN-address endpoints (same Ankara host).
+LN_USERNAME_PAYMENT_REQUEST_PATH = "/api/v1/liquid-wallet/payment-request/ln-username/"
+SUBMIT_RAW_TX_PATH = "/api/v1/liquid-wallet/payment/submit-raw-tx/"
+
+# Server-side per-call cap on address registration; default pool size otherwise.
+MAX_ADDRESSES_PER_REGISTRATION = 15
+DEFAULT_LN_ADDRESS_POOL = 5
+
 # Minimal email syntax check — the server validates properly; this just
 # catches obvious mistakes before we make a network call.
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+# Mirrors aqua-ankara's LN_USERNAME_REGEX to fail fast before a network call.
+LN_USERNAME_REGEX = re.compile(r"^[a-z0-9]+(\.[a-z0-9]+)?$")
+
+
+def _format_display_amount(amount_base_units: int, asset_ticker: str) -> str:
+    """Render a human-facing price string for the agent to surface verbatim.
+
+    L-BTC is shown in Sats; other assets (e.g. USDt) as a 2-decimal fiat-style amount.
+    """
+    ticker = (asset_ticker or "").strip()
+    if ticker.upper() in ("L-BTC", "LBTC", "BTC"):
+        return f"{amount_base_units} Sats"
+    value = Decimal(amount_base_units) / Decimal(100_000_000)
+    unit = "USDT" if ticker.upper() == "USDT" else ticker
+    return f"{value:.2f} {unit}"
+
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _order_expired(iso_ts: Optional[str]) -> bool:
+    """True when an order's ISO ``expires_at`` is in the past (unparseable → False)."""
+    if not iso_ts:
+        return False
+    try:
+        dt = datetime.fromisoformat(str(iso_ts).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return dt <= datetime.now(UTC)
 
 
 def _token_preview(token: str) -> str:
@@ -87,6 +125,16 @@ def _validate_email(email: str) -> str:
     if not email or not _EMAIL_RE.match(email):
         raise ValueError(f"Invalid email address: {email!r}")
     return email.lower()
+
+
+def _validate_ln_username(username: str) -> str:
+    username = (username or "").strip().lower()
+    if not (4 <= len(username) <= 64) or not LN_USERNAME_REGEX.match(username):
+        raise ValueError(
+            f"Invalid ln_username {username!r}: must be 4–64 chars, "
+            "lowercase letters and digits, with at most one dot."
+        )
+    return username
 
 
 def _email_to_filename(email: str) -> str:
@@ -116,6 +164,16 @@ class Jan3Session:
     created_at: str
     refreshed_at: Optional[str] = None
     captcha_exempt: bool = False
+    # Locked quote from purchase_ln_username(confirm=False):
+    # {"ln_username", "payment_id", "address", "amount_base_units",
+    #  "asset_ticker", "amount", "expires_at"}. confirm=True funds THIS order
+    # instead of re-quoting; cleared once funded.
+    pending_ln_purchase: Optional[dict] = None
+    # LN-address batch whose registration POST failed with unknown outcome:
+    # {"wallet_name", "fingerprint", "addresses"}. Retried verbatim on the next
+    # registration instead of burning fresh indices (the server dedups
+    # re-uploads), cleared once a POST succeeds.
+    pending_ln_registration: Optional[dict] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -127,6 +185,8 @@ class Jan3Session:
         data = {k: v for k, v in data.items() if k in known}
         data.setdefault("refreshed_at", None)
         data.setdefault("captcha_exempt", False)
+        data.setdefault("pending_ln_purchase", None)
+        data.setdefault("pending_ln_registration", None)
         return cls(**data)
 
 
@@ -299,6 +359,72 @@ class Jan3AccountsClient:
         """
         client = Jan3AccountsClient(base_url=self.base_url, access_token=access_token)
         return client._api_request("POST", WAPUPAY_ACCOUNT_PATH, auth=True) or {}
+
+    # ─── LN-address / LN-username (authenticated) ──────────────────────
+
+    def get_user(self) -> dict:
+        """GET /api/v1/auth/user/ — the account profile (email, ln_username,
+        fingerprint, ln_address_toggled, new_addresses_needed, …)."""
+        return self._api_request("GET", f"{AUTH_BASE_PATH_V1}/user/", auth=True) or {}
+
+    def ln_address_toggle(self, enabled: bool) -> dict:
+        """POST /api/v1/auth/user/ln-address-toggle/ — opt in/out of LN-address delivery."""
+        return self._api_request(
+            "POST",
+            f"{AUTH_BASE_PATH_V1}/user/ln-address-toggle/",
+            body={"enabled": bool(enabled)},
+            auth=True,
+        ) or {}
+
+    def ln_username_available(self, username: str) -> dict:
+        """GET /api/v1/auth/user/ln-username/{u}/is-available — availability check.
+
+        The OpenAPI schema marks this anonymous, but the live deployment requires
+        a JWT — so we forward the bearer token whenever the client has one.
+        """
+        safe = urllib.parse.quote(username, safe="")
+        return self._api_request(
+            "GET",
+            f"{AUTH_BASE_PATH_V1}/user/ln-username/{safe}/is-available",
+            auth=bool(self.access_token),
+        ) or {}
+
+    def register_addresses(
+        self,
+        fingerprint: str,
+        addresses: list[str],
+        override_fingerprint: bool = False,
+    ) -> dict:
+        """POST /api/v1/auth/user/addresses/ — upload unused Liquid receive addresses.
+
+        ``override_fingerprint=true`` (query string) re-binds the account to this
+        wallet's fingerprint and flips ``ln_address_toggled`` back to true.
+        """
+        return self._api_request(
+            "POST",
+            f"{AUTH_BASE_PATH_V1}/user/addresses/",
+            body={"fingerprint": fingerprint, "addresses": list(addresses)},
+            query={"override_fingerprint": "true"} if override_fingerprint else None,
+            auth=True,
+        ) or {}
+
+    def create_ln_username_payment_request(self, asset: str, ln_username: str) -> dict:
+        """POST …/payment-request/ln-username/ — create an LN_USERNAME_UPDATE order."""
+        return self._api_request(
+            "POST",
+            LN_USERNAME_PAYMENT_REQUEST_PATH,
+            body={"asset": asset, "ln_username": ln_username},
+            auth=True,
+        ) or {}
+
+    def submit_raw_tx(self, payment_id: str, raw_tx: str) -> dict:
+        """POST …/payment/submit-raw-tx/ — submit the signed funding tx for an order."""
+        return self._api_request(
+            "POST",
+            SUBMIT_RAW_TX_PATH,
+            body={"payment_id": payment_id, "raw_tx": raw_tx},
+            auth=True,
+        ) or {}
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +626,14 @@ class Jan3AccountsManager:
                 "You can now make authenticated calls."
             ),
             "access_token_preview": _token_preview(access),
+            "next_step": (
+                "Ask the user if they want to activate their Lightning Address. "
+                "If yes, call jan3_enable_lightning_address(email, enabled=true) — this "
+                "stores a batch of Liquid receive addresses so JAN3/AQUA can "
+                "deliver inbound Lightning payments to them. A Lightning Address is assigned "
+                "automatically to the account, run jan3_user_info to check it. The user can change "
+                "it's username (LN Address) through jan3_purchase_ln_username."
+            ),
         }
 
     def logout(self, email: str) -> dict:
@@ -636,3 +770,521 @@ class Jan3AccountsManager:
                 "AQUA backend did not return a WapuPay API key (token missing)."
             )
         return str(token).strip()
+
+    # ─── LN address / LN username ──────────────────────────────────────
+
+    def _authed_client(self, access_token: str) -> Jan3AccountsClient:
+        """Build a stateless client bound to ``access_token`` for one authed call."""
+        return Jan3AccountsClient(base_url=self.base_url, access_token=access_token)
+
+    def get_user(
+        self,
+        email: str,
+        wallet_name: str = "default",
+    ) -> dict:
+        """Fetch the AQUA account profile for ``email``.
+
+        Auto-tops-up the LN-address pool when active (result under
+        ``ln_address_pool``); never fails the profile read on pool errors.
+        """
+        email = _validate_email(email)
+        profile = self._with_auth_retry(
+            email, lambda access: self._authed_client(access).get_user()
+        )
+        result = dict(profile)
+        result["ln_address_pool"] = self._auto_ensure_ln_pool(
+            email, wallet_name=wallet_name, profile=profile
+        )
+        return result
+
+    def ln_address_toggle(
+        self,
+        email: str,
+        enabled: bool,
+        wallet_name: str = "default",
+    ) -> dict:
+        """Enable or disable the LN-address feature for ``email``.
+
+        On enable, populates the address pool immediately (best-effort, under
+        ``ln_address_pool``).
+        """
+        email = _validate_email(email)
+        resp = self._with_auth_retry(
+            email,
+            lambda access: self._authed_client(access).ln_address_toggle(bool(enabled)),
+        )
+        out: dict[str, Any] = {"email": email, "enabled": bool(enabled), "result": resp}
+        if enabled:
+            out["ln_address_pool"] = self._auto_ensure_ln_pool(
+                email, wallet_name=wallet_name, profile=None
+            )
+        return out
+
+    def ln_username_available(self, email: str, username: str) -> dict:
+        """Check whether an LN username is free to claim (authenticated).
+
+        Call before ``purchase_ln_username`` to avoid paying for a username
+        that's already taken.
+        """
+        email = _validate_email(email)
+        username = (username or "").strip().lower()
+        if not username:
+            raise ValueError("ln_username is required")
+        return self._with_auth_retry(
+            email,
+            lambda access: self._authed_client(access).ln_username_available(username),
+        )
+
+    def register_ln_addresses(
+        self,
+        email: str,
+        wallet_name: str = "default",
+        count: Optional[int] = None,
+        override_fingerprint: bool = False,
+        profile: Optional[dict] = None,
+    ) -> dict:
+        """Mint ``count`` unused Liquid receive addresses and POST to /auth/user/addresses/.
+
+        Internal — not an MCP tool. A previously failed POST's batch is re-uploaded
+        verbatim (``count`` ignored) so retries never mint additional indices.
+        """
+        email = _validate_email(email)
+        user = (
+            profile
+            if profile is not None
+            else self._with_auth_retry(
+                email, lambda access: self._authed_client(access).get_user()
+            )
+        )
+        if not user.get("ln_username"):
+            raise ValueError(
+                "This account has no LN username yet — run "
+                "jan3_purchase_ln_username first."
+            )
+        if not user.get("ln_address_toggled") and not override_fingerprint:
+            raise ValueError(
+                "LN address is currently disabled — call "
+                "jan3_enable_lightning_address(enabled=true) first, or pass "
+                "override_fingerprint=true to re-enable it as part of this call."
+            )
+
+        server_fp = user.get("fingerprint")
+        local_fp = self.wallet_manager.fingerprint(wallet_name)
+        if server_fp and server_fp != local_fp and not override_fingerprint:
+            raise ValueError(
+                f"Wallet fingerprint mismatch: account is bound to {server_fp!r}, "
+                f"this wallet is {local_fp!r}. Pass override_fingerprint=true to "
+                "re-bind (this also disables LN delivery for the previously-bound "
+                "wallet)."
+            )
+
+        if count is None:
+            needed = user.get("new_addresses_needed") or 0
+            count = needed if needed > 0 else DEFAULT_LN_ADDRESS_POOL
+        if count <= 0:
+            raise ValueError("count must be positive")
+        if count > MAX_ADDRESSES_PER_REGISTRATION:
+            raise ValueError(
+                f"count cannot exceed {MAX_ADDRESSES_PER_REGISTRATION} "
+                "(server-side per-call limit)"
+            )
+
+        # Re-upload a batch left pending by a previous failed POST (the server dedups).
+        session = self.load_session(email)
+        pending = session.pending_ln_registration if session else None
+        if (
+            pending
+            and pending.get("addresses")
+            and pending.get("wallet_name") == wallet_name
+            and pending.get("fingerprint") == local_fp
+        ):
+            addresses = list(pending["addresses"])
+        else:
+            addresses = [
+                a.address
+                for a in self.wallet_manager.reserve_addresses(wallet_name, count)
+            ]
+            if session is not None:
+                # Persist before the POST so a failed/unknown outcome retries verbatim.
+                session.pending_ln_registration = {
+                    "wallet_name": wallet_name,
+                    "fingerprint": local_fp,
+                    "addresses": addresses,
+                }
+                self.save_session(session)
+
+        resp = self._with_auth_retry(
+            email,
+            lambda access: self._authed_client(access).register_addresses(
+                local_fp, addresses, override_fingerprint=override_fingerprint
+            ),
+        )
+
+        # Clear the pending batch; re-load since the POST may have rewritten the session.
+        session = self.load_session(email)
+        if session is not None and session.pending_ln_registration is not None:
+            session.pending_ln_registration = None
+            self.save_session(session)
+
+        # Advance past pool addresses we didn't just upload (e.g. post-reimport).
+        pool = resp.get("addresses", []) or []
+        posted = set(addresses)
+        unknown = [a for a in pool if a not in posted]
+        if unknown:
+            try:
+                self.wallet_manager.ensure_counter_covers(wallet_name, unknown)
+            except Exception as e:  # best-effort repair; registration succeeded
+                logger.warning(
+                    "LN-pool counter reconciliation skipped for wallet %r: %s",
+                    wallet_name,
+                    e,
+                )
+
+        return {
+            "requested_count": len(addresses),
+            "pool_size": len(pool),
+            "fingerprint": local_fp,
+            "addresses": pool,
+        }
+
+    def ensure_ln_pool(
+        self,
+        email: str,
+        wallet_name: str = "default",
+        profile: Optional[dict] = None,
+    ) -> dict:
+        """Idempotent LN-address pool top-up (internal — NOT an MCP tool).
+
+        POSTs only when ``new_addresses_needed > 0``; returns a skip dict
+        (``{refilled: False, reason: …}``) for policy non-starters. Never raises.
+        """
+        email = _validate_email(email)
+
+        def _skip(reason: str, **extra) -> dict:
+            return {"refilled": False, "reason": reason, **extra}
+
+        user = (
+            profile
+            if profile is not None
+            else self._with_auth_retry(
+                email, lambda access: self._authed_client(access).get_user()
+            )
+        )
+        if not user.get("ln_username"):
+            return _skip("no_ln_username", fingerprint=user.get("fingerprint"))
+        if not user.get("ln_address_toggled"):
+            return _skip("ln_address_disabled", fingerprint=user.get("fingerprint"))
+        needed = user.get("new_addresses_needed") or 0
+        if needed <= 0:
+            return _skip(
+                "pool_full", fingerprint=user.get("fingerprint"), new_addresses_needed=0
+            )
+
+        server_fp = user.get("fingerprint")
+        try:
+            local_fp = self.wallet_manager.fingerprint(wallet_name)
+        except ValueError as e:
+            # Distinct from auto_topup_unavailable: this is permanent, not transient.
+            return _skip(
+                "wallet_fingerprint_unavailable",
+                message=(
+                    f"The pool was NOT topped up: wallet {wallet_name!r} cannot "
+                    f"produce a fingerprint ({e}). This is permanent for this "
+                    "wallet — re-import it from its mnemonic, or from a "
+                    "descriptor that includes the [fingerprint/derivation] "
+                    "key-origin block, then retry."
+                ),
+            )
+        if server_fp and server_fp != local_fp:
+            return _skip(
+                "fingerprint_mismatch",
+                server_fingerprint=server_fp,
+                local_fingerprint=local_fp,
+                message=(
+                    f"The pool was NOT topped up: this account delivers Lightning "
+                    f"payments to the wallet bound to fingerprint {server_fp!r}, "
+                    f"but wallet {wallet_name!r} is {local_fp!r}. Retry with the "
+                    "wallet that matches the bound fingerprint, or re-bind delivery "
+                    "to this wallet with jan3_rebind_wallet (this stops delivery to "
+                    "the previously-bound wallet)."
+                ),
+            )
+
+        result = self.register_ln_addresses(
+            email,
+            wallet_name=wallet_name,
+            count=min(needed, MAX_ADDRESSES_PER_REGISTRATION),
+            profile=user,
+        )
+        return {
+            "refilled": True,
+            "requested_count": result["requested_count"],
+            "pool_size": result["pool_size"],
+            "fingerprint": result["fingerprint"],
+        }
+
+    def _auto_ensure_ln_pool(
+        self,
+        email: str,
+        wallet_name: str,
+        profile: Optional[dict] = None,
+    ) -> dict:
+        """Best-effort wrapper around :meth:`ensure_ln_pool` (auto paths only).
+
+        Called by :meth:`get_user` and :meth:`ln_address_toggle` on enable.
+        Never raises — errors become a skip dict so the caller is never broken.
+        """
+        try:
+            return self.ensure_ln_pool(
+                email, wallet_name=wallet_name, profile=profile
+            )
+        except Exception as e:  # noqa: BLE001 — auto path must never break its caller
+            logger.warning("Auto LN-address pool top-up skipped for %s: %s", email, e)
+            return {
+                "refilled": False,
+                "reason": "auto_topup_unavailable",
+                "detail": str(e),
+            }
+
+    def rebind_wallet(
+        self,
+        email: str,
+        wallet_name: str = "default",
+        confirm: bool = False,
+    ) -> dict:
+        """Re-bind Lightning Address delivery to ``wallet_name`` via override_fingerprint.
+
+        Two-step handshake: ``confirm=False`` returns a non-mutating preview.
+        * **first bind** — the account has no wallet bound yet (``fingerprint``
+          empty on the profile). Binds ``wallet_name``; not destructive.
+        * **already bound** — the account is already bound to this exact wallet
+          (server fingerprint == this wallet's). A no-op; best-effort pool
+          top-up via the normal (non-override) path. No confirmation needed.
+        * **re-bind** — the account is bound to a *different* wallet. Destructive:
+          the previously-bound wallet stops receiving inbound Lightning. Requires
+          explicit confirmation.
+        """
+        email = _validate_email(email)
+        profile = self._with_auth_retry(
+            email, lambda access: self._authed_client(access).get_user()
+        )
+        ln_username = profile.get("ln_username")
+        if not ln_username:
+            raise ValueError(
+                "This account has no LN username yet — run "
+                "jan3_purchase_ln_username first."
+            )
+
+        server_fp = profile.get("fingerprint")
+        local_fp = self.wallet_manager.fingerprint(wallet_name)
+
+        # Already bound: no-op, but keep the pool healthy via the non-override path.
+        if server_fp and server_fp == local_fp:
+            pool = self._auto_ensure_ln_pool(
+                email, wallet_name=wallet_name, profile=profile
+            )
+            return {
+                "email": email,
+                "ln_username": ln_username,
+                "wallet_name": wallet_name,
+                "fingerprint": local_fp,
+                "already_bound": True,
+                "requires_confirmation": False,
+                "rebound": False,
+                "ln_address_pool": pool,
+            }
+
+        state = "first_bind" if not server_fp else "rebind"
+        if state == "first_bind":
+            warning = (
+                f"This binds your Lightning Address {ln_username} to wallet "
+                f"{wallet_name!r} [{local_fp}]. No wallet was previously bound, "
+                "so nothing stops receiving."
+            )
+        else:
+            warning = (
+                f"Re-binding your Lightning Address {ln_username} to wallet "
+                f"{wallet_name!r} [{local_fp}] moves inbound Lightning delivery "
+                f"away from the currently-bound wallet [{server_fp}], which will "
+                "stop receiving. This is destructive."
+            )
+
+        info = {
+            "email": email,
+            "ln_username": ln_username,
+            "wallet_name": wallet_name,
+            "state": state,
+            "current_fingerprint": server_fp,
+            "new_fingerprint": local_fp,
+        }
+        if not confirm:
+            return {**info, "requires_confirmation": True, "rebound": False, "warning": warning}
+
+        result = self.register_ln_addresses(
+            email,
+            wallet_name=wallet_name,
+            override_fingerprint=True,
+            profile=profile,
+        )
+        return {
+            **info,
+            "rebound": True,
+            "requires_confirmation": False,
+            "requested_count": result["requested_count"],
+            "pool_size": result["pool_size"],
+            "fingerprint": result["fingerprint"],
+        }
+
+    def purchase_ln_username(
+        self,
+        email: str,
+        ln_username: str,
+        wallet_name: str = "default",
+        password: Optional[str] = None,
+        asset: str = ASSET_TICKER_LBTC,
+        confirm: bool = False,
+        expected_amount_base_units: Optional[int] = None,
+    ) -> dict:
+        """Buy / update the Lightning username for ``email`` (on-chain payment).
+
+        Two-step to avoid spending without consent: ``confirm=False`` (default)
+        locks in a price quote without signing/broadcasting; ``confirm=True`` funds
+        that exact quoted order (rejecting it if expired or altered). Without a
+        prior matching quote it creates and funds a fresh order in one go, bounded
+        by ``expected_amount_base_units``.
+        """
+        email = _validate_email(email)
+        ln_username = _validate_ln_username(ln_username)
+
+        def _parse_order(order: dict) -> dict:
+            payment_id = order.get("payment_id")
+            address = order.get("address")
+            amount_base_units = int(order.get("amount_base_units") or 0)
+            if not payment_id or not address or amount_base_units <= 0:
+                raise ValueError(
+                    "AQUA payment-request response is missing fields "
+                    f"(payment_id/address/amount): {order!r}"
+                )
+            return {
+                "payment_id": payment_id,
+                "address": address,
+                "amount_base_units": amount_base_units,
+                "asset_ticker": order.get("asset_ticker") or asset,
+                "amount": order.get("amount"),
+                "expires_at": order.get("expires_at"),
+            }
+
+        def _create_order() -> dict:
+            # The backend expires any previous pending LN_USERNAME order for this user.
+            return _parse_order(
+                self._with_auth_retry(
+                    email,
+                    lambda access: self._authed_client(
+                        access
+                    ).create_ln_username_payment_request(asset, ln_username),
+                )
+            )
+
+        if not confirm:
+            # Dry-run quote: no signing/broadcast; caller re-calls with confirm=True.
+            fields = _create_order()
+            display_amount = _format_display_amount(
+                fields["amount_base_units"], fields["asset_ticker"]
+            )
+            session = self.load_session(email)
+            if session is not None:
+                session.pending_ln_purchase = {"ln_username": ln_username, **fields}
+                self.save_session(session)
+            return {
+                "requires_confirmation": True,
+                "confirmed": False,
+                "ln_username": ln_username,
+                **fields,
+                "display_amount": display_amount,
+                "message": (
+                    f"Purchasing the Lightning Address {ln_username!r} costs "
+                    f"{display_amount} (quote locked until "
+                    f"{fields['expires_at']}). Show this to the user; on their "
+                    "approval re-call with confirm=true to pay exactly this."
+                ),
+            }
+
+        # confirm=True — prefer funding the order quoted in step 1.
+        session = self.load_session(email)
+        pending = session.pending_ln_purchase if session else None
+        fields = None
+        if (
+            pending
+            and pending.get("ln_username") == ln_username
+            and (pending.get("asset_ticker") or "").strip().upper()
+            == (asset or "").strip().upper()
+        ):
+            if _order_expired(pending.get("expires_at")):
+                raise ValueError(
+                    f"The approved quote expired at {pending['expires_at']!r}. "
+                    "Nothing was signed or spent — re-quote with confirm=false "
+                    "and show the new price to the user."
+                )
+            fields = {k: v for k, v in pending.items() if k != "ln_username"}
+
+        if fields is None:
+            # No matching quote (--yes / stateless path): create and fund in one go.
+            fields = _create_order()
+
+        if (
+            expected_amount_base_units is not None
+            and fields["amount_base_units"] > int(expected_amount_base_units)
+        ):
+            expected_display = _format_display_amount(
+                int(expected_amount_base_units), fields["asset_ticker"]
+            )
+            current_display = _format_display_amount(
+                fields["amount_base_units"], fields["asset_ticker"]
+            )
+            raise ValueError(
+                f"Price changed: the approved quote was {expected_display} but "
+                f"the current price is {current_display}. Nothing was signed "
+                "or spent. Show the new price to the user and, on their "
+                "approval, re-call with confirm=true and the updated "
+                f"expected_amount_base_units={fields['amount_base_units']}."
+            )
+
+        display_amount = _format_display_amount(
+            fields["amount_base_units"], fields["asset_ticker"]
+        )
+        asset_id = self._resolve_asset_id(wallet_name, fields["asset_ticker"])
+        raw_tx = self.wallet_manager.craft_raw_tx(
+            wallet_name=wallet_name,
+            address=fields["address"],
+            amount=fields["amount_base_units"],
+            asset_id=asset_id,
+            password=password,
+        )
+        # The API response omits the txid; compute it locally from the finalized raw tx.
+        txid = str(lwk.Transaction(raw_tx).txid())
+
+        result = self._with_auth_retry(
+            email,
+            lambda access: self._authed_client(access).submit_raw_tx(
+                payment_id=fields["payment_id"], raw_tx=raw_tx
+            ),
+        )
+
+        # Funded — consume the quote; re-load since the submit may have rewritten the session.
+        session = self.load_session(email)
+        if session is not None and session.pending_ln_purchase is not None:
+            session.pending_ln_purchase = None
+            self.save_session(session)
+
+        return {
+            "confirmed": True,
+            "status": result.get("status"),
+            "txid": txid,
+            "ln_username": ln_username,
+            **fields,
+            "display_amount": display_amount,
+            "message": (
+                f"Submitted raw_tx for {ln_username!r} ({display_amount}). "
+                f"Server reports {result.get('status', 'UNKNOWN')}."
+            ),
+        }
