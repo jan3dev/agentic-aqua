@@ -1986,6 +1986,33 @@ def qr_decode(image_path: str) -> dict[str, Any]:
     return {"content": content}
 
 
+def doctor(fix: bool = False) -> dict[str, Any]:
+    """Diagnose (and optionally repair) the AQUA config file (~/.aqua/config.json).
+
+    Reports orphaned/unknown tool keys (the source of the startup 'Unknown tool
+    in enabled_tools' warnings), entries that match the shipped default (prunable
+    to keep the config sparse), and unknown top-level keys that would break config
+    loading. Read-only by default.
+
+    Args:
+        fix: when True, apply the repairs (remove orphan keys, prune
+            default-matching entries, drop unknown top-level keys). Default
+            False = diagnose only.
+
+    Returns:
+        A report dict: config_path, healthy, fix_applied, findings, summary.
+    """
+    # Imported lazily: `aqua.doctor` imports `features`, which imports this
+    # module — a function-level import keeps that cycle from forming at load.
+    from .doctor import run_doctor
+
+    # Defensive: a non-compliant MCP client may pass `fix` as a string. Only a
+    # genuine truthy boolean (or "true"/"1"/"yes") should trigger the write.
+    if isinstance(fix, str):
+        fix = fix.strip().lower() in ("true", "1", "yes")
+    return run_doctor(fix=bool(fix))
+
+
 # ---------------------------------------------------------------------------
 # JAN3 account management (multi-account login + sessions + paid captchaless login)
 # ---------------------------------------------------------------------------
@@ -2302,4 +2329,5 @@ TOOLS = {
     "jan3_ln_check_username": jan3_ln_check_username,
     "jan3_purchase_ln_username": jan3_purchase_ln_username,
     "qr_decode": qr_decode,
+    "doctor": doctor,
 }

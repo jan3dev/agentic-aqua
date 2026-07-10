@@ -127,6 +127,9 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     # qr group (cli/qr.py)
     ("qr", "decode"): "qr_decode",
 
+    # Top-level diagnostic (cli/doctor.py) — always registered, gated only for MCP.
+    ("", "doctor"): "doctor",
+
     # jan3 group (cli/jan3.py) — JAN3 account login + sessions + Lightning Address
     ("jan3", "login"): "jan3_login",
     ("jan3", "verify"): "jan3_verify",
@@ -169,7 +172,8 @@ def _merge_with_defaults(
     """Merge shipped defaults into `loaded`, preserving user's overrides.
 
     Returns `(merged, changed)`. `changed` is True if any default keys were
-    inserted (so the caller can persist the file).
+    inserted. The merge is in-memory only; `load_config_with_merge` no longer
+    persists it (see that function's docstring).
     """
     merged = dict(loaded)
     changed = False
@@ -181,31 +185,48 @@ def _merge_with_defaults(
 
 
 def load_config_with_merge(storage: Storage | None = None) -> Config:
-    """Load config, merge shipped defaults, warn on unknown keys, persist if changed.
+    """Load config and merge shipped defaults IN MEMORY. Read-only — never writes.
 
-    - On first install (no config file): writes one with shipped defaults.
-    - On upgrade (config exists, lacks `enabled_tools` entries for new tools):
-      adds them and re-saves atomically.
-    - Unknown keys in `enabled_tools` (not in `TOOLS`): warned and otherwise
-      ignored (kept in the saved file so the user can fix the typo).
+    Startup is non-invasive: the shipped defaults are merged into the returned
+    `Config` so callers see a fully-populated `enabled_tools` for gating, but
+    `config.json` is left untouched on disk. A tool key absent from the file
+    means "use the shipped default" (see `is_tool_enabled`), so new versions can
+    change a default without clobbering the user's explicit choices, and the
+    file is never re-polluted with defaults on every run.
+
+    `doctor` (CLI `aqua doctor --fix`, MCP tool `doctor`) is the only code path
+    that rewrites `config.json`. Unknown keys (typos, removed tools) are warned
+    with a pointer to it — they are no longer silently persisted.
     """
     if storage is None:
         storage = Storage()
-    config_existed = storage.config_path.exists()
-    config = storage.load_config()
 
-    # Warn on unknown keys (typos, removed tools).
+    # Startup must never crash on a broken config file — otherwise `aqua doctor`
+    # (the tool that repairs it) could not run either. A corrupt/unreadable file
+    # degrades to in-memory defaults (read-only, so nothing is overwritten) with
+    # a pointer to `doctor`, which reads the raw JSON and reports the problem.
+    try:
+        config = storage.load_config()
+    except (OSError, ValueError) as exc:  # ValueError ⊇ json.JSONDecodeError
+        logger.warning(
+            "Could not read %s (%s). Using defaults for this run; "
+            "run `aqua doctor` to inspect and repair it.",
+            storage.config_path,
+            exc,
+        )
+        config = Config()
+
+    # Warn on unknown keys (typos, removed tools). One line per key, each
+    # pointing at `doctor` so the user can clean them all up at once.
     for key in config.enabled_tools:
         if key not in TOOLS:
             logger.warning(
                 "Unknown tool in enabled_tools: %r (ignored). "
-                "Remove it from %s to silence this warning.",
+                "Run `aqua doctor --fix` to clean it up, or remove it from %s.",
                 key,
                 storage.config_path,
             )
 
-    merged, changed = _merge_with_defaults(config.enabled_tools)
+    merged, _ = _merge_with_defaults(config.enabled_tools)
     config.enabled_tools = merged
-    if changed or not config_existed:
-        storage.save_config(config)
     return config

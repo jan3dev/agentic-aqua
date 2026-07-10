@@ -126,6 +126,20 @@ class Config:
                     v,
                 )
         data["enabled_tools"] = coerced
+        # Forward/backward compatibility: drop unknown top-level keys instead of
+        # crashing on `cls(**data)` (mirrors WalletData.from_dict). A stray key
+        # — from a newer release, a removed field, or a typo — must not make the
+        # CLI/MCP (including `aqua doctor` itself) unusable. The key is only
+        # dropped in memory here; `aqua doctor --fix` removes it from disk.
+        known = {f.name for f in fields(cls)}
+        for key in data:
+            if key not in known:
+                logger.warning(
+                    "Unknown config key %r (ignored). "
+                    "Run `aqua doctor --fix` to clean it up.",
+                    key,
+                )
+        data = {k: v for k, v in data.items() if k in known}
         return cls(**data)
 
 
@@ -353,6 +367,16 @@ class Storage:
 
     def save_config(self, config: Config):
         self._atomic_write_json(self.config_path, config.to_dict())
+
+    def save_raw_config(self, data: dict) -> None:
+        """Persist an already-shaped raw config dict atomically (0o600).
+
+        Unlike `save_config`, this does NOT round-trip through `Config`, so the
+        `doctor` tool can rewrite a config file that `Config.from_dict` would
+        reject (e.g. one carrying an unknown top-level key) and can preserve
+        entries verbatim instead of coercing them.
+        """
+        self._atomic_write_json(self.config_path, data)
 
     # Wallet operations
 

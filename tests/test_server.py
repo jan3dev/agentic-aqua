@@ -74,6 +74,24 @@ def test_get_prompt_unknown_raises(prompt_handler):
         _call(prompt_handler, "nonexistent_prompt", None)
 
 
+def test_tool_schemas_match_tools_registry():
+    """Drift guard: every TOOLS entry has a TOOL_SCHEMAS entry and vice versa.
+
+    A tool in TOOLS without a schema would be silently unavailable over MCP
+    (list_tools iterates TOOL_SCHEMAS); a schema without a TOOLS entry would be
+    listed but uncallable.
+    """
+    from aqua.server import TOOL_SCHEMAS
+    from aqua.tools import TOOLS
+
+    assert set(TOOL_SCHEMAS) == set(TOOLS), (
+        "missing schemas: "
+        + str(set(TOOLS) - set(TOOL_SCHEMAS))
+        + "; schemas without a tool: "
+        + str(set(TOOL_SCHEMAS) - set(TOOLS))
+    )
+
+
 def test_lightning_send_schema_includes_amount_sats():
     """lightning_send tool schema exposes amount_sats and mentions Lightning Address."""
     from aqua.server import TOOL_SCHEMAS

@@ -1236,6 +1236,7 @@ class TestToolRegistry:
             "jan3_rebind_wallet",
             "jan3_ln_check_username",
             "jan3_purchase_ln_username",
+            "doctor",
         }
         assert set(TOOLS.keys()) == expected
 
