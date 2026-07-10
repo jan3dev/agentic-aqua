@@ -37,11 +37,14 @@ def _pick_default_true_tool() -> str:
     raise AssertionError("no enabled-by-default tool found")
 
 
-def _pick_default_false_tool() -> str:
-    for name, default in SHIPPED_DEFAULTS_ENABLED_TOOLS.items():
-        if default is False:
-            return name
-    raise AssertionError("no disabled-by-default tool found")
+def _force_default_false(monkeypatch, name: str) -> None:
+    """Force `name`'s shipped default to False for the duration of a test.
+
+    Doesn't assume any tool ships disabled-by-default (currently none do —
+    `_SHIPPED_DISABLED` is empty) — patches the shared dict in place so both
+    `aqua.features` and `aqua.doctor` (which imports the same object) see it.
+    """
+    monkeypatch.setitem(SHIPPED_DEFAULTS_ENABLED_TOOLS, name, False)
 
 
 # --- No config / healthy ---------------------------------------------------
@@ -94,9 +97,10 @@ def test_startup_warning_gone_after_fix(temp_storage, caplog):
 # --- Default-matching pruning ---------------------------------------------
 
 
-def test_default_matching_pruned(temp_storage):
+def test_default_matching_pruned(temp_storage, monkeypatch):
     true_tool = _pick_default_true_tool()
-    false_tool = _pick_default_false_tool()
+    false_tool = next(n for n in SHIPPED_DEFAULTS_ENABLED_TOOLS if n != true_tool)
+    _force_default_false(monkeypatch, false_tool)
     _write_raw(temp_storage, {
         "enabled_tools": {
             true_tool: True,     # equals default → prune
