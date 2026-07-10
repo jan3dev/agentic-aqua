@@ -53,6 +53,7 @@ Use this pattern for any new command that signs transactions.
 
 ## SideSwap
 
-SideSwap is not yet implemented for production use. Do not suggest or offer SideSwap options to users.
+SideSwap is enabled by default; the `aqua sideswap` command group ships visible.
+It may be offered to users.
 
 <!-- MANUAL: -->

@@ -246,23 +246,15 @@ def test_enabled_tools_invalid_types_are_coerced(caplog):
     assert sum("Dropping invalid" in r.message for r in caplog.records) == 3
 
 
-def test_sideswap_disabled_by_default():
-    """Only SideSwap tools ship disabled-by-default (manual opt-in).
-
-    WapuPay and the AQUA account login (`aqua_*`) are now enabled by default;
-    business calls still require WAPUPAY_API_KEY (env or provisioned).
+def test_all_tools_enabled_by_default():
+    """Every tool now ships enabled — `_SHIPPED_DISABLED` is empty 
+    (SideSwap graduated; PIX was removed).
     """
-    expected_disabled = {
-        "sideswap_server_status", "sideswap_recommend",
-        "sideswap_peg_quote", "sideswap_peg_in", "sideswap_peg_out",
-        "sideswap_peg_status", "sideswap_list_assets", "sideswap_quote",
-        "sideswap_execute_swap", "sideswap_swap_status",
-    }
-    for name in expected_disabled:
-        assert SHIPPED_DEFAULTS_ENABLED_TOOLS[name] is False, name
+    from aqua.features import _SHIPPED_DISABLED
+
+    assert _SHIPPED_DISABLED == frozenset()
     for name, enabled in SHIPPED_DEFAULTS_ENABLED_TOOLS.items():
-        if name not in expected_disabled:
-            assert enabled is True, name
+        assert enabled is True, name
 
 
 def test_enabled_tools_non_dict_value_resets_to_empty(caplog):
