@@ -13,15 +13,11 @@ from .output import render, render_error
 def doctor(ctx, fix):
     """Diagnose (and with --fix, repair) your AQUA config file.
 
-    By default this only reports issues. Exit code is 0 when the config is
-    healthy (or was fully repaired) and 1 when fixable issues remain or manual
-    intervention is needed.
+    Exit code 0 if healthy or fully repaired, 1 if issues remain.
     """
     from ..doctor import run_doctor
 
-    # Match the CLI convention (see cli/output.run_tool): render the error
-    # envelope instead of dumping a raw traceback if the fix write path raises
-    # (e.g. read-only FS, disk full, permission denied).
+    # Match cli.output.run_tool's error envelope instead of a raw traceback.
     try:
         report = run_doctor(fix=fix)
     except Exception as exc:  # noqa: BLE001 — surface any failure as an envelope
@@ -30,6 +26,5 @@ def doctor(ctx, fix):
 
     click.echo(render(report, ctx.fmt))
 
-    # `healthy` already reflects the post-fix state (False if any manual-only
-    # finding remains), so it is the single source of truth for the exit code.
+    # healthy already reflects post-fix state, so it's the sole exit-code source.
     sys.exit(0 if report["healthy"] else 1)

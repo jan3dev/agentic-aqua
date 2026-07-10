@@ -166,9 +166,8 @@ def test_unknown_enabled_tools_key_warns(temp_storage, caplog):
 def test_fresh_install_does_not_write_config(temp_storage):
     """Startup is read-only: a fresh install must NOT create config.json.
 
-    The shipped defaults are still merged IN MEMORY (so gating sees a fully
-    populated map), but nothing is persisted — an absent key means "use the
-    shipped default". `doctor` is the only path that writes config.json.
+    An absent key means "use the shipped default"; `doctor` is the only path
+    that writes config.json.
     """
     assert not temp_storage.config_path.exists()
     config = load_config_with_merge(temp_storage)

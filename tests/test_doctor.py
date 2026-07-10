@@ -40,9 +40,7 @@ def _pick_default_true_tool() -> str:
 def _force_default_false(monkeypatch, name: str) -> None:
     """Force `name`'s shipped default to False for the duration of a test.
 
-    Doesn't assume any tool ships disabled-by-default (currently none do —
-    `_SHIPPED_DISABLED` is empty) — patches the shared dict in place so both
-    `aqua.features` and `aqua.doctor` (which imports the same object) see it.
+    Patches the shared dict in place (no tool ships disabled-by-default today).
     """
     monkeypatch.setitem(SHIPPED_DEFAULTS_ENABLED_TOOLS, name, False)
 

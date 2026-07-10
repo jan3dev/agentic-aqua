@@ -157,9 +157,7 @@ def _merge_with_defaults(
 ) -> tuple[dict[str, bool], bool]:
     """Merge shipped defaults into `loaded`, preserving user's overrides.
 
-    Returns `(merged, changed)`. `changed` is True if any default keys were
-    inserted. The merge is in-memory only; `load_config_with_merge` no longer
-    persists it (see that function's docstring).
+    Returns `(merged, changed)` — in-memory only, no longer persisted by the caller.
     """
     merged = dict(loaded)
     changed = False
@@ -171,26 +169,16 @@ def _merge_with_defaults(
 
 
 def load_config_with_merge(storage: Storage | None = None) -> Config:
-    """Load config and merge shipped defaults IN MEMORY. Read-only — never writes.
+    """Load config and merge shipped defaults IN MEMORY only — never writes to disk.
 
-    Startup is non-invasive: the shipped defaults are merged into the returned
-    `Config` so callers see a fully-populated `enabled_tools` for gating, but
-    `config.json` is left untouched on disk. A tool key absent from the file
-    means "use the shipped default" (see `is_tool_enabled`), so new versions can
-    change a default without clobbering the user's explicit choices, and the
-    file is never re-polluted with defaults on every run.
-
-    `doctor` (CLI `aqua doctor --fix`, MCP tool `doctor`) is the only code path
-    that rewrites `config.json`. Unknown keys (typos, removed tools) are warned
-    with a pointer to it — they are no longer silently persisted.
+    An absent tool key means "use the shipped default", so a new version's default
+    change can't clobber a user's choice. `doctor` is the only code path that
+    rewrites `config.json`.
     """
     if storage is None:
         storage = Storage()
 
-    # Startup must never crash on a broken config file — otherwise `aqua doctor`
-    # (the tool that repairs it) could not run either. A corrupt/unreadable file
-    # degrades to in-memory defaults (read-only, so nothing is overwritten) with
-    # a pointer to `doctor`, which reads the raw JSON and reports the problem.
+    # Never crash on a broken config — aqua doctor (which fixes it) must still run.
     try:
         config = storage.load_config()
     except (OSError, ValueError) as exc:  # ValueError ⊇ json.JSONDecodeError
@@ -202,8 +190,7 @@ def load_config_with_merge(storage: Storage | None = None) -> Config:
         )
         config = Config()
 
-    # Warn on unknown keys (typos, removed tools). One line per key, each
-    # pointing at `doctor` so the user can clean them all up at once.
+    # Warn on unknown keys (typos, removed tools); each warning points at doctor.
     for key in config.enabled_tools:
         if key not in TOOLS:
             logger.warning(

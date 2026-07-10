@@ -77,9 +77,7 @@ def test_get_prompt_unknown_raises(prompt_handler):
 def test_tool_schemas_match_tools_registry():
     """Drift guard: every TOOLS entry has a TOOL_SCHEMAS entry and vice versa.
 
-    A tool in TOOLS without a schema would be silently unavailable over MCP
-    (list_tools iterates TOOL_SCHEMAS); a schema without a TOOLS entry would be
-    listed but uncallable.
+    A gap would mean a tool is silently uncallable or unlisted over MCP.
     """
     from aqua.server import TOOL_SCHEMAS
     from aqua.tools import TOOLS

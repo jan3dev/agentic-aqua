@@ -1,23 +1,14 @@
 """Config diagnostics and repair — the `doctor` tool.
 
-Reads ``~/.aqua/config.json`` as **raw JSON** (never via ``Config.from_dict``,
-which does ``cls(**data)`` and crashes on an unknown top-level key — a crash
-that would otherwise break *every* aqua invocation, doctor included). It then
-reports, and optionally repairs, three classes of drift:
+Reads ``~/.aqua/config.json`` as raw JSON, never via ``Config.from_dict``
+(which crashes on an unknown top-level key) — this lets doctor repair the
+exact configs that would otherwise break config loading entirely.
 
-- **orphan tools**: keys under ``enabled_tools`` that name a tool no longer in
-  ``TOOLS`` (these produce the ``Unknown tool in enabled_tools`` startup
-  warning);
-- **default-matching entries**: keys whose boolean value equals the current
-  shipped default — prunable so the file stays *sparse* (only genuine user
-  overrides persist, and future default changes flow through);
-- **unknown top-level keys**: keys outside the ``Config`` schema that would
-  crash ``Config.from_dict``.
-
-The config model is *sparse*: a tool absent from the file uses its shipped
-default (see ``features.is_tool_enabled``). ``doctor --fix`` is the only code
-path that rewrites the file. Non-boolean ``enabled_tools`` entries and genuine
-overrides (boolean value differing from the default) are left untouched.
+Diagnoses (and with ``fix=True`` repairs) three kinds of drift: orphan tool
+keys no longer in ``TOOLS``, entries matching the current shipped default
+(prunable to keep the config sparse), and unknown top-level keys. Absent
+keys use the shipped default (see ``features.is_tool_enabled``); ``doctor``
+is the only code path that rewrites the file.
 """
 
 from __future__ import annotations
@@ -36,8 +27,7 @@ logger = logging.getLogger(__name__)
 # Top-level keys the Config schema accepts. Anything else crashes from_dict.
 _KNOWN_CONFIG_KEYS: frozenset[str] = frozenset(f.name for f in fields(Config))
 
-# A real config is a few KB. Refuse to parse anything wildly larger so a
-# corrupt/adversarial file cannot OOM the process.
+# Configs are a few KB; refuse anything wildly larger to avoid OOM on a corrupt file.
 _MAX_CONFIG_BYTES = 5_000_000
 
 
@@ -53,13 +43,9 @@ def _is_prunable_default(name: str, value: Any) -> bool:
 def run_doctor(storage: Storage | None = None, fix: bool = False) -> dict[str, Any]:
     """Diagnose (and with ``fix=True`` repair) the AQUA config file.
 
-    Returns a report dict with keys: ``config_path``, ``healthy`` (bool),
-    ``fix_applied`` (bool), ``findings`` (list of ``{type, key, detail,
-    action}``) and ``summary``. ``action`` is ``"remove"`` for auto-fixable
-    drift or ``"manual"`` for issues doctor will not touch (corrupt file, etc.).
-    ``healthy`` reflects the state *after* any repair: with ``fix=True`` it is
-    True once every removable finding has been applied (only ``manual`` findings
-    can keep it False); ``findings`` still lists what was repaired.
+    Returns ``{config_path, healthy, fix_applied, findings, summary}``; each
+    finding's ``action`` is "remove" (auto-fixable) or "manual". ``healthy``
+    reflects the state *after* any repair.
     """
     if storage is None:
         storage = Storage()
@@ -86,8 +72,7 @@ def run_doctor(storage: Storage | None = None, fix: bool = False) -> dict[str, A
                 f"config file is implausibly large ({path.stat().st_size} bytes)"
             )
         with open(path) as f:
-            # ValueError covers json.JSONDecodeError; RecursionError covers a
-            # deeply-nested adversarial document.
+            # ValueError covers JSONDecodeError; RecursionError covers deeply-nested input.
             raw = json.load(f)
     except (OSError, ValueError, RecursionError) as exc:
         report["healthy"] = False

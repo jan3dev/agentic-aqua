@@ -81,9 +81,7 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
     # `qr` is gated as a group above (its `decode` subcommand maps to `qr_decode`).
     cli.add_command(serve)
 
-    # `doctor` diagnoses/repairs config.json — always available (it is most
-    # needed precisely when the config is broken), so it is never gated off the
-    # CLI even though it has an MCP twin (which IS gateable, like every tool).
+    # Always registered — most needed when config is broken (its MCP twin is gateable).
     cli.add_command(doctor)
 
     # `balance` is gated by `unified_balance`'s flag.
