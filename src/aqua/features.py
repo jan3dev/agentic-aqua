@@ -152,22 +152,6 @@ def is_tool_enabled(name: str, config: Config) -> bool:
     )
 
 
-def _merge_with_defaults(
-    loaded: dict[str, bool],
-) -> tuple[dict[str, bool], bool]:
-    """Merge shipped defaults into `loaded`, preserving user's overrides.
-
-    Returns `(merged, changed)` — in-memory only, no longer persisted by the caller.
-    """
-    merged = dict(loaded)
-    changed = False
-    for key, default in SHIPPED_DEFAULTS_ENABLED_TOOLS.items():
-        if key not in merged:
-            merged[key] = default
-            changed = True
-    return merged, changed
-
-
 def load_config_with_merge(storage: Storage | None = None) -> Config:
     """Load config and merge shipped defaults IN MEMORY only — never writes to disk.
 
@@ -200,6 +184,5 @@ def load_config_with_merge(storage: Storage | None = None) -> Config:
                 storage.config_path,
             )
 
-    merged, _ = _merge_with_defaults(config.enabled_tools)
-    config.enabled_tools = merged
+    config.enabled_tools = {**SHIPPED_DEFAULTS_ENABLED_TOOLS, **config.enabled_tools}
     return config

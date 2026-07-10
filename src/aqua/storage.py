@@ -128,16 +128,20 @@ class Config:
         data["enabled_tools"] = coerced
         # Drop unknown top-level keys instead of crashing (mirrors WalletData.from_dict);
         # `aqua doctor --fix` removes them from disk.
-        known = {f.name for f in fields(cls)}
         for key in data:
-            if key not in known:
+            if key not in KNOWN_CONFIG_KEYS:
                 logger.warning(
                     "Unknown config key %r (ignored). "
                     "Run `aqua doctor --fix` to clean it up.",
                     key,
                 )
-        data = {k: v for k, v in data.items() if k in known}
+        data = {k: v for k, v in data.items() if k in KNOWN_CONFIG_KEYS}
         return cls(**data)
+
+
+# Single source of truth for the Config schema's top-level keys
+# (shared with `aqua.doctor`, which reads the file as raw JSON).
+KNOWN_CONFIG_KEYS: frozenset[str] = frozenset(f.name for f in fields(Config))
 
 
 def _validate_wallet_name(name: str) -> str:

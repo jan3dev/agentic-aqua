@@ -1273,7 +1273,7 @@ TOOL_SCHEMAS = {
             "(~/.aqua/config.json): reports orphaned/unknown tool keys (the "
             "source of the 'Unknown tool in enabled_tools' startup warnings), "
             "entries that match the shipped default (prunable to keep the config "
-            "sparse), and unknown top-level keys that would break config loading. "
+            "sparse), and unknown top-level keys (ignored at load until removed). "
             "Read-only by default; pass fix=true to apply repairs. Note: the "
             "running server reads its tool-gating config once at startup, so any "
             "gating change from a fix takes effect on the next server restart."

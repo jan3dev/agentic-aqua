@@ -4,7 +4,7 @@ import sys
 
 import click
 
-from .output import render, render_error
+from .output import run_tool
 
 
 @click.command("doctor")
@@ -17,14 +17,6 @@ def doctor(ctx, fix):
     """
     from ..doctor import run_doctor
 
-    # Match cli.output.run_tool's error envelope instead of a raw traceback.
-    try:
-        report = run_doctor(fix=fix)
-    except Exception as exc:  # noqa: BLE001 — surface any failure as an envelope
-        click.echo(render_error(type(exc).__name__, str(exc), ctx.fmt), err=True)
-        sys.exit(1)
-
-    click.echo(render(report, ctx.fmt))
-
+    report = run_tool(ctx, lambda: run_doctor(fix=fix))
     # healthy already reflects post-fix state, so it's the sole exit-code source.
     sys.exit(0 if report["healthy"] else 1)

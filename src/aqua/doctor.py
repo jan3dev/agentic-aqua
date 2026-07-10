@@ -1,8 +1,8 @@
 """Config diagnostics and repair — the `doctor` tool.
 
-Reads ``~/.aqua/config.json`` as raw JSON, never via ``Config.from_dict``
-(which crashes on an unknown top-level key) — this lets doctor repair the
-exact configs that would otherwise break config loading entirely.
+Reads ``~/.aqua/config.json`` as raw JSON, never via ``Config.from_dict`` —
+this lets doctor inspect the file verbatim and repair configs (including
+corrupt ones) that the tolerant load path can only warn about and ignore.
 
 Diagnoses (and with ``fix=True`` repairs) three kinds of drift: orphan tool
 keys no longer in ``TOOLS``, entries matching the current shipped default
@@ -15,17 +15,14 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import fields
+from collections import Counter
 from typing import Any
 
 from .features import SHIPPED_DEFAULTS_ENABLED_TOOLS
-from .storage import Config, Storage
+from .storage import KNOWN_CONFIG_KEYS, Storage
 from .tools import TOOLS
 
 logger = logging.getLogger(__name__)
-
-# Top-level keys the Config schema accepts. Anything else crashes from_dict.
-_KNOWN_CONFIG_KEYS: frozenset[str] = frozenset(f.name for f in fields(Config))
 
 # Configs are a few KB; refuse anything wildly larger to avoid OOM on a corrupt file.
 _MAX_CONFIG_BYTES = 5_000_000
@@ -67,10 +64,9 @@ def run_doctor(storage: Storage | None = None, fix: bool = False) -> dict[str, A
         return report
 
     try:
-        if path.stat().st_size > _MAX_CONFIG_BYTES:
-            raise ValueError(
-                f"config file is implausibly large ({path.stat().st_size} bytes)"
-            )
+        size = path.stat().st_size
+        if size > _MAX_CONFIG_BYTES:
+            raise ValueError(f"config file is implausibly large ({size} bytes)")
         with open(path) as f:
             # ValueError covers JSONDecodeError; RecursionError covers deeply-nested input.
             raw = json.load(f)
@@ -98,24 +94,23 @@ def run_doctor(storage: Storage | None = None, fix: bool = False) -> dict[str, A
         report["summary"] = "Config root is not an object; fix it by hand."
         return report
 
-    # --- Unknown top-level keys (crash Config.from_dict) ---
-    unknown_top = [k for k in raw if k not in _KNOWN_CONFIG_KEYS]
-    for key in unknown_top:
+    # --- Unknown top-level keys (ignored at load; doctor removes them from disk) ---
+    unknown_top = {k for k in raw if k not in KNOWN_CONFIG_KEYS}
+    for key in sorted(unknown_top):
         findings.append({
             "type": "unknown_top_level_key",
             "key": key,
-            "detail": f"Unknown top-level key {key!r} (would crash config loading).",
+            "detail": f"Unknown top-level key {key!r} (ignored at load).",
             "action": "remove",
         })
 
     # --- enabled_tools analysis ---
     enabled = raw.get("enabled_tools")
-    orphans: list[str] = []
-    default_matches: list[str] = []
+    remove_tool_keys: set[str] = set()
     if isinstance(enabled, dict):
         for key, value in enabled.items():
             if key not in TOOLS:
-                orphans.append(key)
+                remove_tool_keys.add(key)
                 findings.append({
                     "type": "orphan_tool",
                     "key": key,
@@ -126,7 +121,7 @@ def run_doctor(storage: Storage | None = None, fix: bool = False) -> dict[str, A
                     "action": "remove",
                 })
             elif _is_prunable_default(key, value):
-                default_matches.append(key)
+                remove_tool_keys.add(key)
                 findings.append({
                     "type": "matches_default",
                     "key": key,
@@ -149,13 +144,13 @@ def run_doctor(storage: Storage | None = None, fix: bool = False) -> dict[str, A
     manual = [f for f in findings if f["action"] == "manual"]
 
     if fix and removable:
-        cleaned: dict[str, Any] = {k: v for k, v in raw.items() if k in _KNOWN_CONFIG_KEYS}
+        # Apply exactly what was diagnosed: the sets built above are the
+        # single source of truth for what gets removed.
+        cleaned: dict[str, Any] = {
+            k: v for k, v in raw.items() if k not in unknown_top
+        }
         if isinstance(enabled, dict):
-            sparse = {
-                k: v
-                for k, v in enabled.items()
-                if k in TOOLS and not _is_prunable_default(k, v)
-            }
+            sparse = {k: v for k, v in enabled.items() if k not in remove_tool_keys}
             if sparse:
                 cleaned["enabled_tools"] = sparse
             else:
@@ -164,10 +159,11 @@ def run_doctor(storage: Storage | None = None, fix: bool = False) -> dict[str, A
         report["fix_applied"] = True
         # Only the (untouched) manual findings can remain after a repair.
         report["healthy"] = not manual
+        counts = Counter(f["type"] for f in removable)
         repaired = (
-            f"Repaired {path}: removed {len(orphans)} orphan tool key(s), "
-            f"pruned {len(default_matches)} default-matching entry(ies), "
-            f"removed {len(unknown_top)} unknown top-level key(s)."
+            f"Repaired {path}: removed {counts['orphan_tool']} orphan tool key(s), "
+            f"pruned {counts['matches_default']} default-matching entry(ies), "
+            f"removed {counts['unknown_top_level_key']} unknown top-level key(s)."
         )
         report["summary"] = (
             f"{repaired} {len(manual)} issue(s) still need manual attention."
