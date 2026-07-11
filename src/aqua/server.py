@@ -1254,6 +1254,35 @@ TOOL_SCHEMAS = {
             "required": ["email"],
         },
     },
+    "qr_generate": {
+        "description": (
+            "Generate a PNG QR code for arbitrary content and return qr_code_path. "
+            "Optionally includes a terminal-friendly block QR string."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "string",
+                    "description": "Content to encode (address, invoice, URI, or other QR payload).",
+                },
+                "output_dir": {
+                    "type": "string",
+                    "description": "Optional directory for the PNG; defaults to ~/.aqua/qr.",
+                },
+                "filename": {
+                    "type": "string",
+                    "description": "Optional PNG filename; defaults to qr_<sha256[:16]>.png.",
+                },
+                "terminal": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Also return terminal_qr block art.",
+                },
+            },
+            "required": ["data"],
+        },
+    },
     "qr_decode": {
         "description": "Decode a QR code from an image file and return the raw string content. Supports Bitcoin addresses, Liquid addresses, Lightning invoices (BOLT11), and Lightning addresses.",
         "inputSchema": {

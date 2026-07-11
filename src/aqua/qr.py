@@ -60,6 +60,25 @@ def generate_qr(data: str, output_dir: str | Path, filename: str | None = None) 
     return str(path.resolve())
 
 
+def render_qr_terminal(data: str) -> str:
+    """Render ``data`` as a terminal-friendly block QR string.
+
+    This is intentionally text-only (no ANSI colours) so it works in logs,
+    JSON output, and terminals with minimal capabilities. Each QR module is
+    represented by two spaces so the square proportions remain scannable.
+    """
+    if not isinstance(data, str) or not data:
+        raise ValueError("QR data must be a non-empty string")
+
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(data)
+    qr.make(fit=True)
+    lines = []
+    for row in qr.get_matrix():
+        lines.append("".join("██" if cell else "  " for cell in row))
+    return "\n".join(lines)
+
+
 def decode_qr(image_path: str) -> str:
     path = Path(image_path)
     if not path.is_file():

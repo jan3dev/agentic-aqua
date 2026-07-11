@@ -11,7 +11,7 @@ from typing import Any
 from .assets import MAINNET_ASSETS, TESTNET_ASSETS, resolve_asset_name, resolve_liquid_asset_id
 from .bitcoin import BitcoinWalletManager
 from .bolt11 import decode_bolt11_fields
-from .qr import decode_qr, generate_qr
+from .qr import decode_qr, generate_qr, render_qr_terminal
 from .wallet import WalletManager
 
 logger = logging.getLogger(__name__)
@@ -1980,6 +1980,21 @@ def sideswap_swap_status(order_id: str) -> dict[str, Any]:
     return manager.status(order_id)
 
 
+def qr_generate(
+    data: str,
+    output_dir: str | None = None,
+    filename: str | None = None,
+    terminal: bool = False,
+) -> dict[str, Any]:
+    """Generate a QR PNG for arbitrary content, optionally with terminal art."""
+    qr_dir = output_dir or str(get_manager().storage.qr_dir)
+    path = generate_qr(data, qr_dir, filename=filename)
+    result: dict[str, Any] = {"content": data, "qr_code_path": path}
+    if terminal:
+        result["terminal_qr"] = render_qr_terminal(data)
+    return result
+
+
 def qr_decode(image_path: str) -> dict[str, Any]:
     """Decode a QR code from an image file and return the raw string content."""
     content = decode_qr(image_path)
@@ -2301,5 +2316,6 @@ TOOLS = {
     "jan3_rebind_wallet": jan3_rebind_wallet,
     "jan3_ln_check_username": jan3_ln_check_username,
     "jan3_purchase_ln_username": jan3_purchase_ln_username,
+    "qr_generate": qr_generate,
     "qr_decode": qr_decode,
 }

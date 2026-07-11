@@ -111,6 +111,7 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("wapupay", "provision-account"): "wapupay_provision_account",
 
     # qr group (cli/qr.py)
+    ("qr", "generate"): "qr_generate",
     ("qr", "decode"): "qr_decode",
 
     # jan3 group (cli/jan3.py) — JAN3 account login + sessions + Lightning Address

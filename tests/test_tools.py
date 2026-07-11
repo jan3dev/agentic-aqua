@@ -1188,6 +1188,7 @@ class TestToolRegistry:
             "lightning_send",
             "lightning_transaction_status",
             "lightning_decode",
+            "qr_generate",
             "qr_decode",
             "delete_wallet",
             "btc_import_descriptor",
