@@ -495,8 +495,17 @@ class WalletManager:
         if op_policy.enabled():
             _pset_before = id(unsigned_pset)
             # amount is integer satoshis (codebase invariant); the engine reads
-            # humanReadable.notional only when numeric. Unit is resolved from the
-            # delegation cap inside op_policy.evaluate(), never passed from here.
+            # humanReadable.notional only when numeric.
+            #
+            # Pass the TRUE unit of the asset being sent (its ticker), resolved
+            # from asset_id via Aqua's own registry — NOT relabelled to match the
+            # cap. The engine selects the cap by asset_id and enforces per-asset,
+            # so a send whose asset has no cap is refused, not measured against
+            # the wrong one. L-BTC has no asset_id (native) → ticker "L-BTC". An
+            # asset unknown to the wallet registry → unit None; the engine then
+            # denies unknown-asset from the asset_id alone.
+            _op_asset = lookup_asset(asset_id, wallet.network) if asset_id else None
+            _op_unit = _op_asset.ticker if _op_asset else ("L-BTC" if asset_id is None else None)
             op_policy.evaluate(
                 rail="liquid",
                 canonical_bytes_hex=op_policy.canonical_bytes(unsigned_pset),
@@ -504,6 +513,7 @@ class WalletManager:
                     "notional": amount,
                     "counterparty": address,
                     "asset_id": asset_id,
+                    "unit": _op_unit,
                 },
             )  # returns the verified allow credential; raises on anything else
             # Same-PSET identity guard: sign exactly what was evaluated.

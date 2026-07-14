@@ -130,50 +130,6 @@ def _load_delegation(path: str) -> dict:
         raise PolicyError(f"could not load delegation credential from {path}: {exc} (fail-closed)")
 
 
-def _delegation_cap_unit(delegation: dict, rail: str, asset_id: Optional[str]) -> Optional[str]:
-    """Read the unit of the spending cap for this rail from the delegation.
-
-    NOTE: reconcile this navigation with the authoritative delegation schema (v2.1).
-    The shape below matches the spending-delegation form; if the real credential nests
-    differently, fix it here. We deliberately return None (not a guess) when we can't
-    find it, so the caller fails closed rather than sending a wrong unit — that wrong
-    unit is exactly the spurious unit-mismatch DENY the refinement removed.
-    """
-    try:
-        scope = delegation["credentialSubject"]["delegation"]["scope"]
-        limits = scope["spending_limits"]["per_rail"][rail]
-    except (KeyError, TypeError):
-        return None
-    per_tx = limits.get("per_transaction") if isinstance(limits, dict) else None
-    # Real delegation stores the denomination as `currency`; tolerate `unit` too.
-    if isinstance(per_tx, dict) and (per_tx.get("currency") or per_tx.get("unit")):
-        return per_tx.get("currency") or per_tx.get("unit")
-    if isinstance(limits, dict) and (limits.get("currency") or limits.get("unit")):
-        return limits.get("currency") or limits.get("unit")
-    return None
-
-
-def _resolve_unit(
-    delegation: dict, rail: str, asset_id: Optional[str], override: Optional[str]
-) -> str:
-    """Resolve the unit sent in humanReadable so it matches the delegation cap.
-
-    Sending a unit that disagrees with the cap unit yields a spurious unit-mismatch DENY
-    from the engine — a false negative. So we prefer the cap's own unit; an explicit
-    OP_POLICY_UNIT overrides; if neither is available we fail closed rather than guess.
-    """
-    if override:
-        return override
-    unit = _delegation_cap_unit(delegation, rail, asset_id)
-    if unit:
-        return unit
-    raise PolicyError(
-        "could not resolve the spending-cap unit from the delegation for "
-        f"rail={rail!r} asset_id={asset_id!r}; set OP_POLICY_UNIT or fix the "
-        "delegation (fail-closed)"
-    )
-
-
 def _post(cfg: _Config, body: dict) -> dict:
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
@@ -257,7 +213,20 @@ def evaluate(
     delegation = delegation if delegation is not None else _load_delegation(cfg.delegation_path)
 
     hr = dict(human_readable)
-    hr["unit"] = _resolve_unit(delegation, rail, hr.get("asset_id"), cfg.unit_override)
+    # Unit is the TRUE unit of the asset being sent (the caller resolves the
+    # ticker from asset_id via the wallet's asset registry). The engine now
+    # SELECTS the cap by asset_id, so we no longer relabel the unit to match the
+    # cap currency — that relabel was exactly what let an uncapped asset ride the
+    # wrong cap. OP_POLICY_UNIT still overrides for local testing. Drop a null
+    # unit so it isn't sent as JSON null.
+    if cfg.unit_override:
+        hr["unit"] = cfg.unit_override
+    if hr.get("unit") is None:
+        hr.pop("unit", None)
+    # L-BTC sends carry no asset_id (native); drop a null so the engine reads it
+    # as absent (== rail-native) rather than a JSON null.
+    if hr.get("asset_id") is None:
+        hr.pop("asset_id", None)
     # The engine reads humanReadable.notional ONLY when it is a JSON number
     # (proposal-hints.ts: `typeof hr.notional === "number" ? ... : undefined`).
     # A string/Decimal is silently dropped -> "no notional hint" -> spurious DENY.
