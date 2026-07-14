@@ -353,10 +353,11 @@ or reject an expired one, so authenticating the delegation itself is a planned f
 
 Every Liquid send routes through the check (L-BTC and other Liquid assets, plus Lightning
 payments funded via Boltz submarine swaps, whose L-BTC lockup is itself a Liquid send).
-Spending-cap enforcement is per-rail and single-currency: the delegation's `per_rail.liquid`
-cap has one currency (L-BTC), so L-BTC sends are cap-enforced, while a non-L-BTC asset send
-(e.g. USDt) is evaluated but not constrained by a matching per-asset cap yet. Native BTC
-on-chain sends are not covered. Per-asset caps and BTC coverage are planned follow-ups.
+Spending caps are **per-asset**, selected by `asset_id`: L-BTC uses the delegation's
+rail-level cap, and a Liquid asset such as **USDt is enforced against its own cap**
+(`per_rail.liquid.per_asset`). A send whose asset has no cap is refused (`no-cap-for-asset`),
+and an asset unknown to the engine is refused (`unknown-asset`) — never measured against the
+wrong cap. Native BTC on-chain sends are not covered (a planned follow-up).
 
 Coverage and verification scope will expand in later changes. See the Observer Protocol
 docs for the delegation format and how to issue one.
