@@ -326,7 +326,7 @@ export OP_DELEGATION_PATH=/path/to/delegation.json   # your signed spending dele
 | `OP_SIDECAR_URL` | `https://api.observerprotocol.org/policy/evaluate` | Policy engine endpoint. |
 | `OP_POLICY_TIMEOUT` | `10` | Request timeout in seconds. |
 | `OP_VERIFY_PEC` | `true` | Verify the returned credential's signature before honoring it. |
-| `OP_POLICY_UNIT` | *(resolved from the delegation)* | Optional unit override. |
+| `OP_POLICY_UNIT` | *(the sent asset's unit)* | Optional override; normally the wallet passes the true unit of the asset being sent. |
 | `OP_DENY_ARTIFACT_DIR` | `./op-artifacts` | Directory where signed denial credentials are saved. |
 
 ### What it guarantees
