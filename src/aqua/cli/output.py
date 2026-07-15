@@ -65,8 +65,8 @@ def run_tool(ctx, fn):
     """
     try:
         result = fn()
+        click.echo(render(result, ctx.fmt))
+        return result
     except Exception as e:
         click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
         sys.exit(1)
-    click.echo(render(result, ctx.fmt))
-    return result
