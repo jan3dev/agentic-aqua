@@ -111,6 +111,7 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("wapupay", "provision-account"): "wapupay_provision_account",
 
     # qr group (cli/qr.py)
+    ("qr", "generate"): "qr_generate",
     ("qr", "decode"): "qr_decode",
 
     # Top-level diagnostic (cli/doctor.py) — always registered, gated only for MCP.

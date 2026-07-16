@@ -196,6 +196,39 @@ class TestRootCli:
         assert "Start the MCP server over stdio (`aqua serve` or `aqua-mcp`)." in result.output
 
 
+# QR commands
+
+
+class TestQrCommands:
+    def test_qr_generate_json_creates_png_that_decodes(self, runner):
+        from aqua.qr import decode_qr
+
+        payload = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+
+        result = runner.invoke(cli, ["--format", "json", "qr", "generate", payload])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["content"] == payload
+        path = Path(data["qr_code_path"])
+        assert path.is_file()
+        assert decode_qr(str(path)) == payload
+
+    def test_qr_generate_can_include_terminal_qr(self, runner):
+        payload = "liquid-address-example"
+
+        result = runner.invoke(
+            cli, ["--format", "json", "qr", "generate", "--terminal", payload]
+        )
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["content"] == payload
+        assert "terminal_qr" in data
+        assert "██" in data["terminal_qr"]
+        assert len(data["terminal_qr"].splitlines()) > 5
+
+
 # Wallet commands
 
 
