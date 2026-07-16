@@ -297,3 +297,67 @@ Built with:
 - [BDK](https://github.com/bitcoindevkit/bdk-python) - Bitcoin Development Kit
 - [MCP](https://modelcontextprotocol.io/) - Model Context Protocol
 - [Boltz](https://boltz.exchange/) - Submarine swaps for Lightning
+
+## Observer Protocol policy checks (optional)
+
+Agentic Aqua can gate Liquid sends behind an [Observer Protocol](https://observerprotocol.org)
+policy engine. When enabled, every Liquid send is evaluated against a signed spending
+delegation *before* the wallet signs. The wallet signs only on a verified `allow`;
+anything else fails closed and the transaction is refused.
+
+This is **off by default** and fully opt-in. With `OP_POLICY_ENABLED` unset, the wallet
+behaves exactly as it does without this feature.
+
+### Enabling
+
+Set at minimum:
+
+```sh
+export OP_POLICY_ENABLED=1
+export OP_DELEGATION_PATH=/path/to/delegation.json   # your signed spending delegation
+```
+
+### Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OP_POLICY_ENABLED` | *(off)* | Master switch (`1`/`true`/`yes`). |
+| `OP_DELEGATION_PATH` | *(required when enabled)* | Path to the delegation credential JSON. |
+| `OP_SIDECAR_URL` | `https://api.observerprotocol.org/policy/evaluate` | Policy engine endpoint. |
+| `OP_POLICY_TIMEOUT` | `10` | Request timeout in seconds. |
+| `OP_VERIFY_PEC` | `true` | Verify the returned credential's signature before honoring it. |
+| `OP_POLICY_UNIT` | *(the sent asset's unit)* | Optional override; normally the wallet passes the true unit of the asset being sent. |
+| `OP_DENY_ARTIFACT_DIR` | `./op-artifacts` | Directory where signed denial credentials are saved. |
+
+### What it guarantees
+
+The wallet signs a Liquid send **only** when the policy engine returns a cryptographically
+signed `allow` that the wallet verifies against Observer Protocol's published DID
+(`did:web:observerprotocol.org#key-3`, `eddsa-jcs-2022`). The wallet trusts a signature it
+checks itself, not the network response.
+
+It fails closed — refusing to sign — if the engine is unreachable, returns a non-2xx
+status, returns a credential whose signature won't verify or has expired, returns a `deny`,
+or returns anything other than `allow`. A same-transaction guard also ensures the wallet
+signs exactly the transaction that was evaluated.
+
+Denials are saved as signed credentials under `OP_DENY_ARTIFACT_DIR` so they can be
+independently audited.
+
+### What it does not (yet) verify
+
+This integration verifies the engine's *response* credential. It does **not** yet verify
+the *delegation credential's* own signature, revocation status, or validity window on the
+wallet side — the engine enforces the delegation's constraints but does not authenticate it
+or reject an expired one, so authenticating the delegation itself is a planned follow-up.
+
+Every Liquid send routes through the check (L-BTC and other Liquid assets, plus Lightning
+payments funded via Boltz submarine swaps, whose L-BTC lockup is itself a Liquid send).
+Spending caps are **per-asset**, selected by `asset_id`: L-BTC uses the delegation's
+rail-level cap, and a Liquid asset such as **USDt is enforced against its own cap**
+(`per_rail.liquid.per_asset`). A send whose asset has no cap is refused (`no-cap-for-asset`),
+and an asset unknown to the engine is refused (`unknown-asset`) — never measured against the
+wrong cap. Native BTC on-chain sends are not covered (a planned follow-up).
+
+Coverage and verification scope will expand in later changes. See the Observer Protocol
+docs for the delegation format and how to issue one.

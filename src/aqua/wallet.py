@@ -6,6 +6,7 @@ from typing import Optional
 
 import lwk
 
+from . import op_policy
 from .assets import lookup_asset, resolve_asset_name
 from .storage import Storage, WalletData
 
@@ -484,6 +485,45 @@ class WalletManager:
             builder.add_lbtc_recipient(lwk_address, amount)
 
         unsigned_pset = builder.finish(wollet)
+
+        # --- Observer Protocol pre-sign policy check (opt-in, fail-closed) -----
+        # Evaluate the EXACT unsigned transaction. On a verified "allow" we fall
+        # through to signing; deny / non-2xx / unreachable / unverifiable all raise,
+        # so the signer is never reached. Do NOT rebuild or round-trip the PSET in
+        # between: the blinding factors bound at builder.finish() tie the canonical
+        # bytes to this Pset instance. See src/aqua/op_policy.py.
+        if op_policy.enabled():
+            _pset_before = id(unsigned_pset)
+            # amount is integer satoshis (codebase invariant); the engine reads
+            # humanReadable.notional only when numeric.
+            #
+            # Pass the TRUE unit of the asset being sent (its ticker), resolved
+            # from asset_id via Aqua's own registry — NOT relabelled to match the
+            # cap. The engine selects the cap by asset_id and enforces per-asset,
+            # so a send whose asset has no cap is refused, not measured against
+            # the wrong one. L-BTC has no asset_id (native) → ticker "L-BTC". An
+            # asset unknown to the wallet registry → unit None; the engine then
+            # denies unknown-asset from the asset_id alone.
+            _op_asset = lookup_asset(asset_id, wallet.network) if asset_id else None
+            _op_unit = _op_asset.ticker if _op_asset else ("L-BTC" if asset_id is None else None)
+            op_policy.evaluate(
+                rail="liquid",
+                canonical_bytes_hex=op_policy.canonical_bytes(unsigned_pset),
+                human_readable={
+                    "notional": amount,
+                    "counterparty": address,
+                    "asset_id": asset_id,
+                    "unit": _op_unit,
+                },
+            )  # returns the verified allow credential; raises on anything else
+            # Same-PSET identity guard: sign exactly what was evaluated.
+            if id(unsigned_pset) != _pset_before:
+                raise ValueError(
+                    "OP policy: PSET identity changed between evaluation and "
+                    "signing; refusing to sign"
+                )
+        # --- end Observer Protocol block --------------------------------------
+
         signed_pset = signer.sign(unsigned_pset)
         tx = signed_pset.finalize()
 

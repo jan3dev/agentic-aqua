@@ -68,3 +68,4 @@ specs/
 .omc/
 .omx/
 .worktrees/
+op-artifacts/
