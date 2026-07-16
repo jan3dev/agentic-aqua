@@ -59,10 +59,14 @@ def render_error(code: str, message: str, fmt: str | None = None) -> str:
 
 
 def run_tool(ctx, fn):
-    """Execute fn(), render the result or exit with a formatted error."""
+    """Execute fn(), render the result or exit with a formatted error.
+
+    Returns the result so callers can derive an exit code from it.
+    """
     try:
         result = fn()
-        click.echo(render(result, ctx.fmt))
     except Exception as e:
         click.echo(render_error(type(e).__name__, str(e), ctx.fmt), err=True)
         sys.exit(1)
+    click.echo(render(result, ctx.fmt))
+    return result

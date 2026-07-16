@@ -1,6 +1,5 @@
 """Tests for runtime feature-flag gating of MCP tools and CLI commands."""
 
-import json
 import logging
 import tempfile
 from pathlib import Path
@@ -164,18 +163,51 @@ def test_unknown_enabled_tools_key_warns(temp_storage, caplog):
     assert "lw_balance" in config.enabled_tools
 
 
-def test_fresh_install_writes_default_config(temp_storage):
-    """On a brand-new install (no config.json), defaults are persisted on load."""
+def test_fresh_install_does_not_write_config(temp_storage):
+    """Startup is read-only: a fresh install must NOT create config.json.
+
+    An absent key means "use the shipped default"; `doctor` is the only path
+    that writes config.json.
+    """
     assert not temp_storage.config_path.exists()
     config = load_config_with_merge(temp_storage)
-    assert temp_storage.config_path.exists()
-    with open(temp_storage.config_path) as f:
-        data = json.load(f)
-    assert "enabled_tools" in data
-    # Every shipped-default tool key is present.
-    for tool_name in SHIPPED_DEFAULTS_ENABLED_TOOLS:
-        assert tool_name in data["enabled_tools"]
+    # Read-only: no file was created.
+    assert not temp_storage.config_path.exists()
+    # In-memory merge still yields every shipped default for gating.
     assert config.enabled_tools == SHIPPED_DEFAULTS_ENABLED_TOOLS
+
+
+def test_startup_survives_corrupt_config(temp_storage, caplog):
+    """A malformed config.json must not crash startup (so `doctor` can run)."""
+    temp_storage.config_path.write_text("{not valid json")
+    with caplog.at_level(logging.WARNING, logger="aqua.features"):
+        config = load_config_with_merge(temp_storage)
+    # Degrades to in-memory defaults, warns, and points at doctor.
+    assert config.enabled_tools == SHIPPED_DEFAULTS_ENABLED_TOOLS
+    assert any("doctor" in rec.message for rec in caplog.records)
+    # Read-only: the corrupt file is left as-is for doctor to inspect.
+    assert temp_storage.config_path.read_text() == "{not valid json"
+
+
+def test_startup_survives_unknown_top_level_key(temp_storage):
+    """An unknown top-level key must not crash startup (dropped in memory)."""
+    temp_storage.config_path.write_text('{"version": 9, "network": "mainnet"}')
+    config = load_config_with_merge(temp_storage)
+    assert config.network == "mainnet"
+    assert config.enabled_tools == SHIPPED_DEFAULTS_ENABLED_TOOLS
+
+
+def test_startup_does_not_persist_or_repopulate(temp_storage):
+    """Loading a sparse config never rewrites it (no re-pollution with defaults)."""
+    temp_storage.save_config(Config(enabled_tools={"lw_balance": False}))
+    before = temp_storage.config_path.read_text()
+    config = load_config_with_merge(temp_storage)
+    after = temp_storage.config_path.read_text()
+    # Untouched on disk...
+    assert before == after
+    # ...but merged in memory for gating.
+    assert config.enabled_tools["lw_balance"] is False
+    assert config.enabled_tools["btc_balance"] is True
 
 
 def test_cli_only_serve_always_registers(temp_storage):

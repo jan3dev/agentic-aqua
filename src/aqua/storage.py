@@ -126,7 +126,22 @@ class Config:
                     v,
                 )
         data["enabled_tools"] = coerced
+        # Drop unknown top-level keys instead of crashing (mirrors WalletData.from_dict);
+        # `aqua doctor --fix` removes them from disk.
+        for key in data:
+            if key not in KNOWN_CONFIG_KEYS:
+                logger.warning(
+                    "Unknown config key %r (ignored). "
+                    "Run `aqua doctor --fix` to clean it up.",
+                    key,
+                )
+        data = {k: v for k, v in data.items() if k in KNOWN_CONFIG_KEYS}
         return cls(**data)
+
+
+# Single source of truth for the Config schema's top-level keys
+# (shared with `aqua.doctor`, which reads the file as raw JSON).
+KNOWN_CONFIG_KEYS: frozenset[str] = frozenset(f.name for f in fields(Config))
 
 
 def _validate_wallet_name(name: str) -> str:
@@ -353,6 +368,14 @@ class Storage:
 
     def save_config(self, config: Config):
         self._atomic_write_json(self.config_path, config.to_dict())
+
+    def save_raw_config(self, data: dict) -> None:
+        """Persist an already-shaped raw config dict atomically (0o600).
+
+        Skips the `Config` round-trip so `doctor` can rewrite a file `Config.from_dict`
+        would reject, preserving entries verbatim instead of coercing them.
+        """
+        self._atomic_write_json(self.config_path, data)
 
     # Wallet operations
 

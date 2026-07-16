@@ -2484,3 +2484,38 @@ class TestWapuPayCli:
         register_commands(cli, Config(enabled_tools=dict(SHIPPED_DEFAULTS_ENABLED_TOOLS)))
         assert "wapupay" in cli.commands
         assert "provision-account" in cli.commands["wapupay"].commands
+
+
+class TestDoctorCommand:
+    """Smoke tests for the top-level `aqua doctor` command."""
+
+    def _isolate(self, monkeypatch, tmp_path):
+        import aqua.storage as storage_mod
+
+        aqua_dir = tmp_path / ".aqua"
+        aqua_dir.mkdir()
+        monkeypatch.setattr(storage_mod, "DEFAULT_DIR", aqua_dir)
+        return aqua_dir / "config.json"
+
+    def test_doctor_diagnose_reports_and_exits_1(self, runner, monkeypatch, tmp_path):
+        cfg = self._isolate(monkeypatch, tmp_path)
+        cfg.write_text(json.dumps({"enabled_tools": {"depix_swap": True}}))
+        result = runner.invoke(cli, ["--format", "json", "doctor"])
+        assert result.exit_code == 1
+        assert "depix_swap" in result.output
+        # Dry-run: file untouched.
+        assert "depix_swap" in cfg.read_text()
+
+    def test_doctor_fix_repairs_and_exits_0(self, runner, monkeypatch, tmp_path):
+        cfg = self._isolate(monkeypatch, tmp_path)
+        cfg.write_text(json.dumps({"version": 9, "enabled_tools": {"depix_swap": True}}))
+        result = runner.invoke(cli, ["--format", "json", "doctor", "--fix"])
+        assert result.exit_code == 0
+        on_disk = json.loads(cfg.read_text())
+        assert "version" not in on_disk
+        assert "depix_swap" not in on_disk.get("enabled_tools", {})
+
+    def test_doctor_healthy_exits_0(self, runner, monkeypatch, tmp_path):
+        self._isolate(monkeypatch, tmp_path)  # no config file → healthy
+        result = runner.invoke(cli, ["--format", "json", "doctor"])
+        assert result.exit_code == 0

@@ -32,6 +32,7 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
 
     from .btc import btc
     from .changelly import changelly
+    from .doctor import doctor
     from .jan3 import jan3
     from .lightning import lightning
     from .liquid import liquid
@@ -79,6 +80,9 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
     # Top-level commands. `serve` is CLI-only (no MCP twin) — always register.
     # `qr` is gated as a group above (its `decode` subcommand maps to `qr_decode`).
     cli.add_command(serve)
+
+    # Always registered — most needed when config is broken (its MCP twin is gateable).
+    cli.add_command(doctor)
 
     # `balance` is gated by `unified_balance`'s flag.
     if is_tool_enabled("unified_balance", config):

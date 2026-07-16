@@ -1986,6 +1986,20 @@ def qr_decode(image_path: str) -> dict[str, Any]:
     return {"content": content}
 
 
+def doctor(fix: bool = False) -> dict[str, Any]:
+    """Diagnose (and with fix=True, repair) the AQUA config file (~/.aqua/config.json).
+
+    See `aqua.doctor.run_doctor` for the report shape and repair details.
+    """
+    # Lazy import: aqua.doctor imports features, which imports this module (avoids the cycle).
+    from .doctor import run_doctor
+
+    # Defensive: coerce a stringly-typed fix (non-compliant MCP client) to bool.
+    if isinstance(fix, str):
+        fix = fix.strip().lower() in ("true", "1", "yes")
+    return run_doctor(fix=bool(fix))
+
+
 # ---------------------------------------------------------------------------
 # JAN3 account management (multi-account login + sessions + paid captchaless login)
 # ---------------------------------------------------------------------------
@@ -2302,4 +2316,5 @@ TOOLS = {
     "jan3_ln_check_username": jan3_ln_check_username,
     "jan3_purchase_ln_username": jan3_purchase_ln_username,
     "qr_decode": qr_decode,
+    "doctor": doctor,
 }
