@@ -31,10 +31,13 @@ from aqua.ankara import (
     _mask,
     _redact,
 )
+from aqua.assets import LBTC_ASSET_ID
 from aqua.jan3_accounts import Jan3AccountsManager, Jan3Session
 from aqua.storage import Storage
 from aqua.wapupay import (
+    FUNDING_METHOD_LBTC,
     FUNDING_METHOD_USDT,
+    FUNDING_METHODS,
     FUNDING_NETWORK_LIQUID,
     WAPUPAY_BASE_URL,
     WapuPayApiKey,
@@ -220,6 +223,34 @@ FUNDING_RESP = {
     "asset_id": "ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2",
     "funding_amount_usdt": 6.99,
     "funding_expires_at": "2026-05-24T14:35:00Z",
+}
+
+# L-BTC funding rail: WapuPay returns a real funding_amount_sat (sats to send)
+# instead of pricing purely in USDT terms.
+CREATE_RESP_LBTC = {
+    "tentative_id": TENTATIVE_ID,
+    "status": "CREATED",
+    "funding_currency": "LBTC",
+    "funding_network": "LIQUID",
+    "exchange_rate": 1533.34,
+    "fee_amount_usdt": 0.13,
+    "funding_amount_usdt": 15.65,
+    "funding_amount_sat": 25127,
+    "total_amount_usdt": 15.78,
+    "expires_at": "2026-07-17 17:22:10",
+}
+
+FUNDING_RESP_LBTC = {
+    "tentative_id": TENTATIVE_ID,
+    "status": "FUNDING_ISSUED",
+    "address_destination": "lq1qqvx4mehdn5lbtctestaddr",
+    "asset_id": LBTC_ASSET_ID,
+    "funding_currency": "LBTC",
+    "funding_network": "LIQUID",
+    "funding_amount_sat": 25127,
+    "funding_amount_usdt": 15.65,
+    "total_amount_usdt": 15.78,
+    "funding_expires_at": "2026-07-17T20:22:10Z",
 }
 
 
@@ -1254,3 +1285,118 @@ def test_usdt_to_base_units_rejects_non_positive_and_non_finite():  # Sig:4
             usdt_to_base_units(bad)
     # Smallest valid positive amount still works.
     assert usdt_to_base_units("0.00000001") == 1
+
+
+# ---------------------------------------------------------------------------
+# L-BTC funding rail (funding_method)
+# ---------------------------------------------------------------------------
+
+
+def test_create_order_with_lbtc_funding_method(storage):  # Sig:5
+    """funding_method="LBTC" pins the LBTC rail on the wire and surfaces the real
+    sat amount to send. Also exercises the from_dict save -> load round-trip:
+    an LBTC-on-Liquid record must keep its real funding_amount_sat (the bug this
+    guards against dropped it, mistaking it for a stale USDT-derived value)."""
+    fake = FakeClient({
+        "create_tentative": dict(CREATE_RESP_LBTC),
+        "issue_funding": dict(FUNDING_RESP_LBTC),
+    })
+    m = make_manager(storage, fake)
+    out = m.create_order(
+        amount_ars="24000", alias="al.cbu", transfer_type="fast_fiat_transfer",
+        funding_method=FUNDING_METHOD_LBTC,
+    )
+    create_call = next(c for c in fake.calls if c[0] == "create_tentative")
+    body, _create_key = create_call[1]
+    assert body["funding_method"] == FUNDING_METHOD_LBTC
+    assert body["network"] == FUNDING_NETWORK_LIQUID
+    assert out["funded"] is True
+    assert out["funding_amount_sat"] == 25127
+    assert out["funding_currency"] == FUNDING_METHOD_LBTC
+    instr = out["pay_instructions"]
+    assert "25127" in instr
+    assert "sats" in instr
+    assert "L-BTC" in instr
+    assert "base units" not in instr
+    assert "None" not in instr
+    # Persisted order (reloaded via storage) keeps the real sat amount.
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.funding_amount_sat == 25127
+
+
+def test_funded_result_lbtc_without_sats_never_emits_usdt_base_units():  # Sig:5
+    """Defensive money-safety guard: if an LBTC order ever reaches _funded_result
+    with a funded address but WITHOUT funding_amount_sat (a WapuPay contract
+    deviation), it must NOT fall through to the USDT base-units branch. That
+    branch would emit 'Send exactly <total_amount_usdt> USDT (<base units>) ...
+    asset_id=<L-BTC id>' — a USDT-scale figure paired with the L-BTC asset, i.e.
+    a ~10^8x overpayment (~15.78 L-BTC instead of ~25k sats). It must route to
+    the safe fetch-status fallback and never advertise a USDT send amount or
+    base units for the L-BTC rail."""
+    order = WapuPayOrder(
+        tentative_id=TENTATIVE_ID, status="FUNDING_ISSUED", type="fast_fiat_transfer",
+        amount_ars="24000", alias="al.cbu", created_at="t0",
+    )
+    # LBTC rail, funded address + a USDT total present, but sats absent.
+    order.apply_tentative({
+        "funding_currency": FUNDING_METHOD_LBTC,
+        "funding_network": FUNDING_NETWORK_LIQUID,
+        "address_destination": "lq1qqlbtcaddr",
+        "asset_id": LBTC_ASSET_ID,
+        "total_amount_usdt": 15.78,
+    })
+    # The USDT-scale base units must never be advertised on the L-BTC rail.
+    assert order.total_funding_amount_base_units is None
+    result = WapuPayManager._funded_result(order)
+    assert result["total_funding_amount_base_units"] is None
+    instr = result["pay_instructions"]
+    # No dangerous "Send exactly <n> USDT / base units" instruction for LBTC.
+    assert "base units" not in instr
+    assert "Send exactly" not in instr
+    assert "None" not in instr
+
+
+def test_create_order_rejects_bogus_funding_method(storage):  # Sig:5
+    """An invalid funding_method is rejected before any network call or
+    persistence, mirroring the no-api-key / bogus transfer_type safety tests."""
+    assert "DOGE" not in FUNDING_METHODS
+    fake = FakeClient({
+        "create_tentative": dict(CREATE_RESP),
+        "issue_funding": dict(FUNDING_RESP),
+    })
+    m = make_manager(storage, fake)
+    with pytest.raises(ValueError):
+        m.create_order(
+            amount_ars="10000", alias="al.cbu", transfer_type="fiat_transfer",
+            funding_method="DOGE",
+        )
+    assert fake.calls == []  # never reached the network
+    assert storage.list_wapupay_orders() == []  # nothing persisted
+
+
+def test_from_dict_keeps_real_sat_on_lbtc_liquid():  # Sig:5
+    """Regression guard: an LBTC-on-Liquid record must KEEP its real
+    funding_amount_sat across a load — only a USDT-on-Liquid (or none/none)
+    record drops a stale sat value."""
+    lbtc = {
+        "tentative_id": TENTATIVE_ID, "status": "FUNDING_ISSUED",
+        "type": "fast_fiat_transfer", "amount_ars": "24000", "alias": "al.cbu",
+        "created_at": "t0", "funding_network": FUNDING_NETWORK_LIQUID,
+        "funding_currency": FUNDING_METHOD_LBTC,
+        "funding_amount_sat": 25127,
+    }
+    o = WapuPayOrder.from_dict(lbtc)
+    assert o.funding_amount_sat == 25127  # NOT dropped
+
+
+def test_create_order_defaults_to_usdt_funding_method(storage):  # Sig:5
+    """Omitting funding_method preserves the USDT default on the wire."""
+    fake = FakeClient({
+        "create_tentative": dict(CREATE_RESP),
+        "issue_funding": dict(FUNDING_RESP),
+    })
+    m = make_manager(storage, fake)
+    m.create_order(amount_ars="10000", alias="al.cbu", transfer_type="fiat_transfer")
+    create_call = next(c for c in fake.calls if c[0] == "create_tentative")
+    body, _create_key = create_call[1]
+    assert body["funding_method"] == FUNDING_METHOD_USDT

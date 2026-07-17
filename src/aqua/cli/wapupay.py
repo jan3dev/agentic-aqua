@@ -1,8 +1,8 @@
-"""WapuPay CLI — Argentine direct-fiat payments funded with USDT on Liquid.
+"""WapuPay CLI — Argentine direct-fiat payments funded with USDT or L-BTC on Liquid.
 
-Pay an Argentine bank account (alias / CBU / CVU) in ARS via P2P swap, funded with USDT on
-Liquid. These commands call WapuPay directly and require `WAPUPAY_API_KEY` set in
-the environment. `create-order` returns a Liquid USDT address to fund; pay it with
+Pay an Argentine bank account (alias / CBU / CVU) in ARS via P2P swap, funded with USDT or
+L-BTC on Liquid. These commands call WapuPay directly and require `WAPUPAY_API_KEY` set in
+the environment. `create-order` returns a Liquid funding address; pay it with
 `aqua liquid send-asset` and WapuPay settles the ARS payout.
 """
 
@@ -30,10 +30,10 @@ _TRANSFER_TYPE = click.Choice(["fiat_transfer", "fast_fiat_transfer"])
 
 @click.group()
 def wapupay():
-    """WapuPay — pay Argentine bank accounts in ARS, funded with USDT on Liquid.
+    """WapuPay — pay Argentine bank accounts in ARS, funded with USDT or L-BTC on Liquid.
 
     Calls WapuPay directly; set WAPUPAY_API_KEY in your environment first.
-    `create-order` returns a Liquid USDT address to fund — pay it with
+    `create-order` returns a Liquid address to fund — pay it with
     `aqua liquid send-asset` and WapuPay settles the pesos.
     """
 
@@ -91,17 +91,24 @@ def quote(ctx, amount_ars, transfer_type, alias):
     help="Wallet you intend to fund from.",
 )
 @click.option(
+    "--funding-method", "funding_method",
+    type=click.Choice(["USDT", "LBTC"]), default="USDT", show_default=True,
+    help="Funding rail: USDT (default) or LBTC. Both settle on Liquid; LBTC "
+         "is paid as L-BTC sats, USDT as USDT base units.",
+)
+@click.option(
     "--yes", "-y", "skip_confirm", is_flag=True, default=False,
     help="Skip the interactive quote-confirmation prompt.",
 )
 @click.pass_obj
 def create_order(ctx, amount_ars, alias, transfer_type, receiver_name, refund_address,
-                 wallet_name, skip_confirm):
-    """Create a direct-fiat order and get a Liquid USDT funding address.
+                 wallet_name, funding_method, skip_confirm):
+    """Create a direct-fiat order and get a Liquid funding address.
 
     Fetches a quote for confirmation, then creates the order and issues funding
-    instructions. Fund the returned address with `aqua liquid send-asset`;
-    WapuPay then pays the pesos. This command never broadcasts a payment.
+    instructions (USDT by default, or L-BTC via --funding-method). Fund the
+    returned address with `aqua liquid send-asset`; WapuPay then pays the pesos.
+    This command never broadcasts a payment.
     """
     if refund_address and refund_address.strip():
         try:
@@ -137,6 +144,7 @@ def create_order(ctx, amount_ars, alias, transfer_type, receiver_name, refund_ad
             receiver_name=receiver_name,
             refund_address=refund_address,
             wallet_name=wallet_name,
+            funding_method=funding_method,
         ),
     )
 
