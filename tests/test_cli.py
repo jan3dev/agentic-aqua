@@ -2552,3 +2552,17 @@ class TestDoctorCommand:
         self._isolate(monkeypatch, tmp_path)  # no config file → healthy
         result = runner.invoke(cli, ["--format", "json", "doctor"])
         assert result.exit_code == 0
+
+
+class TestRunTool:
+    """`run_tool` must keep rendering/echo inside its error handler."""
+
+    def test_render_failure_is_formatted_not_uncaught(self):
+        from aqua.cli.main import AquaContext
+        from aqua.cli.output import run_tool
+
+        # A tool result json.dumps can't serialize: render() raises inside run_tool.
+        with pytest.raises(SystemExit) as exc:
+            run_tool(AquaContext(fmt="json"), lambda: {"bad": object()})
+        # Formatted error + exit 1, not a bare traceback escaping run_tool.
+        assert exc.value.code == 1

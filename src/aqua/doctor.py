@@ -29,11 +29,18 @@ _MAX_CONFIG_BYTES = 5_000_000
 
 
 def _is_prunable_default(name: str, value: Any) -> bool:
-    """True if ``name=value`` is a known tool whose bool value equals its default."""
+    """True if ``name=value`` is a known tool whose bool value equals its default.
+
+    Uses the same default lookup as ``features.is_tool_enabled`` (``.get(name, True)``)
+    so doctor's notion of "matches the default" can never drift from the value the
+    runtime actually applies for an absent key. Pruning is sound only while a shipped
+    default never changes for an *existing* tool: an entry equal to today's default is
+    dropped, so a later default flip would silently change the effective value.
+    """
     return (
         name in TOOLS
         and isinstance(value, bool)
-        and value == SHIPPED_DEFAULTS_ENABLED_TOOLS.get(name)
+        and value == SHIPPED_DEFAULTS_ENABLED_TOOLS.get(name, True)
     )
 
 
@@ -111,13 +118,17 @@ def run_doctor(storage: Storage | None = None, fix: bool = False) -> dict[str, A
         for key, value in enabled.items():
             if key not in TOOLS:
                 remove_tool_keys.add(key)
+                # Show the value so --fix never *silently* drops a deliberate
+                # `False` (a tool from a newer version this binary can't see
+                # yet would fall back to its default once that version knows it).
+                detail = (
+                    f"{key!r}={value!r} is not a known tool (source of the "
+                    "startup 'Unknown tool in enabled_tools' warning)."
+                )
                 findings.append({
                     "type": "orphan_tool",
                     "key": key,
-                    "detail": (
-                        f"{key!r} is not a known tool (source of the startup "
-                        "'Unknown tool in enabled_tools' warning)."
-                    ),
+                    "detail": detail,
                     "action": "remove",
                 })
             elif _is_prunable_default(key, value):
