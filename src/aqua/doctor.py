@@ -1,14 +1,12 @@
 """Config diagnostics and repair — the `doctor` tool.
 
-Reads ``~/.aqua/config.json`` as raw JSON, never via ``Config.from_dict`` —
-this lets doctor inspect the file verbatim and repair configs (including
-corrupt ones) that the tolerant load path can only warn about and ignore.
+Reads ``~/.aqua/config.json`` as raw JSON (not via ``Config.from_dict``) so it
+can inspect and repair the file verbatim, including corrupt configs the
+tolerant load path can only warn about.
 
-Diagnoses (and with ``fix=True`` repairs) three kinds of drift: orphan tool
-keys no longer in ``TOOLS``, entries matching the current shipped default
-(prunable to keep the config sparse), and unknown top-level keys. Absent
-keys use the shipped default (see ``features.is_tool_enabled``); ``doctor``
-is the only code path that rewrites the file.
+Diagnoses three kinds of drift: orphan tool keys, entries matching the
+shipped default, and unknown top-level keys. ``doctor`` is the only code
+path that rewrites the file.
 """
 
 from __future__ import annotations
@@ -47,9 +45,8 @@ def _is_prunable_default(name: str, value: Any) -> bool:
 def run_doctor(storage: Storage | None = None, fix: bool = False) -> dict[str, Any]:
     """Diagnose (and with ``fix=True`` repair) the AQUA config file.
 
-    Returns ``{config_path, healthy, fix_applied, findings, summary}``; each
-    finding's ``action`` is "remove" (auto-fixable) or "manual". ``healthy``
-    reflects the state *after* any repair.
+    Returns ``{config_path, healthy, fix_applied, findings, summary}``;
+    ``healthy`` reflects the state *after* any repair.
     """
     if storage is None:
         storage = Storage()
@@ -155,8 +152,7 @@ def run_doctor(storage: Storage | None = None, fix: bool = False) -> dict[str, A
     manual = [f for f in findings if f["action"] == "manual"]
 
     if fix and removable:
-        # Apply exactly what was diagnosed: the sets built above are the
-        # single source of truth for what gets removed.
+        # Apply exactly what was diagnosed above — no extra removals.
         cleaned: dict[str, Any] = {
             k: v for k, v in raw.items() if k not in unknown_top
         }

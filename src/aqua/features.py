@@ -156,9 +156,8 @@ def is_tool_enabled(name: str, config: Config) -> bool:
 def load_config_with_merge(storage: Storage | None = None) -> Config:
     """Load config and merge shipped defaults IN MEMORY only — never writes to disk.
 
-    An absent tool key means "use the shipped default", so a new version's default
-    change can't clobber a user's choice. `doctor` is the only code path that
-    rewrites `config.json`.
+    Absent tool keys use the shipped default so a version bump can't clobber a
+    user's override; `doctor` is the only path that rewrites `config.json`.
     """
     if storage is None:
         storage = Storage()
