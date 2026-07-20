@@ -11,6 +11,8 @@ MCP server and CLI for managing **Bitcoin** and **Liquid Network** wallets throu
 - **Send & Receive** - Full transaction support (L-BTC, BTC, and Liquid assets like USDt)
 - **Lightning** - Send and receive via Lightning using L-BTC
 - **Assets** - Native support for L-BTC, USDt, and all Liquid assets
+- **Swaps & Pegs** - Convert BTC ↔ L-BTC and swap Liquid/cross-chain assets via SideSwap, SideShift, and Changelly
+- **JAN3 Account** - Login, Lightning Address, and WapuPay (pay ARS bank accounts with USDT) via your JAN3 account
 - **Secure** - Encrypted storage, no remote servers for keys
 
 ## Installation
@@ -126,6 +128,8 @@ Once connected, you can ask Claude to:
 | `lw_address` | Generate Liquid receive address (lq1...) |
 | `lw_send` | Send L-BTC |
 | `lw_send_asset` | Send any Liquid asset (USDt, etc.) |
+| `lw_sweep` | Sweep the entire L-BTC (or one asset) balance to one address |
+| `lw_list_assets` | List known Liquid assets (asset_id, ticker, name, precision) |
 | `lw_transactions` | Transaction history |
 | `lw_tx_status` | Get transaction status (txid or explorer URL) |
 
@@ -137,6 +141,7 @@ Once connected, you can ask Claude to:
 | `btc_address` | Generate Bitcoin receive address (bc1...) |
 | `btc_transactions` | Bitcoin transaction history |
 | `btc_send` | Send BTC |
+| `btc_sweep` | Sweep the entire Bitcoin balance to one address |
 
 **Unified**
 
@@ -151,6 +156,82 @@ Once connected, you can ask Claude to:
 | `lightning_receive` | Generate a Lightning invoice to receive L-BTC (100–25,000,000 Sats) |
 | `lightning_send` | Pay a Lightning invoice using L-BTC via Boltz (~0.1% fee) |
 | `lightning_transaction_status` | Check status of a Lightning swap (send or receive) |
+| `lightning_decode` | Decode a BOLT11 invoice without paying it |
+
+**Swaps — SideSwap (`sideswap_*`)** — BTC ↔ L-BTC pegs and atomic Liquid asset swaps
+
+| Tool | Description |
+|------|-------------|
+| `sideswap_server_status` | Live fees, peg minimums, hot-wallet balance |
+| `sideswap_recommend` | Recommend a peg vs an instant swap for a BTC ↔ L-BTC conversion |
+| `sideswap_peg_quote` | Quote the receive amount for a peg at current fees |
+| `sideswap_peg_in` | Peg BTC → L-BTC |
+| `sideswap_peg_out` | Peg L-BTC → BTC |
+| `sideswap_peg_status` | Check status of a peg order |
+| `sideswap_list_assets` | List Liquid assets SideSwap supports for atomic swaps |
+| `sideswap_quote` | Read-only price quote for a Liquid asset swap |
+| `sideswap_execute_swap` | Execute an atomic Liquid asset swap (L-BTC ↔ USDt, etc.) |
+| `sideswap_swap_status` | Check status of an atomic asset swap |
+
+**Swaps — SideShift (`sideshift_*`)** — custodial cross-chain swaps (USDt across chains, BTC ↔ USDt-on-X)
+
+| Tool | Description |
+|------|-------------|
+| `sideshift_list_coins` | List supported coins and networks |
+| `sideshift_pair_info` | Rate / min / max for a pair |
+| `sideshift_quote` | Fixed-rate quote (~15 min TTL) |
+| `sideshift_recommend` | Recommend SideSwap vs SideShift for a pair |
+| `sideshift_send` | Send funds from the wallet via a fixed-rate shift |
+| `sideshift_receive` | Receive into the wallet via a variable-rate shift |
+| `sideshift_status` | Check status of a shift order |
+
+**Swaps — Changelly (`changelly_*`)** — USDt-Liquid ↔ USDt on Ethereum/Tron/BSC/Solana/Polygon
+
+| Tool | Description |
+|------|-------------|
+| `changelly_list_currencies` | List currencies Changelly supports |
+| `changelly_quote` | Fixed-rate quote for a USDt-Liquid ↔ USDt-on-X swap |
+| `changelly_send` | Send USDt-Liquid out to USDt on another chain |
+| `changelly_receive` | Receive USDt-Liquid from USDt on another chain |
+| `changelly_status` | Check status of a swap order |
+
+**WapuPay (`wapupay_*`)** — pay Argentine bank accounts in ARS, funded with USDT on Liquid
+
+| Tool | Description |
+|------|-------------|
+| `wapupay_exchange_rates` | Current exchange rates (e.g. USDT/ARS); public, no key needed |
+| `wapupay_quote` | Preview USDT cost, fee, and rate for an ARS payment |
+| `wapupay_create_order` | Create a direct-fiat order; returns a Liquid USDT funding address |
+| `wapupay_fund_order` | Re-issue funding instructions for an existing order |
+| `wapupay_order_status` | Check a direct-fiat order's status |
+| `wapupay_orders` | List locally-tracked orders |
+| `wapupay_transactions` | List WapuPay transactions |
+| `wapupay_transaction` | Get a single transaction by id |
+| `wapupay_spending_limit` | Monthly spending limit (USDT) for the account/key |
+| `wapupay_provision_account` | Provision a WapuPay API key via your JAN3 account |
+
+**JAN3 Account (`jan3_*`)** — login, sessions, and Lightning Address for your JAN3 account
+
+| Tool | Description |
+|------|-------------|
+| `jan3_login` / `jan3_verify` | Default login flow: email OTP → verify, saves the session |
+| `jan3_login_start` / `jan3_login_complete` | Fallback paid captchaless login flow |
+| `jan3_session_info` | Status/metadata for a persisted session |
+| `jan3_list_sessions` | List all persisted sessions |
+| `jan3_logout` | Delete a persisted session |
+| `jan3_user_info` | Account profile + Lightning Address status |
+| `jan3_enable_lightning_address` | Enable/disable the Lightning Address |
+| `jan3_rebind_wallet` | Re-bind Lightning Address delivery to a different wallet (destructive) |
+| `jan3_ln_check_username` | Check if a Lightning username is available |
+| `jan3_purchase_ln_username` | Buy/update the Lightning username (on-chain payment) |
+
+**Utilities**
+
+| Tool | Description |
+|------|-------------|
+| `qr_generate` | Generate a PNG QR code for any content (address, invoice, URI) |
+| `qr_decode` | Decode a QR code from an image file |
+| `doctor` | Diagnose (and optionally repair) the `~/.aqua/config.json` config file |
 
 ## CLI
 
@@ -163,6 +244,12 @@ aqua wallet --help
 aqua btc --help
 aqua liquid --help
 aqua lightning --help
+aqua sideswap --help
+aqua sideshift --help
+aqua changelly --help
+aqua wapupay --help
+aqua jan3 --help
+aqua qr --help
 
 # Wallet management
 aqua wallet generate-mnemonic
@@ -200,6 +287,24 @@ aqua liquid tx-status --tx <txid|explorer_url>
 aqua lightning receive --amount 50000
 aqua lightning send --invoice lnbc...
 aqua lightning status --swap-id <id>
+aqua lightning decode --invoice lnbc...
+
+# Swaps & pegs
+aqua sideswap peg-in --wallet-name default                       # BTC -> L-BTC
+aqua sideswap peg-out --amount 50000 --btc-address bc1... --wallet-name default
+aqua sideswap swap --asset-ticker USDt --amount 50000 --wallet-name default
+aqua sideshift send --deposit-coin btc --deposit-network liquid --settle-coin usdt --settle-network tron \
+  --settle-address T... --deposit-amount 0.001 --wallet-name default
+aqua changelly send --external-network tron --settle-address T... --amount-from 100 --wallet-name default
+
+# WapuPay (pay ARS bank accounts, funded with USDT on Liquid)
+aqua wapupay quote --amount-ars 10000 --alias some.alias
+aqua wapupay create-order --amount-ars 10000 --alias some.alias --wallet-name default
+# then fund the returned address:
+aqua liquid send-asset --wallet-name default --address <funding_address> --amount <amount> --asset-ticker USDt
+
+# QR
+aqua qr decode ./invoice-qr.png
 
 # Run as MCP stdio server
 aqua serve       # recommended
@@ -234,6 +339,28 @@ Tips:
 - Never commit `.env` or `secrets.env` files (the project's `.gitignore` already excludes them).
 - Prefer `set -a; . file; set +a` over `export $(cat file)` — the former tolerates spaces and quotes inside values.
 - After importing a wallet, the seed is no longer needed for day-to-day operations; only `AQUA_PASSWORD` is used to sign transactions.
+
+### JAN3 account login
+
+Two login flows, both multi-account (one session per email), ending with a locally saved session:
+
+```bash
+# Default (free email-OTP)
+aqua jan3 login --email you@example.com          # emails an OTP
+aqua jan3 verify --email you@example.com --otp 123456
+
+# Fallback (paid captchaless), for accounts that can't use the free flow
+aqua jan3 login-start --email you@example.com --wallet-name default --password-stdin
+aqua jan3 login-complete --email you@example.com --otp 123456
+```
+
+Once logged in:
+
+```bash
+aqua jan3 list-sessions
+aqua jan3 user-info --email you@example.com
+aqua jan3 logout --email you@example.com
+```
 
 ## Configuration
 
