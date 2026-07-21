@@ -24,7 +24,8 @@ No local node. Liquid: Blockstream Electrum/Esplora. Bitcoin: Esplora only.
 | `src/aqua/` | Python package: server, tools, wallets, swap clients | `src/aqua/AGENTS.md` |
 | `src/aqua/cli/` | `aqua` Click CLI (mirrors MCP tool surface) | `src/aqua/cli/AGENTS.md` |
 | `tests/` | pytest suite, fixtures, mock patterns | `tests/AGENTS.md` |
-| `scripts/` | One-off dev/release helpers | — |
+| `scripts/` | One-off dev/release helpers (incl. `bump_beta.py`) | — |
+| `docs/` | Release & config guides — `PUBLISHING.md` (release/CI flow), `CONFIG.md` | — |
 | `dist/` | Build artifacts (do not edit) | — |
 
 ## Entry points
