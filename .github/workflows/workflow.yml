@@ -16,12 +16,13 @@ jobs:
     name: Build distribution
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # push the auto beta bump back to develop
+      contents: read  # push-back uses the deploy key, not GITHUB_TOKEN
     steps:
       - uses: actions/checkout@v4
         with:
-          # Default GITHUB_TOKEN is used for the push-back; fetch-depth 0 so we
-          # can reset to the develop tip before bumping.
+          # Deploy keys bypass develop's required-checks ruleset; GITHUB_TOKEN can't push.
+          ssh-key: ${{ secrets.DEVELOP_DEPLOY_KEY }}
+          # fetch-depth 0 so we can reset to the develop tip before bumping.
           fetch-depth: 0
 
       - name: Install uv
@@ -47,7 +48,7 @@ jobs:
           echo "Bumped beta version to $NEW"
           git add src/aqua/__init__.py
           # [skip ci] stops the bump commit from re-triggering this workflow
-          # (belt-and-suspenders: GITHUB_TOKEN pushes never re-trigger anyway).
+          # (deploy-key pushes DO re-trigger workflows, unlike GITHUB_TOKEN).
           git commit -m "chore: bump beta to $NEW [skip ci]"
           git push origin HEAD:develop
 
