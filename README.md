@@ -424,3 +424,4 @@ Built with:
 - [BDK](https://github.com/bitcoindevkit/bdk-python) - Bitcoin Development Kit
 - [MCP](https://modelcontextprotocol.io/) - Model Context Protocol
 - [Boltz](https://boltz.exchange/) - Submarine swaps for Lightning
+
