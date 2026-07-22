@@ -1137,12 +1137,14 @@ TOOL_SCHEMAS = {
     },
     "wapupay_create_order": {
         "description": (
-            "Create a WapuPay order and get a Liquid USDT funding address. "
+            "Create a WapuPay order and get a Liquid funding address. Funds from "
+            "USDT (default) or L-BTC — both settle from a Liquid address. "
             "Creates the tentative (freezing the quote) and issues "
-            "funding instructions. Returns address_destination (Liquid), asset_id "
-            "(USDT), funding_amount_usdt, total_amount_usdt, "
-            "total_funding_amount_base_units, funding_expires_at and a QR. Pay the "
-            "TOTAL with lw_send_asset (amount = total_funding_amount_base_units); "
+            "funding instructions. Returns address_destination (Liquid), asset_id, "
+            "funding_amount_usdt, total_amount_usdt, "
+            "total_funding_amount_base_units (for USDT), funding_amount_sat (for LBTC), "
+            "funding_expires_at and a QR. Pay the TOTAL with lw_send_asset (amount "
+            "and unit depend on funding_method — follow pay_instructions); "
             "WapuPay then makes a P2P payer settle ARS to the bank account. Does NOT broadcast the "
             "payment itself — confirm the quote with the user first via wapupay_quote."
         ),
@@ -1167,6 +1169,18 @@ TOOL_SCHEMAS = {
                 "receiver_name": {"type": "string", "description": "Recipient name (optional)"},
                 "refund_address": {"type": "string", "description": "Liquid mainnet refund address (lq1…/ex1…) if funding cannot execute (optional); validated before the order is created"},
                 "wallet_name": {"type": "string", "default": "default", "description": "Wallet you intend to fund from (recorded for tracking)"},
+                "funding_method": {
+                    "type": "string",
+                    "enum": ["USDT", "LBTC"],
+                    "default": "USDT",
+                    "description": (
+                        "Funding rail for the payout — 'USDT' (default) or 'LBTC'. Both "
+                        "settle from a Liquid address. For 'LBTC', WapuPay returns "
+                        "funding_amount_sat (the exact sats of L-BTC to send); for 'USDT', "
+                        "send total_funding_amount_base_units. Follow the returned "
+                        "pay_instructions for the exact amount and unit."
+                    ),
+                },
             },
             "required": ["amount_ars", "alias"],
         },

@@ -1223,21 +1223,24 @@ def wapupay_create_order(
     receiver_name: str | None = None,
     refund_address: str | None = None,
     wallet_name: str = "default",
+    funding_method: str = "USDT",
 ) -> dict[str, Any]:
-    """Create a WapuPay direct-fiat order and get a Liquid USDT funding address.
+    """Create a WapuPay direct-fiat order and get a Liquid funding address.
 
     Creates the payment tentative (freezing the quote) and immediately issues
     funding instructions. The order is persisted before funding, so if funding
     fails you get the order back with `funded=False` and can retry via
     `wapupay_fund_order` — no silent failure.
 
-    The result includes `address_destination` (a Liquid address), `asset_id`
-    (USDT on Liquid), `funding_amount_usdt`, `total_amount_usdt`,
-    `total_funding_amount_base_units`, and `funding_expires_at`. Pay the TOTAL
-    with `lw_send_asset` (amount = `total_funding_amount_base_units`, the exact
-    total_amount_usdt in USDT base units; asset_id from the response); WapuPay
-    then settles `amount_ars` ARS to the bank account. This tool never
-    broadcasts a payment itself.
+    The result includes `address_destination` (a Liquid address),
+    `funding_amount_usdt`, `total_amount_usdt`, `funding_expires_at`, and a
+    `pay_instructions` field that tells you the exact amount and unit to send —
+    follow it. For the default `USDT` rail, pay the TOTAL with `lw_send_asset`
+    (amount = `total_funding_amount_base_units`, the exact total_amount_usdt in
+    USDT base units; asset_id from the response). For the `LBTC` rail, WapuPay
+    returns `funding_amount_sat` instead, and you send that many sats of L-BTC
+    via `lw_send_asset`. WapuPay then settles `amount_ars` ARS to the bank
+    account. This tool never broadcasts a payment itself.
 
     Args:
         amount_ars: amount to pay in Argentine pesos (decimal string, e.g. "10000").
@@ -1254,6 +1257,8 @@ def wapupay_create_order(
         refund_address: Liquid mainnet address (lq1…/ex1…/VJL…) for a refund if funding
             cannot execute (optional); validated before the order is created.
         wallet_name: wallet you intend to fund from (recorded for tracking).
+        funding_method: funding rail — "USDT" (default) or "LBTC"; both settle
+            from a Liquid address.
 
     Returns:
         The order record incl. tentative_id, status, address_destination,
@@ -1268,6 +1273,7 @@ def wapupay_create_order(
         receiver_name=receiver_name,
         refund_address=refund_address,
         wallet_name=wallet_name,
+        funding_method=funding_method,
     )
     return _attach_deposit_qr(result, "address_destination")
 
