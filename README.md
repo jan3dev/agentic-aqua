@@ -417,6 +417,7 @@ AI Assistant ←→ MCP Server (Python) ←→ LWK (Liquid) ──→ Electrum/E
                        └──→ Boltz / Ankara ──→ Lightning
 ```
 
+
 ## Credits
 
 Built with:
