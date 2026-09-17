@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional, TypeVar, Union
 
 import lwk
 
@@ -10,6 +10,53 @@ from .assets import lookup_asset, resolve_asset_name
 from .storage import Storage, WalletData
 
 logger = logging.getLogger(__name__)
+
+# Chain backends LWK can talk to; selected by ``config.electrum_url``.
+LiquidClient = Union[lwk.ElectrumClient, lwk.EsploraClient]
+
+# Default Liquid chain backends, tried in order. The first entry is AQUA's own
+# electrs (Esplora HTTP API); Blockstream is the fallback when it is unreachable.
+# ``config.electrum_url`` replaces this list entirely (no fallback) — an explicit
+# override is honoured as written.
+LIQUID_BACKEND_URLS: dict[str, list[str]] = {
+    "mainnet": [
+        "https://airavata.aquabtc.com/liquid/api",
+        "https://blockstream.info/liquid/api",
+    ],
+    "testnet": [
+        "https://blockstream.info/liquidtestnet/api",
+    ],
+}
+
+# Esplora scans one address per HTTP request; raise the in-flight request count
+# so a wallet with many derived indices does not serialise the whole scan.
+ESPLORA_CONCURRENCY = 12
+
+_T = TypeVar("_T")
+
+_TRANSIENT_MARKERS = (
+    "connection reset",
+    "connection refused",
+    "connection closed",
+    "connection error",
+    "timed out",
+    "timeout",
+    "dns error",
+    "error sending request",
+    "502 bad gateway",
+    "503 service unavailable",
+    "504 gateway timeout",
+)
+
+
+def _is_transient_backend_error(exc: Exception) -> bool:
+    """True when the error looks like the backend is down, not like a bad request.
+
+    Only these failures may fall back to the next backend. A rejected broadcast
+    or an invalid PSET must surface as-is (see CLAUDE.md "No silent fallbacks").
+    """
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _TRANSIENT_MARKERS)
 
 
 @dataclass
@@ -83,7 +130,8 @@ class WalletManager:
         self.storage = storage or Storage()
         self._signers: dict[str, lwk.Signer] = {}
         self._wollets: dict[str, lwk.Wollet] = {}
-        self._clients: dict[str, lwk.ElectrumClient] = {}
+        self._clients: dict[str, LiquidClient] = {}
+        self._fallbacks: dict[str, list[LiquidClient]] = {}
 
     def _get_network(self, network: str) -> lwk.Network:
         """Get LWK network object."""
@@ -94,12 +142,76 @@ class WalletManager:
         else:
             raise ValueError(f"Unknown network: {network}")
 
-    def _get_client(self, network: str) -> lwk.ElectrumClient:
-        """Get or create Electrum client for network."""
+    def _backend_urls(self, network: str) -> list[str]:
+        """Backends to try, in order. An explicit config override wins outright."""
+        override = (self.storage.load_config().electrum_url or "").strip()
+        if override:
+            return [override]
+        return LIQUID_BACKEND_URLS.get(network) or LIQUID_BACKEND_URLS["mainnet"]
+
+    def _build_client(self, url: str, net: lwk.Network) -> LiquidClient:
+        """Build a chain client from a URL.
+
+        An ``http(s)://`` URL selects the Esplora HTTP API (electrs); anything
+        else is an Electrum endpoint (``ssl://host:port`` for TLS,
+        ``tcp://host:port`` or a bare ``host:port`` for plaintext).
+        """
+        if url.startswith(("http://", "https://")):
+            logger.info("Using Esplora backend %s", url)
+            return lwk.EsploraClient.from_builder(
+                lwk.EsploraClientBuilder(
+                    base_url=url, network=net, concurrency=ESPLORA_CONCURRENCY
+                )
+            )
+        tls = url.startswith("ssl://")
+        endpoint = url.split("://", 1)[-1]
+        logger.info("Using Electrum backend %s (tls=%s)", endpoint, tls)
+        return lwk.ElectrumClient(endpoint, tls=tls, validate_domain=tls)
+
+    def _get_client(self, network: str) -> LiquidClient:
+        """Primary chain client for ``network`` (first entry of the backend list)."""
         if network not in self._clients:
             net = self._get_network(network)
-            self._clients[network] = net.default_electrum_client()
+            self._clients[network] = self._build_client(
+                self._backend_urls(network)[0], net
+            )
         return self._clients[network]
+
+    def _get_fallback_clients(self, network: str) -> list[LiquidClient]:
+        """Backends tried after the primary one fails with a network error."""
+        if network not in self._fallbacks:
+            net = self._get_network(network)
+            self._fallbacks[network] = [
+                self._build_client(url, net)
+                for url in self._backend_urls(network)[1:]
+            ]
+        return self._fallbacks[network]
+
+    def _with_client_fallback(
+        self, network: str, fn: Callable[[LiquidClient], _T]
+    ) -> _T:
+        """Run ``fn`` against the primary backend, falling back on network errors.
+
+        Fallback clients are built only once the primary has actually failed.
+        """
+        last_exc: Optional[Exception] = None
+        try:
+            return fn(self._get_client(network))
+        except Exception as exc:
+            if not _is_transient_backend_error(exc):
+                raise
+            logger.warning("Liquid backend unreachable (%s); trying fallback", exc)
+            last_exc = exc
+
+        for client in self._get_fallback_clients(network):
+            try:
+                return fn(client)
+            except Exception as exc:
+                if not _is_transient_backend_error(exc):
+                    raise
+                logger.warning("Fallback backend unreachable (%s)", exc)
+                last_exc = exc
+        raise last_exc
 
     def _get_policy_asset(self, network: str) -> str:
         """Get L-BTC asset ID for network."""
@@ -221,8 +333,10 @@ class WalletManager:
             raise ValueError(f"Wallet '{wallet_name}' not found")
 
         wollet = self._get_wollet(wallet_name)
-        client = self._get_client(wallet.network)
-        update = client.full_scan_to_index(wollet, wallet.next_address_index + 1)
+        update = self._with_client_fallback(
+            wallet.network,
+            lambda c: c.full_scan_to_index(wollet, wallet.next_address_index + 1),
+        )
         if update:
             wollet.apply_update(update)
 
@@ -469,7 +583,6 @@ class WalletManager:
         signer = self._signers[wallet_name]
         wollet = self._get_wollet(wallet_name)
         net = self._get_network(wallet.network)
-        client = self._get_client(wallet.network)
 
         # Sync first
         self.sync_wallet(wallet_name)
@@ -488,7 +601,7 @@ class WalletManager:
         tx = signed_pset.finalize()
 
         # Broadcast
-        txid = client.broadcast(tx)
+        txid = self._with_client_fallback(wallet.network, lambda c: c.broadcast(tx))
         return str(txid)
 
     def sweep(
@@ -528,7 +641,6 @@ class WalletManager:
         signer = self._signers[wallet_name]
         wollet = self._get_wollet(wallet_name)
         net = self._get_network(wallet.network)
-        client = self._get_client(wallet.network)
         policy_asset = self._get_policy_asset(wallet.network)
 
         # An explicit policy-asset id is just an L-BTC sweep — collapse to
@@ -559,7 +671,7 @@ class WalletManager:
         signed_pset = signer.sign(unsigned_pset)
         tx = signed_pset.finalize()
 
-        txid = client.broadcast(tx)
+        txid = self._with_client_fallback(wallet.network, lambda c: c.broadcast(tx))
         return str(txid)
 
     def craft_raw_tx(

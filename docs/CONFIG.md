@@ -30,7 +30,7 @@ it manually.
 |---|---|---|---|
 | `network` | string | `"mainnet"` | `"mainnet"` or `"testnet"` |
 | `default_wallet` | string | `"default"` | Wallet used when `wallet_name` is omitted |
-| `electrum_url` | string \| null | `null` | Override the Liquid Electrum endpoint |
+| `electrum_url` | string \| null | `null` | Pin the Liquid chain backend. `null` uses the built-in list (`airavata.aquabtc.com`, falling back to Blockstream). A value replaces that list outright — **no fallback**. `http(s)://…` selects the Esplora HTTP API (electrs), `ssl://host:port` Electrum over TLS, anything else Electrum in plaintext. Affects reads **and** broadcast. Liquid only — Bitcoin keeps its own list. |
 | `auto_sync` | bool | `true` | Sync wallet on every balance/address call |
 | `enabled_tools` | object | all `true` | Per-tool on/off switches (see below) |
 
