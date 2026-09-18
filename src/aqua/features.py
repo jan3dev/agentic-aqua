@@ -15,8 +15,11 @@ from .tools import TOOLS
 logger = logging.getLogger(__name__)
 
 
-# Tools shipped disabled-by-default (currently empty; add a name to opt a tool out).
-_SHIPPED_DISABLED: frozenset[str] = frozenset()
+# Tools shipped disabled-by-default (add a name to opt a tool out).
+# `lightning_receive` (Lightning -> L-BTC via Ankara) is off while only the
+# send direction is supported; set it to `true` in ~/.aqua/config.json to
+# re-enable it without a release.
+_SHIPPED_DISABLED: frozenset[str] = frozenset({"lightning_receive"})
 
 assert _SHIPPED_DISABLED <= TOOLS.keys(), (
     f"unknown tool in _SHIPPED_DISABLED: {_SHIPPED_DISABLED - TOOLS.keys()}"

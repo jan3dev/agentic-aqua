@@ -884,6 +884,9 @@ def lightning_receive(
 
     User pays this invoice externally; L-BTC arrives within 1-2 minutes.
 
+    DISABLED BY DEFAULT: set `"lightning_receive": true` in ~/.aqua/config.json
+    to expose it again.
+
     Args:
         amount: Amount in satoshis (100 – 25,000,000)
         wallet_name: Liquid wallet to receive into. Default: "default"
@@ -925,7 +928,9 @@ def lightning_send(
 ) -> dict[str, Any]:
     """Pay a Lightning invoice or Lightning Address using L-BTC from a Liquid wallet.
 
-    Uses a submarine swap via Boltz. Fees: ~0.1% + miner fees.
+    Uses a submarine swap via the configured provider — Indra by default
+    (1,000 – 100,000 Sats), or Boltz when `lightning_provider` is set to
+    "boltz" (100 – 25,000,000 Sats). Fees: ~0.1% + miner fees.
 
     Args:
         invoice: BOLT11 Lightning invoice (lnbc.../lntb...) OR Lightning Address
@@ -961,16 +966,16 @@ def lightning_send(
 def lightning_transaction_status(swap_id: str) -> dict[str, Any]:
     """Check the status of a Lightning swap (send or receive).
 
-    For receive swaps: auto-claims L-BTC when settled. For send swaps: checks
-    Boltz status and retrieves preimage when claimed.
+    For receive swaps: auto-claims L-BTC when settled. For send swaps: queries the
+    provider the swap was created with and retrieves the preimage when claimed.
 
     Args:
         swap_id: Swap ID returned from lightning_receive or lightning_send
 
     Returns:
         swap_id, status, amount, wallet_name, invoice; for receive: optional preimage,
-        warning, claim_warning; for send: optional boltz_status, lockup_txid, preimage,
-        claim_txid, refund_info, warning
+        warning, claim_warning; for send: provider ("indra" | "boltz") plus optional
+        provider_status, lockup_txid, preimage, claim_txid, refund_info, warning
     """
     manager = get_lightning_manager()
     return manager.get_swap_status(swap_id)

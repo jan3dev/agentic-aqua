@@ -475,7 +475,7 @@ TOOL_SCHEMAS = {
         },
     },
     "lightning_receive": {
-        "description": "Generate a Lightning invoice to receive L-BTC into a Liquid wallet (~1-2 min after payment). Limits: 100 – 25,000,000 Sats. Also returns qr_code_path: a PNG QR of the invoice — display it to the user so they can scan it.",
+        "description": "Generate a Lightning invoice to receive L-BTC into a Liquid wallet (~1-2 min after payment). Limits: 100 – 25,000,000 Sats. Disabled by default — set \"lightning_receive\": true in ~/.aqua/config.json to expose it. Also returns qr_code_path: a PNG QR of the invoice — display it to the user so they can scan it.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -497,7 +497,7 @@ TOOL_SCHEMAS = {
         },
     },
     "lightning_send": {
-        "description": "Pay a Lightning invoice or Lightning Address using L-BTC from a Liquid wallet (reverse submarine swap). Fees: ~0.1% + miner fees. Limits: 100 – 25,000,000 Sats.",
+        "description": "Pay a Lightning invoice or Lightning Address using L-BTC from a Liquid wallet (submarine swap). Provider: Indra by default, limits 1,000 – 100,000 Sats; Boltz (lightning_provider=\"boltz\") allows 100 – 25,000,000 Sats. Fees: ~0.1% + miner fees (~21 Sats).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -523,7 +523,7 @@ TOOL_SCHEMAS = {
         },
     },
     "lightning_transaction_status": {
-        "description": "Check the status of a Lightning swap (send or receive). For receive: auto-claims L-BTC when settled. For send: checks Boltz status and retrieves preimage when claimed.",
+        "description": "Check the status of a Lightning swap (send or receive). For receive: auto-claims L-BTC when settled. For send: queries the provider the swap was created with (returned as provider / provider_status) and retrieves the preimage when claimed.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1690,8 +1690,8 @@ PASSWORD HANDLING (encryption at rest):
   and Bitcoin in any BIP39-compliant wallet.
 
 QR CODES (deposit addresses & invoices):
-- The receive tools — btc_address, lw_address, lightning_receive, changelly_receive,
-  sideshift_receive — return a `qr_code_path`: an absolute path to a PNG QR image of
+- The receive tools — btc_address, lw_address, changelly_receive,
+  sideshift_receive (and lightning_receive where enabled) — return a `qr_code_path`: an absolute path to a PNG QR image of
   the address/invoice saved on disk.
 - ALWAYS surface this to the user so they can scan instead of copy-paste: display the
   image inline if your client renders local image paths, otherwise tell the user the
@@ -1703,13 +1703,18 @@ QR CODES (deposit addresses & invoices):
   the memo. Always surface the memo as text and warn the user it must be entered
   manually — scanning the QR alone omits it and can cause permanent loss of funds.
 
-LIGHTNING:
-- Use lightning_receive to generate an invoice for receiving L-BTC from Lightning
-  Fees: ~0.1%, Limits: 100 - 25,000,000 Sats, Time: ~1-2 min after payment
+LIGHTNING (send only by default):
 - Use lightning_send to pay a BOLT11 invoice OR a Lightning Address (user@domain.com)
-  using L-BTC (submarine swap via Boltz). Lightning Addresses require amount_sats.
-  Fees: ~0.1% + miner fees, Limits: 100 - 25,000,000 Sats
-- Use lightning_transaction_status to check status of any Lightning swap (send or receive)
+  using L-BTC (submarine swap). Lightning Addresses require amount_sats.
+  Fees: ~0.1% + miner fees (~21 Sats), Limits: 1,000 - 100,000 Sats via Indra
+  (the default provider). Setting lightning_provider="boltz" in ~/.aqua/config.json
+  switches to Boltz, which allows 100 - 25,000,000 Sats and is the only provider
+  with a testnet endpoint.
+- Receiving over Lightning (lightning_receive) ships DISABLED. If the user asks to
+  receive over Lightning, say the tool is off by default and can be re-enabled with
+  "lightning_receive": true in ~/.aqua/config.json; do not promise it otherwise.
+- Use lightning_transaction_status to check status of any Lightning swap; for sends it
+  reports provider and provider_status alongside the local status.
 
 CHANGELLY (custodial USDt cross-chain swaps via AQUA's Ankara proxy):
 - Use changelly_send when the user wants to send USDt-Liquid OUT to USDt on
@@ -1724,7 +1729,7 @@ CHANGELLY (custodial USDt cross-chain swaps via AQUA's Ankara proxy):
   is_success / is_failed booleans.
 - TRUST MODEL: Changelly is custodial — they take the deposit and send the
   converted asset from their hot wallet. Different from SideSwap (atomic on
-  Liquid) and Lightning (Boltz submarine, atomic). Communicate the trade-off.
+  Liquid) and Lightning (submarine swap, atomic). Communicate the trade-off.
 - SCOPE: USDt-Liquid ↔ USDt on the 6 supported chains only. For BTC ↔ X,
   L-BTC ↔ X, or anything non-USDt, use SideSwap or SideShift instead.
 - SideSwap vs Changelly vs SideShift for similar flows:
@@ -1773,7 +1778,7 @@ SIDESHIFT (custodial cross-chain swaps):
   is_success / is_failed booleans so you don't have to memorise the state machine.
 - TRUST MODEL: SideShift is custodial. They take the deposit and send from
   their hot wallet. This is different from SideSwap (atomic on Liquid) and
-  Lightning (Boltz submarine, atomic). Communicate this trade-off to the user.
+  Lightning (submarine swap, atomic). Communicate this trade-off to the user.
 - Memo networks (BNB Beacon, Stellar, etc.) require a memo on either
   the deposit or settle side — pass settle_memo / refund_memo when prompted.
 
@@ -1923,7 +1928,7 @@ WALLET DELETION:
             # Lightning
             Prompt(
                 name="pay_lightning",
-                description="Pay a Lightning invoice using Liquid Bitcoin (via Boltz submarine swap)",
+                description="Pay a Lightning invoice using Liquid Bitcoin (via a submarine swap)",
                 arguments=[
                     PromptArgument(name="wallet_name", description="Wallet name", required=False),
                 ],
@@ -2427,9 +2432,9 @@ Please:
      the amount in sats — Lightning Addresses don't encode the amount.
 3. If a Lightning Address, confirm the resolved amount and metadata before sending.
 4. Explain the fee structure:
-   - Boltz fee: ~0.1% of amount
-   - Miner fee: ~19 Sats
-   - Limits: 100 - 25,000,000 Sats
+   - Provider fee: ~0.1% of amount
+   - Miner fee: ~21 Sats
+   - Limits: 1,000 - 100,000 Sats (Indra, the default provider)
 5. Show total cost (invoice amount + fees) and ask for confirmation
 6. Use lightning_send to execute the swap (pass amount_sats for Lightning Addresses)
 7. Wait for completion (may take 1-3 minutes)
