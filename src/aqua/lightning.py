@@ -8,31 +8,40 @@ from typing import Optional
 from .ankara import AnkaraClient
 from .bolt11 import decode_bolt11_amount_sats
 from .boltz import (
-    MAX_SWAP_AMOUNT_SATS as BOLTZ_MAX_SATS,
-)
-from .boltz import (
-    MIN_SWAP_AMOUNT_SATS as BOLTZ_MIN_SATS,
-)
-from .boltz import (
-    BoltzClient,
     BoltzSwapAlreadyExistsError,
     generate_keypair,
 )
+from .lightning_providers import PROVIDERS, resolve_send_provider
 from .lnurl import is_lightning_address, resolve_lightning_address
 
 logger = logging.getLogger(__name__)
 
-# Boltz API status string -> local lifecycle status (pending | processing | completed | failed)
-_BOLTZ_STATUS_MAP = {
+# Provider API status string -> local lifecycle status
+# (pending | processing | completed | failed). Shared by every Boltz-v2
+# provider; the `invoice.*` / `transaction.lockupFailed` entries come from
+# Indra's status enum.
+_SWAP_STATUS_MAP = {
     "swap.created": "pending",
     "transaction.mempool": "processing",
     "transaction.confirmed": "processing",
+    "invoice.set": "processing",
+    "invoice.pending": "processing",
     "transaction.claim.pending": "completed",
     "transaction.claimed": "completed",
+    "invoice.paid": "completed",
+    "invoice.settled": "completed",
     "swap.expired": "failed",
     "transaction.failed": "failed",
     "transaction.refunded": "failed",
+    "transaction.lockupFailed": "failed",
+    "invoice.expired": "failed",
+    "invoice.failedToPay": "failed",
 }
+
+# Statuses at which the provider can hand back the preimage / claim txid.
+_CLAIM_DETAIL_STATUSES = frozenset(
+    name for name, mapped in _SWAP_STATUS_MAP.items() if mapped == "completed"
+)
 
 # Ankara swap amount limits (satoshis)
 ANKARA_MIN_SATS = 100
@@ -45,7 +54,7 @@ class LightningSwap:
 
     swap_id: str
     swap_type: str  # "send" | "receive"
-    provider: str  # "boltz" | "ankara"
+    provider: str  # "indra" | "boltz" (send) | "ankara" (receive)
     invoice: str
     amount: int
     wallet_name: str
@@ -80,7 +89,7 @@ class LightningSwap:
 
 
 class LightningManager:
-    """Unified Lightning transaction manager (send via Boltz, receive via Ankara)."""
+    """Unified Lightning transaction manager (send via Indra/Boltz, receive via Ankara)."""
 
     def __init__(self, storage, wallet_manager):
         """
@@ -149,6 +158,36 @@ class LightningManager:
 
         return swap
 
+    @staticmethod
+    def _check_pair_limits(invoice_amount: int, pair: dict, provider) -> None:
+        """Reject an amount the provider's live L-BTC/BTC pair will not accept.
+
+        Runs on top of the per-provider constants so a limit change at the
+        provider takes effect without a release. A pair that omits or
+        malformats `limits` is left to the constants rather than silently
+        treated as unlimited.
+        """
+        limits = pair.get("limits")
+        if not isinstance(limits, dict):
+            logger.warning(
+                "%s L-BTC/BTC pair has no usable limits block; "
+                "relying on client-side constants only.",
+                provider.label,
+            )
+            return
+        minimal = limits.get("minimal")
+        maximal = limits.get("maximal")
+        if isinstance(minimal, int) and invoice_amount < minimal:
+            raise ValueError(
+                f"Invoice amount {invoice_amount} sats is below the current "
+                f"{provider.label} L-BTC/BTC minimum ({minimal} sats)"
+            )
+        if isinstance(maximal, int) and invoice_amount > maximal:
+            raise ValueError(
+                f"Invoice amount {invoice_amount} sats exceeds the current "
+                f"{provider.label} L-BTC/BTC maximum ({maximal} sats)"
+            )
+
     def pay_invoice(
         self,
         invoice: str,
@@ -157,7 +196,10 @@ class LightningManager:
         amount_sats: Optional[int] = None,
     ) -> LightningSwap:
         """
-        Pay a Lightning invoice or Lightning Address using L-BTC via Boltz submarine swap.
+        Pay a Lightning invoice or Lightning Address using L-BTC via a submarine swap.
+
+        The provider is `config.lightning_provider` (default "indra"), overridden
+        by the `AQUA_LIGHTNING_PROVIDER` env var.
 
         Args:
             invoice: BOLT11 Lightning invoice (lnbc.../lntb...) OR Lightning Address (user@domain)
@@ -169,15 +211,17 @@ class LightningManager:
         Returns:
             LightningSwap with pending status and lockup_txid
         """
+        provider = resolve_send_provider(self.storage.load_config())
+
         if is_lightning_address(invoice):
             if amount_sats is None:
                 raise ValueError(
                     "amount_sats is required when paying a Lightning Address"
                 )
-            if amount_sats < BOLTZ_MIN_SATS or amount_sats > BOLTZ_MAX_SATS:
+            if amount_sats < provider.min_sats or amount_sats > provider.max_sats:
                 raise ValueError(
-                    f"amount_sats {amount_sats} outside Boltz limits "
-                    f"({BOLTZ_MIN_SATS}-{BOLTZ_MAX_SATS} sats)"
+                    f"amount_sats {amount_sats} outside {provider.label} limits "
+                    f"({provider.min_sats}-{provider.max_sats} sats)"
                 )
             invoice = resolve_lightning_address(invoice, amount_sats)
         else:
@@ -213,27 +257,41 @@ class LightningManager:
 
         network = wallet_data.network
 
-        if invoice_amount < BOLTZ_MIN_SATS:
+        if invoice_amount < provider.min_sats:
             raise ValueError(
-                f"Invoice amount {invoice_amount} sats is below minimum ({BOLTZ_MIN_SATS} sats)"
+                f"Invoice amount {invoice_amount} sats is below minimum "
+                f"({provider.min_sats} sats) on {provider.label}"
             )
-        if invoice_amount > BOLTZ_MAX_SATS:
+        if invoice_amount > provider.max_sats:
             raise ValueError(
-                f"Invoice amount {invoice_amount} sats exceeds maximum ({BOLTZ_MAX_SATS} sats)"
+                f"Invoice amount {invoice_amount} sats exceeds maximum "
+                f"({provider.max_sats} sats) on {provider.label}"
             )
-        client = BoltzClient(network=network)
+        client = provider.client_factory(network=network)
         logger.debug(
-            "lightning pay_invoice start wallet=%s network=%s invoice_amount=%s amount_override=%s",
+            "lightning pay_invoice start wallet=%s provider=%s network=%s "
+            "invoice_amount=%s amount_override=%s",
             wallet_name,
+            provider.name,
             network,
             invoice_amount,
             amount_sats,
         )
         pairs = client.get_submarine_pairs()
         pair = pairs.get("L-BTC", {}).get("BTC")
-        logger.debug("Boltz pairs lookup network=%s pair_found=%s pair=%s", network, bool(pair), pair)
+        logger.debug(
+            "%s pairs lookup network=%s pair_found=%s pair=%s",
+            provider.label,
+            network,
+            bool(pair),
+            pair,
+        )
         if not pair:
-            raise ValueError("L-BTC/BTC pair not available on Boltz")
+            raise ValueError(f"L-BTC/BTC pair not available on {provider.label}")
+
+        # The live pair is the authority: the constants above only bound what
+        # aqua attempts, so a limit change at the provider needs no release.
+        self._check_pair_limits(invoice_amount, pair, provider)
 
         refund_privkey, refund_pubkey = generate_keypair()
         logger.debug("Generated refund public key for Boltz swap wallet=%s", wallet_name)
@@ -241,18 +299,21 @@ class LightningManager:
             swap_resp = client.create_submarine_swap(invoice, refund_pubkey)
         except BoltzSwapAlreadyExistsError as e:
             logger.warning(
-                "Boltz reported duplicate invoice submission wallet=%s invoice_amount=%s",
+                "%s reported duplicate invoice submission wallet=%s invoice_amount=%s",
+                provider.label,
                 wallet_name,
                 invoice_amount,
             )
             raise ValueError(
-                "This invoice was already submitted to Boltz before and a remote swap already exists for it. "
-                "It does not look like the code is trying to pay it twice in this same execution; "
-                "the issue is that Boltz already knows it from a previous attempt."
+                f"This invoice was already submitted to {provider.label} before and a "
+                "remote swap already exists for it. It does not look like the code is "
+                "trying to pay it twice in this same execution; the issue is that "
+                f"{provider.label} already knows it from a previous attempt."
             ) from e
         expected_amount = swap_resp["expectedAmount"]
         logger.debug(
-            "Boltz swap created id=%s expected_amount=%s timeout_block_height=%s",
+            "%s swap created id=%s expected_amount=%s timeout_block_height=%s",
+            provider.label,
             swap_resp.get("id"),
             expected_amount,
             swap_resp.get("timeoutBlockHeight"),
@@ -271,13 +332,13 @@ class LightningManager:
             raise ValueError(
                 f"Insufficient L-BTC balance: have {lbtc_balance} sats, "
                 f"need at least {expected_amount} sats "
-                f"(invoice {invoice_amount} sats + Boltz swap fees)"
+                f"(invoice {invoice_amount} sats + {provider.label} swap fees)"
             )
 
         swap = LightningSwap(
             swap_id=swap_resp["id"],
             swap_type="send",
-            provider="boltz",
+            provider=provider.name,
             invoice=invoice,
             amount=expected_amount,
             wallet_name=wallet_name,
@@ -368,14 +429,19 @@ class LightningManager:
 
     def get_send_status(self, swap_id: str) -> dict:
         """
-        Check the status of a Lightning send swap (Boltz) and enrich with claim details when claimed.
+        Check the status of a Lightning send swap and enrich with claim details when claimed.
+
+        The swap is queried against the provider it was created with
+        (`swap.provider`), so swaps predating a provider switch keep resolving
+        against the right service.
 
         Args:
-            swap_id: Swap ID from pay_invoice (Boltz swap id).
+            swap_id: Swap ID from pay_invoice (provider swap id).
 
         Returns:
-            Dict with swap_id, swap_type, status, boltz_status, amount, wallet_name, invoice,
-            lockup_txid, network, and optional preimage, claim_txid, refund_info, warning.
+            Dict with swap_id, swap_type, status, provider, provider_status, amount,
+            wallet_name, invoice, lockup_txid, network, and optional preimage,
+            claim_txid, refund_info, warning.
         """
         swap = self.storage.load_lightning_swap(swap_id)
         if not swap:
@@ -383,21 +449,29 @@ class LightningManager:
         if swap.swap_type != "send":
             raise ValueError(f"Swap {swap_id} is a receive swap, not a send swap")
 
-        warning = None
-        boltz_status = None
-        try:
-            client = BoltzClient(network=swap.network)
-            status_resp = client.get_swap_status(swap_id)
-            boltz_status = status_resp.get("status") or status_resp.get("state")
-            if boltz_status is None:
-                boltz_status = str(status_resp)
+        provider = PROVIDERS.get(swap.provider)
+        provider_label = provider.label if provider else swap.provider
 
-            mapped = _BOLTZ_STATUS_MAP.get(boltz_status)
+        warning = None
+        provider_status = None
+        try:
+            if provider is None:
+                raise ValueError(
+                    f"Swap {swap_id} was created with unknown provider "
+                    f"{swap.provider!r}; cannot query its status."
+                )
+            client = provider.client_factory(network=swap.network)
+            status_resp = client.get_swap_status(swap_id)
+            provider_status = status_resp.get("status") or status_resp.get("state")
+            if provider_status is None:
+                provider_status = str(status_resp)
+
+            mapped = _SWAP_STATUS_MAP.get(provider_status)
             if mapped is not None:
                 swap.status = mapped
                 self.storage.save_lightning_swap(swap)
 
-            if boltz_status in ("transaction.claim.pending", "transaction.claimed"):
+            if provider_status in _CLAIM_DETAIL_STATUSES:
                 try:
                     details = client.get_claim_details(swap_id)
                     preimage = details.get("preimage")
@@ -415,20 +489,21 @@ class LightningManager:
                 except Exception as e:
                     warning = f"Claim details unavailable: {e}"
         except Exception as e:
-            warning = f"Could not fetch Boltz status: {e}"
+            warning = f"Could not fetch {provider_label} status: {e}"
 
         result = {
             "swap_id": swap.swap_id,
             "swap_type": swap.swap_type,
             "status": swap.status,
+            "provider": swap.provider,
             "amount": swap.amount,
             "wallet_name": swap.wallet_name,
             "invoice": swap.invoice,
             "lockup_txid": swap.lockup_txid,
             "network": swap.network,
         }
-        if boltz_status is not None:
-            result["boltz_status"] = boltz_status
+        if provider_status is not None:
+            result["provider_status"] = provider_status
         if swap.preimage:
             result["preimage"] = swap.preimage
         if swap.claim_txid:
