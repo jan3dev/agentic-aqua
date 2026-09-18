@@ -110,8 +110,7 @@ def run_doctor(storage: Storage | None = None, fix: bool = False) -> dict[str, A
         })
 
     # --- lightning_provider ---
-    # Never auto-corrected: a hand-picked provider is a deliberate choice, and
-    # silently rewriting it would move real funds through a different service.
+    # Deliberate choice, never auto-corrected — see docs/CONFIG.md.
     if "lightning_provider" in raw:
         provider = raw["lightning_provider"]
         if not isinstance(provider, str) or provider not in PROVIDERS:

@@ -16,10 +16,7 @@ from .lnurl import is_lightning_address, resolve_lightning_address
 
 logger = logging.getLogger(__name__)
 
-# Provider API status string -> local lifecycle status
-# (pending | processing | completed | failed). Shared by every Boltz-v2
-# provider; the `invoice.*` / `transaction.lockupFailed` entries come from
-# Indra's status enum.
+# Provider status string -> local lifecycle status; invoice.* entries are Indra's.
 _SWAP_STATUS_MAP = {
     "swap.created": "pending",
     "transaction.mempool": "processing",
@@ -160,13 +157,8 @@ class LightningManager:
 
     @staticmethod
     def _check_pair_limits(invoice_amount: int, pair: dict, provider) -> None:
-        """Reject an amount the provider's live L-BTC/BTC pair will not accept.
-
-        Runs on top of the per-provider constants so a limit change at the
-        provider takes effect without a release. A pair that omits or
-        malformats `limits` is left to the constants rather than silently
-        treated as unlimited.
-        """
+        """Reject an amount outside the live pair's limits (falls back to the
+        client-side constants if `limits` is missing/malformed)."""
         limits = pair.get("limits")
         if not isinstance(limits, dict):
             logger.warning(
@@ -289,8 +281,7 @@ class LightningManager:
         if not pair:
             raise ValueError(f"L-BTC/BTC pair not available on {provider.label}")
 
-        # The live pair is the authority: the constants above only bound what
-        # aqua attempts, so a limit change at the provider needs no release.
+        # Live pair is authoritative; see docs/CONFIG.md.
         self._check_pair_limits(invoice_amount, pair, provider)
 
         refund_privkey, refund_pubkey = generate_keypair()
@@ -431,9 +422,7 @@ class LightningManager:
         """
         Check the status of a Lightning send swap and enrich with claim details when claimed.
 
-        The swap is queried against the provider it was created with
-        (`swap.provider`), so swaps predating a provider switch keep resolving
-        against the right service.
+        Queried against the provider the swap was created with (docs/RELEASE_NOTES.md).
 
         Args:
             swap_id: Swap ID from pay_invoice (provider swap id).

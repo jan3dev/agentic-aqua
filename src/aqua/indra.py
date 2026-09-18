@@ -20,9 +20,7 @@ INDRA_API = {
 
 PROVIDER_LABEL = "Indra"
 
-# Client-side swap amount limits (satoshis), from the live L-BTC -> BTC pair.
-# The effective check is the pair's own `limits` (see `lightning.pay_invoice`);
-# these constants only bound what aqua will even attempt.
+# Client-side guards only; the live pair's own limits are authoritative (docs/CONFIG.md).
 MIN_SWAP_AMOUNT_SATS = 1_000
 MAX_SWAP_AMOUNT_SATS = 100_000
 

@@ -84,9 +84,7 @@ def receive(ctx, amount, wallet_name, password_stdin):
 def send(ctx, invoice, ln_address, amount_sats, wallet_name, password_stdin):
     """Pay a Lightning invoice or Lightning Address using L-BTC.
 
-    Routed through the provider in `lightning_provider` (default "indra",
-    1,000-100,000 sats); set it to "boltz" for the wider Boltz limits or for
-    testnet.
+    Provider from `lightning_provider` (default "indra"); see docs/CONFIG.md.
     """
     if bool(invoice) == bool(ln_address):
         raise click.UsageError("Provide exactly one of --invoice or --ln-address")

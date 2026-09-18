@@ -928,9 +928,7 @@ def lightning_send(
 ) -> dict[str, Any]:
     """Pay a Lightning invoice or Lightning Address using L-BTC from a Liquid wallet.
 
-    Uses a submarine swap via the configured provider — Indra by default
-    (1,000 – 100,000 Sats), or Boltz when `lightning_provider` is set to
-    "boltz" (100 – 25,000,000 Sats). Fees: ~0.1% + miner fees.
+    Provider and limits come from `lightning_provider`; see docs/CONFIG.md.
 
     Args:
         invoice: BOLT11 Lightning invoice (lnbc.../lntb...) OR Lightning Address

@@ -36,8 +36,7 @@ class SwapProvider:
 PROVIDERS: dict[str, SwapProvider] = {
     "indra": SwapProvider(
         name="indra",
-        # Resolved through the module at call time so tests can patch
-        # `aqua.indra.IndraClient` / `aqua.boltz.BoltzClient`.
+        # Late-bound so tests can patch aqua.indra.IndraClient.
         client_factory=lambda network="mainnet": indra.IndraClient(network=network),
         min_sats=indra.MIN_SWAP_AMOUNT_SATS,
         max_sats=indra.MAX_SWAP_AMOUNT_SATS,

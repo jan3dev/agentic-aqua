@@ -16,9 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 # Tools shipped disabled-by-default (add a name to opt a tool out).
-# `lightning_receive` (Lightning -> L-BTC via Ankara) is off while only the
-# send direction is supported; set it to `true` in ~/.aqua/config.json to
-# re-enable it without a release.
+# lightning_receive is off by default — see docs/RELEASE_NOTES.md.
 _SHIPPED_DISABLED: frozenset[str] = frozenset({"lightning_receive"})
 
 assert _SHIPPED_DISABLED <= TOOLS.keys(), (

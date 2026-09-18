@@ -98,8 +98,7 @@ class Config:
     default_wallet: str = "default"
     electrum_url: Optional[str] = None
     auto_sync: bool = True
-    # Backend for L-BTC -> Lightning send swaps: "indra" (default) or "boltz".
-    # Overridden by the AQUA_LIGHTNING_PROVIDER env var.
+    # Send-swap backend ("indra" default, or "boltz"); see docs/CONFIG.md.
     lightning_provider: str = "indra"
     enabled_tools: dict[str, bool] = field(default_factory=dict)
 
