@@ -472,8 +472,7 @@ class LightningManager:
                 provider_status = str(status_resp)
 
             mapped = _SWAP_STATUS_MAP.get(provider_status)
-            # A broadcast refund is final; the provider often keeps reporting the
-            # failure that caused it, which would otherwise undo the local status.
+            # A broadcast refund is final; don't let a stale provider status undo it.
             if mapped is not None and not swap.refund_txid:
                 swap.status = mapped
                 self.storage.save_lightning_swap(swap)
@@ -538,10 +537,8 @@ class LightningManager:
     ) -> dict:
         """Recover the L-BTC locked up by a failed send swap.
 
-        `claim_public_key` and `blinding_key` only need supplying for swaps made
-        before those fields were persisted; the provider can hand them over.
-        Note that omitting `destination_address` consumes a fresh wallet address
-        even on a dry run.
+        `claim_public_key`/`blinding_key` are legacy-swap overrides; see
+        docs/REFUND.md.
         """
         swap = self.storage.load_lightning_swap(swap_id)
         if not swap:
@@ -588,8 +585,7 @@ class LightningManager:
             )
         client = provider.client_factory(network=swap.network)
 
-        # A refund needs the network anyway, so a lookup failure is fatal rather
-        # than something to paper over with the stale local status.
+        # Deliberately uncaught: a refund needs the network regardless.
         status_resp = client.get_swap_status(swap_id)
         provider_status = status_resp.get("status") or status_resp.get("state")
         mapped = _SWAP_STATUS_MAP.get(provider_status)

@@ -68,8 +68,7 @@ _SEQUENCE = 0xFFFFFFFD
 _SIGHASH_DEFAULT = 0x00
 _DUMMY_SIGNATURE = bytes(64)
 
-# A refund spends one small input; anything above this means a bug in the fee
-# maths, and the provider rejects overpaying transactions anyway.
+# A refund spends one small input; anything above this signals a fee-maths bug.
 MAX_REFUND_FEE_SATS = 1_000
 MIN_FEE_RATE = 0.1  # Liquid's minimum relay rate, in sat/vbyte.
 
@@ -82,8 +81,7 @@ class LockupSpentError(RefundError):
     """The lockup output is already spent, so there is nothing left to refund."""
 
 
-# Neither the provider API nor the Electrum client offers a UTXO lookup, so a
-# spent lockup is only visible through how the provider words its refusal.
+# No UTXO lookup exists; a spent lockup only shows up in the refusal wording.
 _SPENT_LOCKUP_SIGNALS = (
     "no unspent lockup",
     "already spent",
@@ -369,9 +367,8 @@ def build_refund_transaction(
 ) -> Any:
     """Build and blind the refund transaction, leaving input 0 unsigned.
 
-    Returns a wally tx with a dummy 64-byte witness on input 0. The sighash
-    covers the blinded outputs, so nothing may change after this point except
-    replacing that witness.
+    The sighash covers the blinded outputs, so nothing may change afterward
+    except replacing that dummy witness.
     """
     if fee <= 0:
         raise RefundError("refund fee must be positive")
@@ -396,8 +393,7 @@ def build_refund_transaction(
         psbt, 0, wally.tx_get_output_rangeproof(utxo.tx, utxo.vout)
     )
 
-    # Destination stays confidential: the input is blinded, so at least one
-    # output must be too for the blinding factors to balance.
+    # Destination stays confidential — see "Outputs" in docs/REFUND.md.
     # Elements tags explicit (unblinded) assets and values with a 0x01 prefix.
     explicit_asset = b"\x01" + utxo.asset
     dest_out = wally.tx_elements_output_init(
@@ -420,8 +416,7 @@ def build_refund_transaction(
     wally.map_add_integer(vbfs, 0, utxo.vbf)
     wally.map_add_integer(assets, 0, utxo.asset)
     wally.map_add_integer(abfs, 0, utxo.abf)
-    # 5 x 32 bytes per blinded output: abf, vbf, ephemeral key, explicit-value
-    # rangeproof and surjection proof seed.
+    # 5 x 32B per blinded output: abf, vbf, ephemeral key, rangeproof, surjection seed.
     wally.psbt_blind(psbt, values, vbfs, assets, abfs, secrets.token_bytes(5 * 32), 0, 0)
 
     stack = wally.tx_witness_stack_init(1)
@@ -457,11 +452,8 @@ def elements_taproot_sighash(
 ) -> bytes:
     """BIP-341 signature hash as modified by Elements (SIGHASH_DEFAULT only).
 
-    `leaf_hash` selects a script-path spend; omit it for the key path. libwally
-    cannot do the script path here because it hardcodes Bitcoin's tapleaf
-    version, so this follows elements/doc/taproot-sighash.mediawiki directly:
-    genesis hash twice up front, no BIP-341 epoch byte. Tests pin the key-path
-    result against wally to keep the two in step.
+    `leaf_hash` selects a script-path spend; omit it for the key path. See
+    docs/REFUND.md for why libwally can't compute this for Liquid itself.
     """
     num_inputs = wally.tx_get_num_inputs(tx)
     num_outputs = wally.tx_get_num_outputs(tx)
@@ -589,13 +581,11 @@ def _build_signed_refund(
 ) -> tuple[Any, int]:
     """Build the refund tx at a settled fee, then hand it to `sign_input`.
 
-    Two passes: the first only exists to measure the real (blinded) size, since
-    rangeproofs dominate it. `sign_input` receives the finished transaction and
-    its sighash message and returns the witness stack.
+    Built twice: the draft only measures size (rangeproofs dominate it) before
+    the real fee is known. `sign_input(tx, message)` returns the witness stack.
     """
     genesis = GENESIS_BLOCK_HASH[network]
-    # The draft only exists to measure the blinded size, which the fee value does
-    # not affect — so it uses a nominal fee that even the smallest lockup covers.
+    # Nominal fee: size doesn't depend on it, and even the smallest lockup covers 1 sat.
     draft = build_refund_transaction(utxo, destination_address, 1, locktime, network)
     fee = _estimate_fee(draft, fee_rate)
     if fee > MAX_REFUND_FEE_SATS:
@@ -638,8 +628,7 @@ def refund_cooperative(
     our_pubkey = tree.refund_public_key
 
     def sign_input(tx: Any, message: bytes) -> list[bytes]:
-        # A fresh nonce per attempt: reusing one across two different messages
-        # leaks the private key.
+        # Fresh nonce per attempt — reuse leaks the key; see docs/REFUND.md.
         secnonce, our_pubnonce = nonce_gen(
             refund_private_key,
             our_pubkey,

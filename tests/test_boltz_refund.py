@@ -320,11 +320,10 @@ def _scriptpath_sighash_wally(tx, index, spks, assets, values, genesis, script):
 class TestScriptPathSighashAgainstWally:
     """Pins the script-path structure, which the key-path cross-check cannot reach.
 
-    The two implementations differ only in the tapleaf version used to hash the
-    leaf (Elements 0xc4 vs the 0xc0 wally hardcodes). Feeding this module wally's
-    version makes them directly comparable, so a match proves every other part of
-    the extension — spend type, leaf hash placement, key version, codeseparator.
-    `TestSwapTree` pins the 0xc4 half against a real on-chain scriptPubKey.
+    The two implementations differ only in the tapleaf version (Elements 0xc4
+    vs the 0xc0 wally hardcodes); feeding this module wally's version makes
+    them comparable, so a match proves the rest of the extension. `TestSwapTree`
+    pins the 0xc4 half against a real on-chain scriptPubKey.
     """
 
     def setup_method(self):
@@ -433,8 +432,7 @@ class TestRefundTransactionShape:
             build_refund_transaction(
                 self._utxo(value=121), CONFIDENTIAL_ADDRESS, MAX_REFUND_FEE_SATS, 0, "mainnet"
             )
-        # At the nominal draft fee it gets past the guard and only fails later,
-        # in blinding, which this stub's placeholder factors cannot satisfy.
+        # Past the guard at the nominal fee; fails later in blinding instead.
         with pytest.raises(ValueError) as exc_info:
             build_refund_transaction(
                 self._utxo(value=121), CONFIDENTIAL_ADDRESS, 1, 0, "mainnet"

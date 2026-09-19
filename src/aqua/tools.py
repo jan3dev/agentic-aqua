@@ -988,8 +988,7 @@ def lightning_refund(
 ) -> dict[str, Any]:
     """Recover the L-BTC locked up by a failed Lightning send swap.
 
-    Cosigns a cooperative refund with the provider when it offers one, and
-    otherwise spends the refund branch once the timeout block has passed.
+    Cooperative-first with an automatic unilateral fallback; see docs/REFUND.md.
 
     Args:
         swap_id: Swap ID returned from lightning_send

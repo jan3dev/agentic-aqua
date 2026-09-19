@@ -15,6 +15,10 @@ aqua lightning refund --swap-id <id> --dry-run       # build and sign, do not br
 `lightning_transaction_status` reports `refund_info.refundable` for swaps that
 are still waiting for one.
 
+Without `--address`, the destination is a fresh address of the swap's own
+wallet — consumed from the address pool even on a `--dry-run` call, since the
+wallet has no way to hand out a preview address and then take it back.
+
 ## The two paths
 
 The lockup output's taproot tree has a key path and two leaves:
@@ -80,7 +84,9 @@ implemented.
   never key-sorts them, and the reverse order yields a different address.
 * **MuSig2** comes from `src/aqua/_bip327.py`, the BIP-327 reference
   implementation vendored under BSD-3-Clause. It is not constant-time, which is
-  acceptable only because refund keys are ephemeral and per-swap.
+  acceptable only because refund keys are ephemeral and per-swap. A fresh nonce
+  is generated on every attempt — reusing one across two different messages
+  leaks the private key.
 * **Sighash.** libwally computes the Elements key-path sighash, but hardcodes
   Bitcoin's tapleaf version inside its own script-path variant, so the script
   path needs the hand-rolled `elements_taproot_sighash`. A test pins its
