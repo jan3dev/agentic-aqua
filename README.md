@@ -155,6 +155,7 @@ Once connected, you can ask Claude to:
 |------|-------------|
 | `lightning_send` | Pay a Lightning invoice or Lightning Address using L-BTC (~0.1% + ~21 Sats) |
 | `lightning_transaction_status` | Check status of a Lightning swap (send or receive) |
+| `lightning_refund` | Recover the L-BTC locked up by a failed send swap |
 | `lightning_decode` | Decode a BOLT11 invoice without paying it |
 | `lightning_receive` | Generate a Lightning invoice to receive L-BTC — **disabled by default** |
 
@@ -164,6 +165,11 @@ service (1,000–100,000 Sats, mainnet only). Set `"lightning_provider": "boltz"
 (100–25,000,000 Sats, and the only option on testnet). Receiving over Lightning
 ships off; re-enable it with `"lightning_receive": true`. See
 [docs/CONFIG.md](docs/CONFIG.md).
+
+When a send fails, its L-BTC stays locked on chain until it is refunded:
+`lightning_refund` (CLI `aqua lightning refund --swap-id <id>`) recovers it,
+cooperatively with the provider where possible and on its own after the swap's
+timeout block. See [docs/REFUND.md](docs/REFUND.md).
 
 **Swaps — SideSwap (`sideswap_*`)** — BTC ↔ L-BTC pegs and atomic Liquid asset swaps
 

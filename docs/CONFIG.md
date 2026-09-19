@@ -132,6 +132,7 @@ All tool names accepted in `enabled_tools`:
 | `lightning_receive` | `aqua lightning receive` | **Ships disabled.** Set to `true` to expose the tool and the CLI command. |
 | `lightning_send` | `aqua lightning send` | |
 | `lightning_transaction_status` | `aqua lightning status` | |
+| `lightning_refund` | `aqua lightning refund` | Recovers a failed send swap's lockup — see `docs/REFUND.md` |
 | `changelly_list_currencies` | `aqua changelly currencies` | |
 | `changelly_quote` | `aqua changelly quote` | |
 | `changelly_send` | `aqua changelly send` | |
