@@ -535,6 +535,35 @@ TOOL_SCHEMAS = {
             "required": ["swap_id"],
         },
     },
+    "lightning_refund": {
+        "description": "Recover the L-BTC locked up by a failed Lightning send swap, back to the swap's own wallet (or a given Liquid address). Works with both providers. A cooperative refund is cosigned by the provider and works right away; if the provider declines, the refund branch can be spent on its own once the timeout block passes. claim_public_key and blinding_key only need supplying for swaps created before those fields were stored locally — the error message says when that applies.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "swap_id": {
+                    "type": "string",
+                    "description": "Swap ID returned from lightning_send",
+                },
+                "address": {
+                    "type": "string",
+                    "description": "Liquid destination address; defaults to a new address of the swap's wallet",
+                },
+                "claim_public_key": {
+                    "type": "string",
+                    "description": "Provider's claim public key (hex), for legacy swaps only",
+                },
+                "blinding_key": {
+                    "type": "string",
+                    "description": "Lockup blinding key (hex), for legacy swaps only",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Build and sign the refund but do not broadcast it (default false)",
+                },
+            },
+            "required": ["swap_id"],
+        },
+    },
     "lightning_decode": {
         "description": "Decode a BOLT11 Lightning invoice without paying it. Returns amount_sats (null for zero-amount invoices), description/message, and expiry_seconds.",
         "inputSchema": {
@@ -1715,6 +1744,9 @@ LIGHTNING (send only by default):
   "lightning_receive": true in ~/.aqua/config.json; do not promise it otherwise.
 - Use lightning_transaction_status to check status of any Lightning swap; for sends it
   reports provider and provider_status alongside the local status.
+- When a send swap fails, its L-BTC stays locked on chain: use lightning_refund with
+  the swap_id to recover it. refund_info.refundable in the status tells you whether a
+  swap is still awaiting one.
 
 CHANGELLY (custodial USDt cross-chain swaps via AQUA's Ankara proxy):
 - Use changelly_send when the user wants to send USDt-Liquid OUT to USDt on
@@ -2442,7 +2474,7 @@ Please:
    - Swap ID for reference
    - Preimage (proof of payment)
    - Explorer link for lockup transaction
-9. If swap fails, explain that L-BTC is locked until timeout and can be refunded""",
+9. If the swap fails, run lightning_refund with the swap_id to recover the locked L-BTC""",
                         ),
                     )
                 ]

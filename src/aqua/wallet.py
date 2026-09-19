@@ -105,6 +105,24 @@ class WalletManager:
         """Get L-BTC asset ID for network."""
         return str(self._get_network(network).policy_asset())
 
+    # Chain access that is independent of any one wallet
+
+    def get_block_height(self, network: str = "mainnet") -> int:
+        """Current Liquid chain tip height."""
+        return self._get_client(network).tip().height()
+
+    def get_transaction_hex(self, txid: str, network: str = "mainnet") -> str:
+        """Fetch a confirmed transaction from the chain, as raw hex."""
+        tx = self._get_client(network).get_tx(lwk.Txid(txid))
+        if tx is None:
+            raise ValueError(f"Transaction {txid} not found on {network}")
+        return str(tx)
+
+    def broadcast_raw_tx(self, tx_hex: str, network: str = "mainnet") -> str:
+        """Broadcast an already-signed raw transaction and return its txid."""
+        txid = self._get_client(network).broadcast(lwk.Transaction(tx_hex))
+        return str(txid)
+
     # Mnemonic operations
 
     def generate_mnemonic(self) -> str:

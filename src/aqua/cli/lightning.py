@@ -5,6 +5,7 @@ import click
 from ..tools import (
     lightning_decode,
     lightning_receive,
+    lightning_refund,
     lightning_send,
     lightning_transaction_status,
 )
@@ -117,6 +118,44 @@ def send(ctx, invoice, ln_address, amount_sats, wallet_name, password_stdin):
 def status(ctx, swap_id):
     """Check the status of a Lightning swap (send or receive)."""
     run_tool(ctx, lambda: lightning_transaction_status(swap_id))
+
+
+@lightning.command("refund")
+@click.option("--swap-id", required=True, help="Swap ID of the failed send swap.")
+@click.option(
+    "--address",
+    default=None,
+    help="Liquid destination address. Default: a new address of the swap's wallet.",
+)
+@click.option(
+    "--claim-public-key",
+    default=None,
+    help="Provider's claim public key (hex). Only needed for legacy swaps.",
+)
+@click.option(
+    "--blinding-key",
+    default=None,
+    help="Lockup blinding key (hex). Only needed for legacy swaps.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Build and sign the refund without broadcasting it.",
+)
+@click.pass_obj
+def refund(ctx, swap_id, address, claim_public_key, blinding_key, dry_run):
+    """Recover the L-BTC locked up by a failed Lightning send swap."""
+    run_tool(
+        ctx,
+        lambda: lightning_refund(
+            swap_id=swap_id,
+            address=address,
+            claim_public_key=claim_public_key,
+            blinding_key=blinding_key,
+            dry_run=dry_run,
+        ),
+    )
 
 
 @lightning.command("decode")
