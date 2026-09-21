@@ -1,6 +1,6 @@
 """Refund of Boltz v2 submarine swaps on Liquid — recovers a stuck L-BTC lockup.
 
-Two paths, both spending the taproot lockup output (see docs/REFUND.md):
+Two paths, both spending the taproot lockup output (see docs/lightning-refund.md):
 cooperative (MuSig2 key-path, works immediately) and unilateral (script-path on
 the refund leaf, only valid once the chain passes the swap's timeout block).
 
@@ -393,7 +393,7 @@ def build_refund_transaction(
         psbt, 0, wally.tx_get_output_rangeproof(utxo.tx, utxo.vout)
     )
 
-    # Destination stays confidential — see "Outputs" in docs/REFUND.md.
+    # Destination stays confidential — see "Outputs" in docs/lightning-refund.md.
     # Elements tags explicit (unblinded) assets and values with a 0x01 prefix.
     explicit_asset = b"\x01" + utxo.asset
     dest_out = wally.tx_elements_output_init(
@@ -453,7 +453,7 @@ def elements_taproot_sighash(
     """BIP-341 signature hash as modified by Elements (SIGHASH_DEFAULT only).
 
     `leaf_hash` selects a script-path spend; omit it for the key path. See
-    docs/REFUND.md for why libwally can't compute this for Liquid itself.
+    docs/lightning-refund.md for why libwally can't compute this for Liquid itself.
     """
     num_inputs = wally.tx_get_num_inputs(tx)
     num_outputs = wally.tx_get_num_outputs(tx)
@@ -628,7 +628,7 @@ def refund_cooperative(
     our_pubkey = tree.refund_public_key
 
     def sign_input(tx: Any, message: bytes) -> list[bytes]:
-        # Fresh nonce per attempt — reuse leaks the key; see docs/REFUND.md.
+        # Fresh nonce per attempt — reuse leaks the key; see docs/lightning-refund.md.
         secnonce, our_pubnonce = nonce_gen(
             refund_private_key,
             our_pubkey,

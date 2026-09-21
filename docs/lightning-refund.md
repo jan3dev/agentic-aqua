@@ -71,8 +71,7 @@ mismatch aborts before anything is signed.
 **Losing the file loses the coins.** The refund key is random, not derived from
 the wallet's seed, so restoring the mnemonic elsewhere does not recover a stuck
 lockup. `~/.aqua/lightning_swaps/*.json` is the only copy, and it stores that
-key and the blinding key in the clear at `0o600`. Encrypting them at rest is not
-implemented.
+key and the blinding key in the clear at `0o600`. 
 
 ## Implementation notes
 

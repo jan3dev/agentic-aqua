@@ -5,7 +5,7 @@
 #
 # Trimmed: the file-based test-vector scaffolding was dropped; the algorithm
 # code is verbatim. NOT constant-time — acceptable here because it only signs
-# with ephemeral, per-swap refund keys (see docs/REFUND.md).
+# with ephemeral, per-swap refund keys (see docs/lightning-refund.md).
 #
 # ruff: noqa
 # fmt: off

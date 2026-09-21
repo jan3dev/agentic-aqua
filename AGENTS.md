@@ -65,7 +65,7 @@ Python ≥ 3.13, package manager `uv` only (never pip/venv directly).
 8. **A Lightning send swap record is the only way back to its locked L-BTC.** The refund
    key is random, not seed-derived, so `~/.aqua/lightning_swaps/*.json` cannot be
    reconstructed from the mnemonic. Anything `pay_invoice` drops from the provider's
-   response is unrecoverable for that swap — see `docs/REFUND.md`.
+   response is unrecoverable for that swap — see `docs/lightning-refund.md`.
 
 ## Error envelope (tool layer)
 
