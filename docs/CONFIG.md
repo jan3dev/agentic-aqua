@@ -93,6 +93,11 @@ All tool names accepted in `enabled_tools`:
 | `lightning_receive` | `aqua lightning receive` | |
 | `lightning_send` | `aqua lightning send` | |
 | `lightning_transaction_status` | `aqua lightning status` | |
+| `eulen_kyc_session` | `aqua eulen kyc-session` | Requires JAN3 login |
+| `eulen_kyc_confirm` | `aqua eulen kyc-confirm` | Authoritative Ankara reconcile |
+| `pix_receive` | `aqua eulen receive` | KYC required; amount in BRL cents |
+| `pix_list` | `aqua eulen list` | Optional id, UTC date-range, and status filters |
+| `pix_status` | `aqua eulen status` | |
 | `changelly_list_currencies` | `aqua changelly currencies` | |
 | `changelly_quote` | `aqua changelly quote` | |
 | `changelly_send` | `aqua changelly send` | |

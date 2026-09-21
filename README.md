@@ -13,6 +13,7 @@ MCP server and CLI for managing **Bitcoin** and **Liquid Network** wallets throu
 - **Assets** - Native support for L-BTC, USDt, and all Liquid assets
 - **Swaps & Pegs** - Convert BTC ↔ L-BTC and swap Liquid/cross-chain assets via SideSwap, SideShift, and Changelly
 - **JAN3 Account** - Login, Lightning Address, and WapuPay (pay ARS bank accounts with USDT) via your JAN3 account
+- **PIX → DePix** - Brazilian on-ramp through Ankara with Noviuz Hosted KYC
 - **Secure** - Encrypted storage, no remote servers for keys
 
 ## Installation
@@ -225,6 +226,21 @@ Once connected, you can ask Claude to:
 | `jan3_ln_check_username` | Check if a Lightning username is available |
 | `jan3_purchase_ln_username` | Buy/update the Lightning username (on-chain payment) |
 
+**PIX → DePix (`eulen_*`, `pix_*`)** — Brazilian on-ramp through Ankara
+
+| Tool | Description |
+|------|-------------|
+| `eulen_kyc_session` | Create/reuse a Noviuz Hosted KYC session via Ankara |
+| `eulen_kyc_confirm` | Reconcile the hosted KYC result via Ankara |
+| `pix_receive` | Create a PIX charge that pays DePix to the local Liquid wallet |
+| `pix_list` | List Ankara deposits with optional id, date-range, and status filters |
+| `pix_status` | Refresh the Ankara deposit status |
+
+This integration requires a JAN3 login and approved hosted KYC. Identity data is
+entered directly in Noviuz's hosted UI; agentic-aqua never asks for or stores CPF,
+name, or documents. All API calls from agentic-aqua go to `ANKARA_API_URL`—never
+directly to Eulen.
+
 **Utilities**
 
 | Tool | Description |
@@ -249,6 +265,7 @@ aqua sideshift --help
 aqua changelly --help
 aqua wapupay --help
 aqua jan3 --help
+aqua eulen --help
 aqua qr --help
 
 # Wallet management
@@ -296,6 +313,15 @@ aqua sideswap swap --asset-ticker USDt --amount 50000 --wallet-name default
 aqua sideshift send --deposit-coin btc --deposit-network liquid --settle-coin usdt --settle-network tron \
   --settle-address T... --deposit-amount 0.001 --wallet-name default
 aqua changelly send --external-network tron --settle-address T... --amount-from 100 --wallet-name default
+
+# PIX -> DePix
+aqua jan3 login --email person@example.com
+aqua jan3 verify --email person@example.com --otp 123456
+aqua eulen kyc-session --email person@example.com
+aqua eulen kyc-confirm --email person@example.com --session-id <session_id>
+aqua eulen receive --email person@example.com --amount-cents 5000 --wallet-name default
+aqua eulen list --email person@example.com --date-from 2026-09-14 --date-to 2026-09-18
+aqua eulen status --swap-id <deposit_id> --email person@example.com
 
 # WapuPay (pay ARS bank accounts, funded with USDT on Liquid)
 aqua wapupay quote --amount-ars 10000 --alias some.alias

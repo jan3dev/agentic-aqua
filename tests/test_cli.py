@@ -44,6 +44,7 @@ def isolated_manager():
         tools_module._manager = manager
         tools_module._btc_manager = btc_manager
         tools_module._lightning_manager = None
+        tools_module._pix_manager = None
         with (
             patch.object(manager, "sync_wallet"),
             patch.object(btc_manager, "sync_wallet"),
@@ -52,6 +53,7 @@ def isolated_manager():
         tools_module._manager = None
         tools_module._btc_manager = None
         tools_module._lightning_manager = None
+        tools_module._pix_manager = None
 
 
 @pytest.fixture

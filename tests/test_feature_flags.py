@@ -246,9 +246,7 @@ def test_enabled_tools_invalid_types_are_coerced(caplog):
 
 
 def test_all_tools_enabled_by_default():
-    """Every tool now ships enabled — `_SHIPPED_DISABLED` is empty 
-    (SideSwap graduated; PIX was removed).
-    """
+    """Every currently-known tool ships enabled — `_SHIPPED_DISABLED` is empty."""
     from aqua.features import _SHIPPED_DISABLED
 
     assert _SHIPPED_DISABLED == frozenset()
