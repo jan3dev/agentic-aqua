@@ -162,6 +162,7 @@ class Storage:
         self.swaps_dir = self.base_dir / "swaps"
         self.ankara_swaps_dir = self.base_dir / "ankara_swaps"
         self.lightning_swaps_dir = self.base_dir / "lightning_swaps"
+        self.pix_swaps_dir = self.base_dir / "pix_swaps"
         self.changelly_swaps_dir = self.base_dir / "changelly_swaps"
         self.sideshift_shifts_dir = self.base_dir / "sideshift_shifts"
         self.sideswap_pegs_dir = self.base_dir / "sideswap_pegs"
@@ -188,6 +189,8 @@ class Storage:
         restrict_permissions(self.ankara_swaps_dir, 0o700)
         self.lightning_swaps_dir.mkdir(exist_ok=True, mode=0o700)
         restrict_permissions(self.lightning_swaps_dir, 0o700)
+        self.pix_swaps_dir.mkdir(exist_ok=True, mode=0o700)
+        restrict_permissions(self.pix_swaps_dir, 0o700)
         self.changelly_swaps_dir.mkdir(exist_ok=True, mode=0o700)
         restrict_permissions(self.changelly_swaps_dir, 0o700)
         self.sideshift_shifts_dir.mkdir(exist_ok=True, mode=0o700)
@@ -555,6 +558,31 @@ class Storage:
             for p in self.lightning_swaps_dir.glob("*.json")
             if SWAP_ID_PATTERN.fullmatch(p.stem)
         ]
+
+    # PIX → DePix deposit operations
+
+    def _pix_swap_path(self, swap_id: str) -> Path:
+        """Return a validated path for a local Ankara Eulen deposit."""
+        if not SWAP_ID_PATTERN.fullmatch(swap_id):
+            raise ValueError(
+                f"Invalid swap ID '{swap_id}'. "
+                "Use only letters, numbers, hyphens and underscores (max 128 chars)."
+            )
+        return self.pix_swaps_dir / f"{swap_id}.json"
+
+    def save_pix_swap(self, swap) -> None:
+        """Save PIX deposit metadata atomically with restricted permissions."""
+        self._atomic_write_json(self._pix_swap_path(swap.swap_id), swap.to_dict())
+
+    def load_pix_swap(self, swap_id: str):
+        """Load PIX deposit metadata, or return None when absent."""
+        from .pix import PixSwap
+
+        path = self._pix_swap_path(swap_id)
+        if not path.exists():
+            return None
+        with open(path) as file:
+            return PixSwap.from_dict(json.load(file))
 
     # Changelly swap operations
 

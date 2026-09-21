@@ -37,6 +37,7 @@ _sideswap_peg_manager: "SideSwapPegManager | None" = None
 _sideswap_swap_manager: "SideSwapSwapManager | None" = None
 _wapupay_manager: "WapuPayManager | None" = None
 _jan3_manager: "Jan3AccountsManager | None" = None
+_pix_manager: "PixManager | None" = None
 
 
 def get_manager() -> WalletManager:
@@ -153,6 +154,20 @@ def get_wapupay_manager() -> "WapuPayManager":
             jan3_manager=get_jan3_manager(),
         )
     return _wapupay_manager
+
+
+def get_pix_manager() -> "PixManager":
+    """Get or create the Ankara-backed PIX → DePix manager."""
+    global _pix_manager
+    if _pix_manager is None:
+        from .pix import PixManager
+
+        _pix_manager = PixManager(
+            storage=get_manager().storage,
+            wallet_manager=get_manager(),
+            jan3_manager=get_jan3_manager(),
+        )
+    return _pix_manager
 
 
 # Tool implementations
@@ -987,6 +1002,101 @@ def lightning_decode(invoice: str) -> dict[str, Any]:
         "description": fields["description"],
         "expiry_seconds": fields["expiry"],
     }
+
+
+# ---------------------------------------------------------------------------
+# PIX → DePix (authenticated via Ankara; KYC via Noviuz Hosted UI)
+# ---------------------------------------------------------------------------
+
+
+def _run_pix_tool(call) -> Any:
+    """Translate Ankara Eulen errors at the PIX tool boundary."""
+    from .pix import EulenAPIError
+
+    try:
+        return call()
+    except EulenAPIError as e:
+        error: dict[str, Any] = {
+            "code": e.code,
+            "message": str(e),
+        }
+        if e.details is not None:
+            error["details"] = e.details
+        return {"error": error}
+
+
+def eulen_kyc_session(email: str) -> dict[str, Any]:
+    """Create or reuse a Noviuz Hosted KYC session through Ankara."""
+    return _run_pix_tool(lambda: get_pix_manager().create_kyc_session(email))
+
+
+def eulen_kyc_confirm(email: str, session_id: str) -> dict[str, Any]:
+    """Ask Ankara to reconcile an opaque hosted KYC session id."""
+    return _run_pix_tool(
+        lambda: get_pix_manager().confirm_kyc_session(email, session_id)
+    )
+
+
+def pix_receive(
+    email: str,
+    amount_cents: int,
+    wallet_name: str = "default",
+) -> dict[str, Any]:
+    """Create a PIX charge through Ankara that pays DePix to a local wallet."""
+    from .pix import format_brl
+
+    def _create() -> dict[str, Any]:
+        swap = get_pix_manager().create_deposit(
+            email, amount_cents, wallet_name=wallet_name
+        )
+        result: dict[str, Any] = {
+            "swap_id": swap.swap_id,
+            "deposit_id": int(swap.swap_id),
+            "qr_copy_paste": swap.qr_copy_paste,
+            "qr_image_url": swap.qr_image_url,
+            "amount_cents": swap.amount_cents,
+            "amount_brl": format_brl(swap.amount_cents),
+            "fee_cents": swap.fee_cents,
+            "fee_brl": format_brl(swap.fee_cents or 0),
+            "net_amount_cents": swap.net_amount_cents,
+            "net_amount_brl": format_brl(swap.net_amount_cents or 0),
+            "depix_address": swap.depix_address,
+            "wallet_name": swap.wallet_name,
+            "message": (
+                f"Pay {format_brl(swap.amount_cents)} via PIX to receive "
+                f"{format_brl(swap.net_amount_cents or 0)} in DePix. "
+                "Use qr_copy_paste in the banking app, then check pix_status."
+            ),
+        }
+        return _attach_deposit_qr(result, "qr_copy_paste")
+
+    return _run_pix_tool(_create)
+
+
+def pix_list(
+    email: str,
+    deposit_id: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    status: str | None = None,
+) -> dict[str, Any]:
+    """List Ankara PIX → DePix deposits and refresh their local cache entries."""
+    return _run_pix_tool(
+        lambda: get_pix_manager().list_deposits(
+            email,
+            deposit_id=deposit_id,
+            date_from=date_from,
+            date_to=date_to,
+            status=status,
+        )
+    )
+
+
+def pix_status(swap_id: str, email: str) -> dict[str, Any]:
+    """Refresh an Ankara PIX → DePix deposit status."""
+    return _run_pix_tool(
+        lambda: get_pix_manager().get_deposit_status(swap_id, email)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2286,6 +2396,11 @@ TOOLS = {
     "lightning_send": lightning_send,
     "lightning_transaction_status": lightning_transaction_status,
     "lightning_decode": lightning_decode,
+    "eulen_kyc_session": eulen_kyc_session,
+    "eulen_kyc_confirm": eulen_kyc_confirm,
+    "pix_receive": pix_receive,
+    "pix_list": pix_list,
+    "pix_status": pix_status,
     "changelly_list_currencies": changelly_list_currencies,
     "changelly_quote": changelly_quote,
     "changelly_send": changelly_send,
