@@ -349,7 +349,7 @@ class LightningManager:
             created_at=datetime.now(UTC).isoformat(),
             refund_private_key=refund_privkey,
             timeout_block_height=swap_resp["timeoutBlockHeight"],
-            # Without these a failed swap cannot be refunded — see docs/lightning-refund.md.
+            # Without these a failed swap cannot be refunded — see docs/submarine-swap-ln-refund.md.
             claim_public_key=swap_resp["claimPublicKey"],
             lockup_address=swap_resp["address"],
             blinding_key=swap_resp.get("blindingKey"),
@@ -538,7 +538,7 @@ class LightningManager:
         """Recover the L-BTC locked up by a failed send swap.
 
         `claim_public_key`/`blinding_key` are legacy-swap overrides; see
-        docs/lightning-refund.md.
+        docs/submarine-swap-ln-refund.md.
         """
         swap = self.storage.load_lightning_swap(swap_id)
         if not swap:

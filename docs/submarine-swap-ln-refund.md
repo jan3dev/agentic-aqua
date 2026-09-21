@@ -1,4 +1,4 @@
-# Refunding a failed Lightning send
+# Refunding a failed submarine swap (Lightning send)
 
 A Lightning send (`lightning_send` / `aqua lightning send`) is a Boltz v2
 submarine swap: AQUA locks L-BTC into a taproot output, the provider pays the

@@ -169,7 +169,7 @@ ships off; re-enable it with `"lightning_receive": true`. See
 When a send fails, its L-BTC stays locked on chain until it is refunded:
 `lightning_refund` (CLI `aqua lightning refund --swap-id <id>`) recovers it,
 cooperatively with the provider where possible and on its own after the swap's
-timeout block. See [docs/lightning-refund.md](docs/lightning-refund.md).
+timeout block. See [docs/submarine-swap-ln-refund.md](docs/submarine-swap-ln-refund.md).
 
 **Swaps — SideSwap (`sideswap_*`)** — BTC ↔ L-BTC pegs and atomic Liquid asset swaps
 
