@@ -239,17 +239,26 @@ class PixManager:
         self.jan3 = jan3_manager
         self.base_url = (base_url or ANKARA_API_URL).rstrip("/")
 
+    @staticmethod
+    def _normalize_email(email: str) -> str:
+        email = (email or "").strip().lower()
+        if not email:
+            raise ValueError("email is required")
+        return email
+
     def _with_auth(
         self,
         email: str,
         call: Callable[[EulenClient], dict[str, Any]],
     ) -> dict[str, Any]:
+        email = self._normalize_email(email)
         return self.jan3.with_auth_retry(
             email,
             lambda token: call(EulenClient(self.base_url, token)),
         )
 
     def create_kyc_session(self, email: str) -> dict[str, Any]:
+        email = self._normalize_email(email)
         result = self._with_auth(email, lambda client: client.create_kyc_session())
         if not result.get("session_id") or not result.get("status"):
             raise ValueError("AQUA KYC session response is missing required fields")
@@ -264,6 +273,7 @@ class PixManager:
         }
 
     def confirm_kyc_session(self, email: str, session_id: str) -> dict[str, Any]:
+        email = self._normalize_email(email)
         session_id = (session_id or "").strip()
         if not session_id:
             raise ValueError("session_id is required")
@@ -287,6 +297,7 @@ class PixManager:
         amount_cents: int,
         wallet_name: str = "default",
     ) -> PixSwap:
+        email = self._normalize_email(email)
         if not isinstance(amount_cents, int) or isinstance(amount_cents, bool):
             raise ValueError("amount_cents must be an integer (100 = R$1.00)")
         if amount_cents <= 0:
@@ -421,9 +432,7 @@ class PixManager:
         date_to: Optional[str] = None,
         status: Optional[str] = None,
     ) -> dict[str, Any]:
-        email = (email or "").strip().lower()
-        if not email:
-            raise ValueError("email is required")
+        email = self._normalize_email(email)
         if deposit_id is not None and (
             not isinstance(deposit_id, int)
             or isinstance(deposit_id, bool)
@@ -471,9 +480,7 @@ class PixManager:
 
     def get_deposit_status(self, swap_id: str, email: str) -> dict[str, Any]:
         swap_id = str(swap_id).strip()
-        email = (email or "").strip().lower()
-        if not email:
-            raise ValueError("email is required")
+        email = self._normalize_email(email)
         try:
             deposit_id = int(swap_id)
         except ValueError as exc:

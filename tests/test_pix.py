@@ -174,9 +174,10 @@ def test_create_deposit_uses_dynamic_fee_and_persists(manager, storage):
         ),
     ]
     with patch("urllib.request.urlopen", side_effect=responses) as urlopen:
-        swap = manager.create_deposit("person@example.com", 5000)
+        swap = manager.create_deposit("  Person@Example.com  ", 5000)
 
     assert swap.swap_id == "42"
+    assert swap.account_email == "person@example.com"
     assert swap.fee_cents == 99
     assert swap.net_amount_cents == 4901
     assert storage.load_pix_swap("42") == swap
