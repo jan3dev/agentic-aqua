@@ -15,8 +15,9 @@ from .tools import TOOLS
 logger = logging.getLogger(__name__)
 
 
-# Tools shipped disabled-by-default (currently empty; add a name to opt a tool out).
-_SHIPPED_DISABLED: frozenset[str] = frozenset()
+# Tools shipped disabled-by-default (add a name to opt a tool out).
+# lightning_receive is off by default — see docs/RELEASE_NOTES.md.
+_SHIPPED_DISABLED: frozenset[str] = frozenset({"lightning_receive"})
 
 assert _SHIPPED_DISABLED <= TOOLS.keys(), (
     f"unknown tool in _SHIPPED_DISABLED: {_SHIPPED_DISABLED - TOOLS.keys()}"

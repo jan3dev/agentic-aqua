@@ -245,14 +245,15 @@ def test_enabled_tools_invalid_types_are_coerced(caplog):
     assert sum("Dropping invalid" in r.message for r in caplog.records) == 3
 
 
-def test_all_tools_enabled_by_default():
-    """Every tool now ships enabled — `_SHIPPED_DISABLED` is empty 
-    (SideSwap graduated; PIX was removed).
-    """
+def test_only_lightning_receive_ships_disabled():
+    """`lightning_receive` is the single opt-out; every other tool ships enabled."""
     from aqua.features import _SHIPPED_DISABLED
 
-    assert _SHIPPED_DISABLED == frozenset()
+    assert _SHIPPED_DISABLED == frozenset({"lightning_receive"})
+    assert SHIPPED_DEFAULTS_ENABLED_TOOLS["lightning_receive"] is False
     for name, enabled in SHIPPED_DEFAULTS_ENABLED_TOOLS.items():
+        if name in _SHIPPED_DISABLED:
+            continue
         assert enabled is True, name
 
 
