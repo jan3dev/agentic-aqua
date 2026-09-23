@@ -12,7 +12,7 @@ MCP server and CLI for managing **Bitcoin** and **Liquid Network** wallets throu
 - **Lightning** - Send and receive via Lightning using L-BTC
 - **Assets** - Native support for L-BTC, USDt, and all Liquid assets
 - **Swaps & Pegs** - Convert BTC ↔ L-BTC and swap Liquid/cross-chain assets via SideSwap, SideShift, and Changelly
-- **JAN3 Account** - Login, Lightning Address, and WapuPay (pay ARS bank accounts with USDT) via your JAN3 account
+- **JAN3 Account** - Login, Lightning Address, and WapuPay (pay ARS bank accounts with USDT or L-BTC) via your JAN3 account
 - **Secure** - Encrypted storage, no remote servers for keys
 
 ## Installation
@@ -153,10 +153,17 @@ Once connected, you can ask Claude to:
 
 | Tool | Description |
 |------|-------------|
-| `lightning_receive` | Generate a Lightning invoice to receive L-BTC (100–25,000,000 Sats) |
-| `lightning_send` | Pay a Lightning invoice using L-BTC via Boltz (~0.1% fee) |
+| `lightning_send` | Pay a Lightning invoice or Lightning Address using L-BTC (~0.1% + ~21 Sats) |
 | `lightning_transaction_status` | Check status of a Lightning swap (send or receive) |
 | `lightning_decode` | Decode a BOLT11 invoice without paying it |
+| `lightning_receive` | Generate a Lightning invoice to receive L-BTC — **disabled by default** |
+
+Sends go through [Indra](https://indra.aquabtc.com), AQUA's Boltz-compatible swap
+service (1,000–100,000 Sats, mainnet only). Set `"lightning_provider": "boltz"` in
+`~/.aqua/config.json` — or `AQUA_LIGHTNING_PROVIDER=boltz` — to use Boltz instead
+(100–25,000,000 Sats, and the only option on testnet). Receiving over Lightning
+ships off; re-enable it with `"lightning_receive": true`. See
+[docs/CONFIG.md](docs/CONFIG.md).
 
 **Swaps — SideSwap (`sideswap_*`)** — BTC ↔ L-BTC pegs and atomic Liquid asset swaps
 
@@ -195,13 +202,13 @@ Once connected, you can ask Claude to:
 | `changelly_receive` | Receive USDt-Liquid from USDt on another chain |
 | `changelly_status` | Check status of a swap order |
 
-**WapuPay (`wapupay_*`)** — pay Argentine bank accounts in ARS, funded with USDT on Liquid
+**WapuPay (`wapupay_*`)** — pay Argentine bank accounts in ARS, funded with USDT or L-BTC on Liquid
 
 | Tool | Description |
 |------|-------------|
 | `wapupay_exchange_rates` | Current exchange rates (e.g. USDT/ARS); public, no key needed |
 | `wapupay_quote` | Preview USDT cost, fee, and rate for an ARS payment |
-| `wapupay_create_order` | Create a direct-fiat order; returns a Liquid USDT funding address |
+| `wapupay_create_order` | Create a direct-fiat order (USDT or L-BTC rail); returns a Liquid funding address |
 | `wapupay_fund_order` | Re-issue funding instructions for an existing order |
 | `wapupay_order_status` | Check a direct-fiat order's status |
 | `wapupay_orders` | List locally-tracked orders |
@@ -283,9 +290,9 @@ aqua btc transactions
 aqua liquid transactions
 aqua liquid tx-status --tx <txid|explorer_url>
 
-# Lightning (L-BTC via Boltz / Ankara)
-aqua lightning receive --amount 50000
+# Lightning (L-BTC via Indra / Boltz)
 aqua lightning send --invoice lnbc...
+aqua lightning send --ln-address user@domain.com --amount-sats 1000
 aqua lightning status --swap-id <id>
 aqua lightning decode --invoice lnbc...
 
@@ -297,7 +304,7 @@ aqua sideshift send --deposit-coin btc --deposit-network liquid --settle-coin us
   --settle-address T... --deposit-amount 0.001 --wallet-name default
 aqua changelly send --external-network tron --settle-address T... --amount-from 100 --wallet-name default
 
-# WapuPay (pay ARS bank accounts, funded with USDT on Liquid)
+# WapuPay (pay ARS bank accounts, funded with USDT or L-BTC on Liquid)
 aqua wapupay quote --amount-ars 10000 --alias some.alias
 aqua wapupay create-order --amount-ars 10000 --alias some.alias --wallet-name default
 # then fund the returned address:
@@ -327,6 +334,8 @@ The CLI honors these variables out of the box:
 |----------|---------|
 | `AQUA_MNEMONIC` | `wallet import-mnemonic` |
 | `AQUA_PASSWORD` | `wallet import-mnemonic`, `btc send`, `liquid send`, `liquid send-asset`, `lightning send`, `lightning receive` |
+| `AQUA_LIGHTNING_PROVIDER` | `lightning send` — overrides `lightning_provider` (`indra` \| `boltz`) |
+| `INDRA_API_URL` | Base URL of the Indra swap service (default `https://indra.aquabtc.com`) |
 | `AQUA_<OPTION>` | Any CLI option (Click `auto_envvar_prefix="AQUA"`) — e.g. `AQUA_WALLET_NAME=default` |
 
 If you would rather pipe secrets from a password manager, every secret-bearing command also accepts `--mnemonic-stdin` / `--password-stdin`:
@@ -414,7 +423,7 @@ AI Assistant ←→ MCP Server (Python) ←→ LWK (Liquid) ──→ Electrum/E
                        │
                        ├──→ BDK (Bitcoin) ──→ Esplora (Blockstream)
                        │
-                       └──→ Boltz / Ankara ──→ Lightning
+                       └──→ Indra / Boltz ──→ Lightning
 ```
 
 
@@ -424,5 +433,5 @@ Built with:
 - [LWK](https://github.com/Blockstream/lwk) - Liquid Wallet Kit by Blockstream
 - [BDK](https://github.com/bitcoindevkit/bdk-python) - Bitcoin Development Kit
 - [MCP](https://modelcontextprotocol.io/) - Model Context Protocol
-- [Boltz](https://boltz.exchange/) - Submarine swaps for Lightning
+- [Boltz](https://boltz.exchange/) - Submarine swap protocol for Lightning
 

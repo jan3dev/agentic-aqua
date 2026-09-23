@@ -968,6 +968,9 @@ def lightning_receive(
 
     User pays this invoice externally; L-BTC arrives within 1-2 minutes.
 
+    DISABLED BY DEFAULT: set `"lightning_receive": true` in ~/.aqua/config.json
+    to expose it again.
+
     Args:
         amount: Amount in satoshis (100 – 25,000,000)
         wallet_name: Liquid wallet to receive into. Default: "default"
@@ -1009,7 +1012,7 @@ def lightning_send(
 ) -> dict[str, Any]:
     """Pay a Lightning invoice or Lightning Address using L-BTC from a Liquid wallet.
 
-    Uses a submarine swap via Boltz. Fees: ~0.1% + miner fees.
+    Provider and limits come from `lightning_provider`; see docs/CONFIG.md.
 
     Args:
         invoice: BOLT11 Lightning invoice (lnbc.../lntb...) OR Lightning Address
@@ -1045,16 +1048,16 @@ def lightning_send(
 def lightning_transaction_status(swap_id: str) -> dict[str, Any]:
     """Check the status of a Lightning swap (send or receive).
 
-    For receive swaps: auto-claims L-BTC when settled. For send swaps: checks
-    Boltz status and retrieves preimage when claimed.
+    For receive swaps: auto-claims L-BTC when settled. For send swaps: queries the
+    provider the swap was created with and retrieves the preimage when claimed.
 
     Args:
         swap_id: Swap ID returned from lightning_receive or lightning_send
 
     Returns:
         swap_id, status, amount, wallet_name, invoice; for receive: optional preimage,
-        warning, claim_warning; for send: optional boltz_status, lockup_txid, preimage,
-        claim_txid, refund_info, warning
+        warning, claim_warning; for send: provider ("indra" | "boltz") plus optional
+        provider_status, lockup_txid, preimage, claim_txid, refund_info, warning
     """
     manager = get_lightning_manager()
     return manager.get_swap_status(swap_id)
@@ -1307,21 +1310,24 @@ def wapupay_create_order(
     receiver_name: str | None = None,
     refund_address: str | None = None,
     wallet_name: str = "default",
+    funding_method: str = "USDT",
 ) -> dict[str, Any]:
-    """Create a WapuPay direct-fiat order and get a Liquid USDT funding address.
+    """Create a WapuPay direct-fiat order and get a Liquid funding address.
 
     Creates the payment tentative (freezing the quote) and immediately issues
     funding instructions. The order is persisted before funding, so if funding
     fails you get the order back with `funded=False` and can retry via
     `wapupay_fund_order` — no silent failure.
 
-    The result includes `address_destination` (a Liquid address), `asset_id`
-    (USDT on Liquid), `funding_amount_usdt`, `total_amount_usdt`,
-    `total_funding_amount_base_units`, and `funding_expires_at`. Pay the TOTAL
-    with `lw_send_asset` (amount = `total_funding_amount_base_units`, the exact
-    total_amount_usdt in USDT base units; asset_id from the response); WapuPay
-    then settles `amount_ars` ARS to the bank account. This tool never
-    broadcasts a payment itself.
+    The result includes `address_destination` (a Liquid address),
+    `funding_amount_usdt`, `total_amount_usdt`, `expires_at`, and a
+    `pay_instructions` field that tells you the exact amount and unit to send —
+    follow it. For the default `USDT` rail, pay the TOTAL with `lw_send_asset`
+    (amount = `total_funding_amount_base_units`, the exact total_amount_usdt in
+    USDT base units; asset_id from the response). For the `LBTC` rail, WapuPay
+    returns `total_amount_sats` instead, and you send that many sats of L-BTC
+    via `lw_send_asset`. WapuPay then settles `amount_ars` ARS to the bank
+    account. This tool never broadcasts a payment itself.
 
     Args:
         amount_ars: amount to pay in Argentine pesos (decimal string, e.g. "10000").
@@ -1338,12 +1344,15 @@ def wapupay_create_order(
         refund_address: Liquid mainnet address (lq1…/ex1…/VJL…) for a refund if funding
             cannot execute (optional); validated before the order is created.
         wallet_name: wallet you intend to fund from (recorded for tracking).
+        funding_method: funding rail — "USDT" (default) or "LBTC"; both settle
+            from a Liquid address.
 
     Returns:
         The order record incl. tentative_id, status, address_destination,
-        asset_id, funding_amount_usdt, total_amount_usdt,
-        total_funding_amount_base_units, funding_expires_at, funded,
-        pay_instructions, and qr_code_path (QR of the funding address).
+        asset_id, funding_amount_usdt, total_amount_usdt, expires_at, funded,
+        pay_instructions, and qr_code_path (QR of the funding address). The send
+        amount is rail-specific: total_funding_amount_base_units on the USDT rail,
+        total_amount_sats on the LBTC rail. Follow pay_instructions.
     """
     result = get_wapupay_manager().create_order(
         amount_ars=amount_ars,
@@ -1352,12 +1361,13 @@ def wapupay_create_order(
         receiver_name=receiver_name,
         refund_address=refund_address,
         wallet_name=wallet_name,
+        funding_method=funding_method,
     )
     return _attach_deposit_qr(result, "address_destination")
 
 
 def wapupay_fund_order(tentative_id: str) -> dict[str, Any]:
-    """Issue (or re-issue) Liquid USDT funding instructions for an existing order.
+    """Issue (or re-issue) Liquid funding instructions for an existing order.
 
     Use this to recover an order created without funding, or to re-fetch the
     funding address before it expires.

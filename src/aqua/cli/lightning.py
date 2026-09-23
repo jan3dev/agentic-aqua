@@ -14,7 +14,7 @@ from .password import handle_password_retry, resolve_secret
 
 @click.group()
 def lightning():
-    """Lightning network operations (receive, send, status)."""
+    """Lightning network operations (send, status; receive is off by default)."""
     pass
 
 
@@ -36,7 +36,10 @@ def lightning():
 )
 @click.pass_obj
 def receive(ctx, amount, wallet_name, password_stdin):
-    """Generate a Lightning invoice to receive L-BTC into a Liquid wallet."""
+    """Generate a Lightning invoice to receive L-BTC into a Liquid wallet.
+
+    Disabled by default; set `"lightning_receive": true` in ~/.aqua/config.json.
+    """
     password = resolve_secret(
         "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
     )
@@ -79,7 +82,10 @@ def receive(ctx, amount, wallet_name, password_stdin):
 )
 @click.pass_obj
 def send(ctx, invoice, ln_address, amount_sats, wallet_name, password_stdin):
-    """Pay a Lightning invoice or Lightning Address using L-BTC."""
+    """Pay a Lightning invoice or Lightning Address using L-BTC.
+
+    Provider from `lightning_provider` (default "indra"); see docs/CONFIG.md.
+    """
     if bool(invoice) == bool(ln_address):
         raise click.UsageError("Provide exactly one of --invoice or --ln-address")
 

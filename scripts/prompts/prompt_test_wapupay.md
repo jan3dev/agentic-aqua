@@ -146,7 +146,7 @@ as the refund address. Show me the funding instructions but DO NOT pay yet.
 - Invokes `wapupay_create_order(amount_ars="10000", alias="test.alias.mp", receiver_name="Test Receiver", refund_address="lq1qqw4...k6lng")`
 - Returns `tentative_id`, `status` (`FUNDING_ISSUED`), `address_destination` (Liquid `lq1…/ex1…/VJL…`),
   `asset_id` (USDT on Liquid), `funding_amount_usdt`, `total_amount_usdt`,
-  `total_funding_amount_base_units`, `funding_expires_at`, `pay_instructions`, `qr_code_path`
+  `total_funding_amount_base_units`, `expires_at`, `pay_instructions`, `qr_code_path`
 - ⚠️ The agent shows the funding address/QR **but must NOT call `lw_send_asset`** — keep this dry
 
 ---

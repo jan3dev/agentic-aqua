@@ -475,7 +475,7 @@ TOOL_SCHEMAS = {
         },
     },
     "lightning_receive": {
-        "description": "Generate a Lightning invoice to receive L-BTC into a Liquid wallet (~1-2 min after payment). Limits: 100 – 25,000,000 Sats. Also returns qr_code_path: a PNG QR of the invoice — display it to the user so they can scan it.",
+        "description": "Generate a Lightning invoice to receive L-BTC into a Liquid wallet (~1-2 min after payment). Limits: 100 – 25,000,000 Sats. Disabled by default — set \"lightning_receive\": true in ~/.aqua/config.json to expose it. Also returns qr_code_path: a PNG QR of the invoice — display it to the user so they can scan it.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -497,7 +497,7 @@ TOOL_SCHEMAS = {
         },
     },
     "lightning_send": {
-        "description": "Pay a Lightning invoice or Lightning Address using L-BTC from a Liquid wallet (reverse submarine swap). Fees: ~0.1% + miner fees. Limits: 100 – 25,000,000 Sats.",
+        "description": "Pay a Lightning invoice or Lightning Address using L-BTC from a Liquid wallet (submarine swap). Provider: Indra by default, limits 1,000 – 100,000 Sats; Boltz (lightning_provider=\"boltz\") allows 100 – 25,000,000 Sats. Fees: ~0.1% + miner fees (~21 Sats).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -523,7 +523,7 @@ TOOL_SCHEMAS = {
         },
     },
     "lightning_transaction_status": {
-        "description": "Check the status of a Lightning swap (send or receive). For receive: auto-claims L-BTC when settled. For send: checks Boltz status and retrieves preimage when claimed.",
+        "description": "Check the status of a Lightning swap (send or receive). For receive: auto-claims L-BTC when settled. For send: queries the provider the swap was created with (returned as provider / provider_status) and retrieves the preimage when claimed.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1137,12 +1137,14 @@ TOOL_SCHEMAS = {
     },
     "wapupay_create_order": {
         "description": (
-            "Create a WapuPay order and get a Liquid USDT funding address. "
+            "Create a WapuPay order and get a Liquid funding address. Funds from "
+            "USDT (default) or L-BTC — both settle from a Liquid address. "
             "Creates the tentative (freezing the quote) and issues "
-            "funding instructions. Returns address_destination (Liquid), asset_id "
-            "(USDT), funding_amount_usdt, total_amount_usdt, "
-            "total_funding_amount_base_units, funding_expires_at and a QR. Pay the "
-            "TOTAL with lw_send_asset (amount = total_funding_amount_base_units); "
+            "funding instructions. Returns address_destination (Liquid), asset_id, "
+            "funding_amount_usdt, total_amount_usdt, "
+            "total_funding_amount_base_units (for USDT), total_amount_sats (for LBTC), "
+            "expires_at and a QR. Pay the TOTAL with lw_send_asset (amount "
+            "and unit depend on funding_method — follow pay_instructions); "
             "WapuPay then makes a P2P payer settle ARS to the bank account. Does NOT broadcast the "
             "payment itself — confirm the quote with the user first via wapupay_quote."
         ),
@@ -1167,13 +1169,25 @@ TOOL_SCHEMAS = {
                 "receiver_name": {"type": "string", "description": "Recipient name (optional)"},
                 "refund_address": {"type": "string", "description": "Liquid mainnet refund address (lq1…/ex1…) if funding cannot execute (optional); validated before the order is created"},
                 "wallet_name": {"type": "string", "default": "default", "description": "Wallet you intend to fund from (recorded for tracking)"},
+                "funding_method": {
+                    "type": "string",
+                    "enum": ["USDT", "LBTC"],
+                    "default": "USDT",
+                    "description": (
+                        "Funding rail for the payout — 'USDT' (default) or 'LBTC'. Both "
+                        "settle from a Liquid address. For 'LBTC', WapuPay returns "
+                        "total_amount_sats (the exact sats of L-BTC to send); for 'USDT', "
+                        "send total_funding_amount_base_units. Follow the returned "
+                        "pay_instructions for the exact amount and unit."
+                    ),
+                },
             },
             "required": ["amount_ars", "alias"],
         },
     },
     "wapupay_fund_order": {
         "description": (
-            "Issue (or re-issue) Liquid USDT funding instructions for an existing "
+            "Issue (or re-issue) Liquid funding instructions for an existing "
             "order. Use to recover an order created without funding, or to refresh "
             "the funding address before it expires. Returns the funding address + QR."
         ),
@@ -1690,8 +1704,8 @@ PASSWORD HANDLING (encryption at rest):
   and Bitcoin in any BIP39-compliant wallet.
 
 QR CODES (deposit addresses & invoices):
-- The receive tools — btc_address, lw_address, lightning_receive, changelly_receive,
-  sideshift_receive — return a `qr_code_path`: an absolute path to a PNG QR image of
+- The receive tools — btc_address, lw_address, changelly_receive,
+  sideshift_receive (and lightning_receive where enabled) — return a `qr_code_path`: an absolute path to a PNG QR image of
   the address/invoice saved on disk.
 - ALWAYS surface this to the user so they can scan instead of copy-paste: display the
   image inline if your client renders local image paths, otherwise tell the user the
@@ -1703,13 +1717,18 @@ QR CODES (deposit addresses & invoices):
   the memo. Always surface the memo as text and warn the user it must be entered
   manually — scanning the QR alone omits it and can cause permanent loss of funds.
 
-LIGHTNING:
-- Use lightning_receive to generate an invoice for receiving L-BTC from Lightning
-  Fees: ~0.1%, Limits: 100 - 25,000,000 Sats, Time: ~1-2 min after payment
+LIGHTNING (send only by default):
 - Use lightning_send to pay a BOLT11 invoice OR a Lightning Address (user@domain.com)
-  using L-BTC (submarine swap via Boltz). Lightning Addresses require amount_sats.
-  Fees: ~0.1% + miner fees, Limits: 100 - 25,000,000 Sats
-- Use lightning_transaction_status to check status of any Lightning swap (send or receive)
+  using L-BTC (submarine swap). Lightning Addresses require amount_sats.
+  Fees: ~0.1% + miner fees (~21 Sats), Limits: 1,000 - 100,000 Sats via Indra
+  (the default provider). Setting lightning_provider="boltz" in ~/.aqua/config.json
+  switches to Boltz, which allows 100 - 25,000,000 Sats and is the only provider
+  with a testnet endpoint.
+- Receiving over Lightning (lightning_receive) ships DISABLED. If the user asks to
+  receive over Lightning, say the tool is off by default and can be re-enabled with
+  "lightning_receive": true in ~/.aqua/config.json; do not promise it otherwise.
+- Use lightning_transaction_status to check status of any Lightning swap; for sends it
+  reports provider and provider_status alongside the local status.
 
 CHANGELLY (custodial USDt cross-chain swaps via AQUA's Ankara proxy):
 - Use changelly_send when the user wants to send USDt-Liquid OUT to USDt on
@@ -1724,7 +1743,7 @@ CHANGELLY (custodial USDt cross-chain swaps via AQUA's Ankara proxy):
   is_success / is_failed booleans.
 - TRUST MODEL: Changelly is custodial — they take the deposit and send the
   converted asset from their hot wallet. Different from SideSwap (atomic on
-  Liquid) and Lightning (Boltz submarine, atomic). Communicate the trade-off.
+  Liquid) and Lightning (submarine swap, atomic). Communicate the trade-off.
 - SCOPE: USDt-Liquid ↔ USDt on the 6 supported chains only. For BTC ↔ X,
   L-BTC ↔ X, or anything non-USDt, use SideSwap or SideShift instead.
 - SideSwap vs Changelly vs SideShift for similar flows:
@@ -1773,21 +1792,23 @@ SIDESHIFT (custodial cross-chain swaps):
   is_success / is_failed booleans so you don't have to memorise the state machine.
 - TRUST MODEL: SideShift is custodial. They take the deposit and send from
   their hot wallet. This is different from SideSwap (atomic on Liquid) and
-  Lightning (Boltz submarine, atomic). Communicate this trade-off to the user.
+  Lightning (submarine swap, atomic). Communicate this trade-off to the user.
 - Memo networks (BNB Beacon, Stellar, etc.) require a memo on either
   the deposit or settle side — pass settle_memo / refund_memo when prompted.
 
-WAPUPAY (Argentine fiat payouts, funded with USDT on Liquid):
+WAPUPAY (Argentine fiat payouts, funded with USDT or L-BTC on Liquid):
 - WHAT IT IS: WapuPay is NOT an exchange. It is an automated peer-to-peer (P2P)
   platform — it finds a trusted P2P payer who settles the payment in Argentine
   pesos (ARS) on the user's behalf (think "Uber for P2P"). The user funds with
-  USDT on Liquid; a matched payer pushes the pesos to the recipient's bank account.
+  USDT (default) or L-BTC on Liquid; a matched payer pushes the pesos to the
+  recipient's bank account.
   If the user asks "what is WapuPay / what can I do with it", explain this; the full
   blurb is the aqua://docs/wapupay resource.
-- FLOW: wapupay_quote (preview cost) → wapupay_create_order (returns a Liquid USDT
-  address + amount) → pay it with lw_send_asset → WapuPay settles the ARS payout.
+- FLOW: wapupay_quote (preview cost) → wapupay_create_order (funding_method USDT or
+  LBTC; returns a Liquid address — follow pay_instructions for the exact amount and
+  unit) → pay it with lw_send_asset → WapuPay settles the ARS payout.
   This never auto-pays; always confirm the quote with the user first.
-  After the user pays the Liquid USDT address, WapuPay orchestrates the operation with a P2P payer that settles the ARS.
+  After the user pays the Liquid funding address, WapuPay orchestrates the operation with a P2P payer that settles the ARS.
   Offer the user to check the status of the order with `wapupay_order_status` and the executed_transaction_id with `wapupay_transaction`,
   the executed_transaction contain the details of the fiat transfer that the user wants to know about.
 - wapupay_exchange_rates is public (use USDT/ARS ignore the others rates, no key). The order/transaction tools
@@ -1923,7 +1944,7 @@ WALLET DELETION:
             # Lightning
             Prompt(
                 name="pay_lightning",
-                description="Pay a Lightning invoice using Liquid Bitcoin (via Boltz submarine swap)",
+                description="Pay a Lightning invoice using Liquid Bitcoin (via a submarine swap)",
                 arguments=[
                     PromptArgument(name="wallet_name", description="Wallet name", required=False),
                 ],
@@ -2427,9 +2448,9 @@ Please:
      the amount in sats — Lightning Addresses don't encode the amount.
 3. If a Lightning Address, confirm the resolved amount and metadata before sending.
 4. Explain the fee structure:
-   - Boltz fee: ~0.1% of amount
-   - Miner fee: ~19 Sats
-   - Limits: 100 - 25,000,000 Sats
+   - Provider fee: ~0.1% of amount
+   - Miner fee: ~21 Sats
+   - Limits: 1,000 - 100,000 Sats (Indra, the default provider)
 5. Show total cost (invoice amount + fees) and ask for confirmation
 6. Use lightning_send to execute the swap (pass amount_sats for Lightning Addresses)
 7. Wait for completion (may take 1-3 minutes)
@@ -2627,7 +2648,7 @@ Please:
             Resource(
                 uri="aqua://docs/wapupay",
                 name="What is WapuPay?",
-                description="WapuPay overview: automated P2P ARS payouts funded with USDT on Liquid",
+                description="WapuPay overview: automated P2P ARS payouts funded with USDT or L-BTC on Liquid",
                 mimeType="text/markdown",
             ),
         ]
