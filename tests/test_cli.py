@@ -2467,6 +2467,41 @@ class TestWapuPayCli:
         assert call[1]["amount_ars"] == "10000"
         assert call[1]["alias"] == "al.cbu"
 
+    def test_create_order_threads_funding_method(self, runner, wapupay_cli):
+        """--funding-method must reach the manager. Without this hop the L-BTC
+        rail is unreachable from the CLI no matter what the manager supports."""
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "wapupay", "create-order",
+             "--amount-ars", "10000", "--alias", "al.cbu",
+             "--funding-method", "LBTC", "--yes"],
+        )
+        assert result.exit_code == 0
+        call = next(c for c in wapupay_cli.calls if c[0] == "create_order")
+        assert call[1]["funding_method"] == "LBTC"
+
+    def test_create_order_defaults_funding_method_to_usdt(self, runner, wapupay_cli):
+        """Omitting the flag keeps the USDT default — adding the L-BTC rail must
+        not change the behaviour of existing callers."""
+        result = runner.invoke(
+            cli,
+            ["--format", "json", "wapupay", "create-order",
+             "--amount-ars", "10000", "--alias", "al.cbu", "--yes"],
+        )
+        assert result.exit_code == 0
+        call = next(c for c in wapupay_cli.calls if c[0] == "create_order")
+        assert call[1]["funding_method"] == "USDT"
+
+    def test_create_order_rejects_bogus_funding_method(self, runner, wapupay_cli):
+        """Click rejects an unknown rail before any manager call."""
+        result = runner.invoke(
+            cli,
+            ["wapupay", "create-order", "--amount-ars", "10000", "--alias", "al.cbu",
+             "--funding-method", "DOGE", "--yes"],
+        )
+        assert result.exit_code != 0
+        assert not any(c[0] == "create_order" for c in wapupay_cli.calls)
+
     def test_create_order_rejects_invalid_refund_address(self, runner, wapupay_cli):
         """A bad --refund-address fails fast: before the quote fetch and before
         any manager call (no order is created)."""
