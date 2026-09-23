@@ -30,9 +30,32 @@ it manually.
 |---|---|---|---|
 | `network` | string | `"mainnet"` | `"mainnet"` or `"testnet"` |
 | `default_wallet` | string | `"default"` | Wallet used when `wallet_name` is omitted |
-| `electrum_url` | string \| null | `null` | Pin the Liquid chain backend. `null` uses the built-in list (`airavata.aquabtc.com`, falling back to Blockstream). A value replaces that list outright — **no fallback**. `http(s)://…` selects the Esplora HTTP API (electrs), `ssl://host:port` Electrum over TLS, anything else Electrum in plaintext. Affects reads **and** broadcast. Liquid only — Bitcoin keeps its own list. |
+| `electrum_url` | string \| null | `null` | Pin the Liquid chain backend. `null` uses the built-in per-network list (below). A value replaces that list outright — a **single** backend, **no fallback**. Affects reads **and** broadcast. Liquid only — Bitcoin keeps its own list. |
 | `auto_sync` | bool | `true` | Sync wallet on every balance/address call |
 | `enabled_tools` | object | all `true` | Per-tool on/off switches (see below) |
+
+### Liquid chain backends
+
+With `electrum_url` unset, agentic-aqua tries these in order and moves to the next
+one only when a backend is unreachable (connection failure, timeout, HTTP 5xx, or a
+non-JSON response). A rejected request — an invalid PSET, a refused broadcast — is
+reported as-is and never retried elsewhere.
+
+| Network | Backends, in order |
+|---|---|
+| `mainnet` | `airavata.aquabtc.com/liquid/api` → `blockstream.info/liquid/api` → `liquid.network/api` |
+| `testnet` | `blockstream.info/liquidtestnet/api` → `liquid.network/liquidtestnet/api` |
+
+Airavata is AQUA's own electrs, so it is scanned with a high parallel-request
+count (12). Every other Esplora backend — the public instances above and any
+`electrum_url` override — gets a conservative 3, because public instances drop
+connections under parallel load. Requests time out after 15 seconds so an
+unresponsive backend hands over quickly instead of stalling the call.
+
+The URL scheme picks the protocol, for both the built-in list and an override:
+`http(s)://…` is the Esplora HTTP API (electrs), `ssl://host:port` is Electrum
+over TLS, and anything else (`tcp://host:port` or a bare `host:port`) is Electrum
+in plaintext.
 
 ---
 
