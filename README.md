@@ -12,7 +12,7 @@ MCP server and CLI for managing **Bitcoin** and **Liquid Network** wallets throu
 - **Lightning** - Send and receive via Lightning using L-BTC
 - **Assets** - Native support for L-BTC, USDt, and all Liquid assets
 - **Swaps & Pegs** - Convert BTC ↔ L-BTC and swap Liquid/cross-chain assets via SideSwap, SideShift, and Changelly
-- **JAN3 Account** - Login, Lightning Address, and WapuPay (pay ARS bank accounts with USDT) via your JAN3 account
+- **JAN3 Account** - Login, Lightning Address, and WapuPay (pay ARS bank accounts with USDT or L-BTC) via your JAN3 account
 - **Secure** - Encrypted storage, no remote servers for keys
 
 ## Installation
@@ -208,13 +208,13 @@ timeout block. See [docs/submarine-swap-ln-refund.md](docs/submarine-swap-ln-ref
 | `changelly_receive` | Receive USDt-Liquid from USDt on another chain |
 | `changelly_status` | Check status of a swap order |
 
-**WapuPay (`wapupay_*`)** — pay Argentine bank accounts in ARS, funded with USDT on Liquid
+**WapuPay (`wapupay_*`)** — pay Argentine bank accounts in ARS, funded with USDT or L-BTC on Liquid
 
 | Tool | Description |
 |------|-------------|
 | `wapupay_exchange_rates` | Current exchange rates (e.g. USDT/ARS); public, no key needed |
 | `wapupay_quote` | Preview USDT cost, fee, and rate for an ARS payment |
-| `wapupay_create_order` | Create a direct-fiat order; returns a Liquid USDT funding address |
+| `wapupay_create_order` | Create a direct-fiat order (USDT or L-BTC rail); returns a Liquid funding address |
 | `wapupay_fund_order` | Re-issue funding instructions for an existing order |
 | `wapupay_order_status` | Check a direct-fiat order's status |
 | `wapupay_orders` | List locally-tracked orders |
@@ -310,7 +310,7 @@ aqua sideshift send --deposit-coin btc --deposit-network liquid --settle-coin us
   --settle-address T... --deposit-amount 0.001 --wallet-name default
 aqua changelly send --external-network tron --settle-address T... --amount-from 100 --wallet-name default
 
-# WapuPay (pay ARS bank accounts, funded with USDT on Liquid)
+# WapuPay (pay ARS bank accounts, funded with USDT or L-BTC on Liquid)
 aqua wapupay quote --amount-ars 10000 --alias some.alias
 aqua wapupay create-order --amount-ars 10000 --alias some.alias --wallet-name default
 # then fund the returned address:
