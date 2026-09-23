@@ -979,6 +979,49 @@ def lightning_transaction_status(swap_id: str) -> dict[str, Any]:
     return manager.get_swap_status(swap_id)
 
 
+def lightning_refund(
+    swap_id: str,
+    address: str | None = None,
+    claim_public_key: str | None = None,
+    blinding_key: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Recover the L-BTC locked up by a failed Lightning send swap.
+
+    Cooperative-first with an automatic unilateral fallback; see docs/submarine-swap-ln-refund.md.
+
+    Args:
+        swap_id: Swap ID returned from lightning_send
+        address: Liquid destination; defaults to a new address of the swap's wallet
+        claim_public_key: Provider's claim pubkey (hex) — only for swaps that
+            predate local storage of it
+        blinding_key: Lockup blinding key (hex) — same caveat
+        dry_run: Build and sign the refund without broadcasting it
+
+    Returns:
+        swap_id, refund_type ("cooperative" | "unilateral"), amount, fee,
+        destination_address, wallet_name, network, plus either refund_txid and
+        explorer_url, or tx_hex when dry_run
+    """
+    manager = get_lightning_manager()
+    result = manager.refund_send_swap(
+        swap_id,
+        destination_address=address,
+        claim_public_key=claim_public_key,
+        blinding_key=blinding_key,
+        dry_run=dry_run,
+    )
+    refund_txid = result.get("refund_txid")
+    if refund_txid:
+        network = result.get("network", "mainnet")
+        result["explorer_url"] = f"{EXPLORER_URLS[network]}/{refund_txid}"
+        result["message"] = (
+            f"Refund broadcast. {result['amount']} sats return to wallet "
+            f"'{result['wallet_name']}' once the transaction confirms (~1 minute)."
+        )
+    return result
+
+
 def lightning_decode(invoice: str) -> dict[str, Any]:
     """Decode a BOLT11 Lightning invoice without paying it.
 
@@ -2295,6 +2338,7 @@ TOOLS = {
     "lightning_receive": lightning_receive,
     "lightning_send": lightning_send,
     "lightning_transaction_status": lightning_transaction_status,
+    "lightning_refund": lightning_refund,
     "lightning_decode": lightning_decode,
     "changelly_list_currencies": changelly_list_currencies,
     "changelly_quote": changelly_quote,

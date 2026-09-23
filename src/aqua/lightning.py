@@ -6,11 +6,12 @@ from datetime import UTC, datetime
 from typing import Optional
 
 from .ankara import AnkaraClient
-from .bolt11 import decode_bolt11_amount_sats
+from .bolt11 import decode_bolt11_amount_sats, decode_bolt11_payment_hash
 from .boltz import (
     BoltzSwapAlreadyExistsError,
     generate_keypair,
 )
+from .boltz_refund import refund_submarine_swap
 from .lightning_providers import PROVIDERS, resolve_send_provider
 from .lnurl import is_lightning_address, resolve_lightning_address
 
@@ -29,7 +30,7 @@ _SWAP_STATUS_MAP = {
     "invoice.settled": "completed",
     "swap.expired": "failed",
     "transaction.failed": "failed",
-    "transaction.refunded": "failed",
+    "transaction.refunded": "refunded",
     "transaction.lockupFailed": "failed",
     "invoice.expired": "failed",
     "invoice.failedToPay": "failed",
@@ -55,7 +56,7 @@ class LightningSwap:
     invoice: str
     amount: int
     wallet_name: str
-    status: str  # "pending" | "processing" | "completed" | "failed"
+    status: str  # "pending" | "processing" | "completed" | "failed" | "refunded"
     network: str
     created_at: str
     receive_address: Optional[str] = None
@@ -64,6 +65,11 @@ class LightningSwap:
     claim_txid: Optional[str] = None
     refund_private_key: Optional[str] = None
     timeout_block_height: Optional[int] = None
+    claim_public_key: Optional[str] = None
+    blinding_key: Optional[str] = None
+    lockup_address: Optional[str] = None
+    swap_tree: Optional[dict] = None
+    refund_txid: Optional[str] = None
 
     def to_dict(self) -> dict:
         """Convert to dict (includes internal fields for storage)."""
@@ -80,6 +86,11 @@ class LightningSwap:
             "claim_txid",
             "refund_private_key",
             "timeout_block_height",
+            "claim_public_key",
+            "blinding_key",
+            "lockup_address",
+            "swap_tree",
+            "refund_txid",
         ]:
             data.setdefault(field_name, None)
         return cls(**data)
@@ -338,6 +349,11 @@ class LightningManager:
             created_at=datetime.now(UTC).isoformat(),
             refund_private_key=refund_privkey,
             timeout_block_height=swap_resp["timeoutBlockHeight"],
+            # Without these a failed swap cannot be refunded — see docs/submarine-swap-ln-refund.md.
+            claim_public_key=swap_resp["claimPublicKey"],
+            lockup_address=swap_resp["address"],
+            blinding_key=swap_resp.get("blindingKey"),
+            swap_tree=swap_resp.get("swapTree"),
         )
         self.storage.save_lightning_swap(swap)
 
@@ -456,7 +472,8 @@ class LightningManager:
                 provider_status = str(status_resp)
 
             mapped = _SWAP_STATUS_MAP.get(provider_status)
-            if mapped is not None:
+            # A broadcast refund is final; don't let a stale provider status undo it.
+            if mapped is not None and not swap.refund_txid:
                 swap.status = mapped
                 self.storage.save_lightning_swap(swap)
 
@@ -497,10 +514,131 @@ class LightningManager:
             result["preimage"] = swap.preimage
         if swap.claim_txid:
             result["claim_txid"] = swap.claim_txid
-        if swap.status == "failed" and swap.timeout_block_height is not None:
-            result["refund_info"] = {"timeout_block_height": swap.timeout_block_height}
+        if swap.status in ("failed", "refunded") and swap.timeout_block_height is not None:
+            result["refund_info"] = {
+                "timeout_block_height": swap.timeout_block_height,
+                "refundable": swap.status == "failed" and swap.refund_txid is None,
+                "lockup_address": swap.lockup_address,
+            }
+            if swap.refund_txid:
+                result["refund_info"]["refund_txid"] = swap.refund_txid
         if warning:
             result["warning"] = warning
+
+        return result
+
+    def refund_send_swap(
+        self,
+        swap_id: str,
+        destination_address: Optional[str] = None,
+        claim_public_key: Optional[str] = None,
+        blinding_key: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Recover the L-BTC locked up by a failed send swap.
+
+        `claim_public_key`/`blinding_key` are legacy-swap overrides; see
+        docs/submarine-swap-ln-refund.md.
+        """
+        swap = self.storage.load_lightning_swap(swap_id)
+        if not swap:
+            raise ValueError(f"Lightning swap not found: {swap_id}")
+        if swap.swap_type != "send":
+            raise ValueError(f"Swap {swap_id} is a receive swap; only send swaps lock up L-BTC")
+        if swap.refund_txid:
+            raise ValueError(
+                f"Swap {swap_id} was already refunded in transaction {swap.refund_txid}"
+            )
+        if not swap.refund_private_key:
+            raise ValueError(
+                f"Swap {swap_id} has no refund private key stored; the lockup cannot "
+                "be recovered by this wallet."
+            )
+        if swap.timeout_block_height is None:
+            raise ValueError(f"Swap {swap_id} has no timeout block height stored")
+        if not swap.lockup_txid:
+            raise ValueError(
+                f"Swap {swap_id} was never funded (no lockup transaction); there is "
+                "nothing to refund."
+            )
+
+        claim_pubkey = claim_public_key or swap.claim_public_key
+        blinding = blinding_key or swap.blinding_key
+        if not claim_pubkey or not blinding:
+            missing = []
+            if not claim_pubkey:
+                missing.append("claim_public_key")
+            if not blinding:
+                missing.append("blinding_key")
+            raise ValueError(
+                f"Swap {swap_id} predates local storage of {' and '.join(missing)}. "
+                "Ask the provider for the swap's keys and pass them explicitly: "
+                f"aqua lightning refund --swap-id {swap_id} "
+                "--claim-public-key <hex> --blinding-key <hex>"
+            )
+
+        provider = PROVIDERS.get(swap.provider)
+        if provider is None:
+            raise ValueError(
+                f"Swap {swap_id} was created with unknown provider {swap.provider!r}; "
+                "cannot refund it."
+            )
+        client = provider.client_factory(network=swap.network)
+
+        # Deliberately uncaught: a refund needs the network regardless.
+        status_resp = client.get_swap_status(swap_id)
+        provider_status = status_resp.get("status") or status_resp.get("state")
+        mapped = _SWAP_STATUS_MAP.get(provider_status)
+        if mapped is not None and mapped != swap.status:
+            swap.status = mapped
+            self.storage.save_lightning_swap(swap)
+
+        if mapped in ("pending", "processing", "completed"):
+            raise ValueError(
+                f"Swap {swap_id} is {mapped} on {provider.label} "
+                f"({provider_status}); only failed swaps can be refunded."
+            )
+        if provider_status == "transaction.refunded":
+            raise ValueError(
+                f"The lockup of swap {swap_id} is already spent — it was refunded "
+                f"outside this wallet. Check transaction {swap.lockup_txid} on the explorer."
+            )
+
+        lockup_tx_hex = (status_resp.get("transaction") or {}).get("hex")
+        if not lockup_tx_hex:
+            lockup_tx_hex = self.wallet_manager.get_transaction_hex(
+                swap.lockup_txid, network=swap.network
+            )
+
+        destination = destination_address or self.wallet_manager.get_address(
+            swap.wallet_name
+        ).address
+
+        result = refund_submarine_swap(
+            swap_id=swap_id,
+            refund_private_key=swap.refund_private_key,
+            claim_public_key=claim_pubkey,
+            blinding_key=blinding,
+            payment_hash=decode_bolt11_payment_hash(swap.invoice),
+            timeout_block_height=swap.timeout_block_height,
+            lockup_tx_hex=lockup_tx_hex,
+            destination_address=destination,
+            network=swap.network,
+            client=client,
+            tip_height=self.wallet_manager.get_block_height(swap.network),
+            broadcast=lambda tx_hex: self.wallet_manager.broadcast_raw_tx(
+                tx_hex, network=swap.network
+            ),
+            expected_amount=swap.amount,
+            dry_run=dry_run,
+        )
+        result["wallet_name"] = swap.wallet_name
+
+        if not dry_run:
+            swap.refund_txid = result["refund_txid"]
+            swap.status = "refunded"
+            self.storage.save_lightning_swap(swap)
+            result["status"] = "refunded"
 
         return result
 
