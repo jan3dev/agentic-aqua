@@ -15,11 +15,7 @@ logger = logging.getLogger(__name__)
 # Chain backends LWK can talk to; selected by ``config.electrum_url``.
 LiquidClient = Union[lwk.ElectrumClient, lwk.EsploraClient]
 
-# Default Liquid chain backends, tried in order per network. The first mainnet
-# entry is AQUA's own electrs (Esplora HTTP API); the public instances behind it
-# take over when it is unreachable. ``config.electrum_url`` replaces the whole
-# list (a single backend, no fallback) — an explicit override is honoured as
-# written.
+# Per-network backend order and override semantics: docs/CONFIG.md "Liquid chain backends".
 LIQUID_BACKEND_URLS: dict[str, list[str]] = {
     "mainnet": [
         "https://airavata.aquabtc.com/liquid/api",
@@ -32,25 +28,17 @@ LIQUID_BACKEND_URLS: dict[str, list[str]] = {
     ],
 }
 
-# Esplora scans one address per HTTP request, so in-flight request count is the
-# speed lever (Airavata has no waterfalls endpoint). We only push that hard
-# against our own electrs; public instances drop connections under parallel load
-# — the same reason bitcoin.py pins PARALLEL_REQUESTS to 3.
+# Per-backend concurrency rationale (own electrs vs. public instances): docs/CONFIG.md.
 OWN_ESPLORA_CONCURRENCY = 12
 PUBLIC_ESPLORA_CONCURRENCY = 3
 _OWN_ESPLORA_HOSTS = ("airavata.aquabtc.com",)
 
-# Seconds an Esplora request may take before it is abandoned. lwk defaults to no
-# timeout (~75s), long enough that a blackholed primary would stall the whole
-# call instead of handing over to the next backend.
+# lwk's Esplora client has no default timeout otherwise: docs/CONFIG.md.
 ESPLORA_TIMEOUT_SECONDS = 15
 
 _T = TypeVar("_T")
 
-# Substrings of lwk error messages that mean "this backend is not answering".
-# lwk wraps reqwest/hyper/serde errors into LwkError.Generic, so the wording
-# comes from those crates; HTTP status codes arrive structurally instead, via
-# LwkError.EsploraHttpError.status (handled separately below).
+# Substrings of lwk's wrapped reqwest/hyper/serde error text (5xx is handled structurally below).
 _TRANSIENT_MARKERS = (
     "connection reset",
     "connection refused",
@@ -64,16 +52,12 @@ _TRANSIENT_MARKERS = (
     "incompletemessage",  # hyper: connection dropped mid-response
     "error decoding response body",  # backend answered 200 with a non-JSON body
     "jsonfrom",  # lwk variant for the same: serde_json choked on an error page
-    # The serde_json message itself, quoted as lwk renders it. Unquoted it would
-    # also match lwk's own "returned an unexpected value for call", which is not
-    # a network failure.
+    # Quoted as lwk renders it — unquoted also matches lwk's unrelated "unexpected value" message.
     '"expected value"',
     "failed to lookup address information",  # Electrum: DNS lookup failed
 )
 
-# The node already has this transaction. Elements reports it as RPC error -27
-# through Esplora's POST /tx (an HTTP 400), Electrum servers relay the same
-# message; mempool acceptance uses the txn-already-* reject reasons.
+# Elements/Electrum "already have this tx" responses (RPC -27 via Esplora, or a mempool reject).
 _ALREADY_BROADCAST_MARKERS = (
     "already in block chain",
     "txn-already-in-mempool",
@@ -98,10 +82,8 @@ def _is_transient_backend_error(exc: Exception) -> bool:
 def _is_already_broadcast_error(exc: Exception) -> bool:
     """True when the backend rejected the tx because it already has it.
 
-    Broadcast is retried across backends, so a lost response after the node had
-    already relayed the tx makes the next attempt fail this way. The tx is in
-    the mempool or on-chain either way, so reporting its txid is the truthful
-    answer; every other rejection still raises.
+    A lost response after a node relayed the tx makes the retry fail this way;
+    report its txid instead of a false failure. Every other rejection still raises.
     """
     msg = str(exc).lower()
     return any(marker in msg for marker in _ALREADY_BROADCAST_MARKERS)
@@ -207,12 +189,7 @@ class WalletManager:
         return list(LIQUID_BACKEND_URLS[network])
 
     def _build_client(self, url: str, net: lwk.Network) -> LiquidClient:
-        """Build a chain client from a URL.
-
-        An ``http(s)://`` URL selects the Esplora HTTP API (electrs); anything
-        else is an Electrum endpoint (``ssl://host:port`` for TLS,
-        ``tcp://host:port`` or a bare ``host:port`` for plaintext).
-        """
+        """Build a chain client from a URL — scheme picks Esplora vs. Electrum (docs/CONFIG.md)."""
         if url.startswith(("http://", "https://")):
             concurrency = _esplora_concurrency(url)
             logger.info("Using Esplora backend %s (concurrency=%d)", url, concurrency)
@@ -241,19 +218,15 @@ class WalletManager:
     ) -> _T:
         """Run ``fn`` against each backend in turn, falling back on network errors.
 
-        The backend list is read once per call, so the primary and its fallbacks
-        always come from the same config snapshot. Clients are built lazily
-        inside the loop because ``lwk.ElectrumClient`` connects in its
-        constructor: one unusable entry must not stop the remaining backends
-        from being tried.
+        Backends are read once per call (one config snapshot) and built lazily
+        inside the loop, so one bad Electrum constructor can't block the rest.
         """
         last_exc: Optional[Exception] = None
         for url in self._backend_urls(network):
             try:
                 client = self._get_client(network, url)
             except Exception as exc:
-                # Failing to build a client says nothing about the request, so
-                # this never short-circuits the way a non-transient fn error does.
+                # A build failure isn't a fn error — never short-circuits like a non-transient one.
                 logger.warning("Liquid backend %s unusable (%s)", url, exc)
                 last_exc = exc
                 continue
@@ -270,11 +243,8 @@ class WalletManager:
     def _broadcast(self, network: str, tx: lwk.Transaction) -> str:
         """Broadcast ``tx`` with backend fallback. Returns the txid.
 
-        Retrying across backends makes broadcast non-idempotent: if the first
-        node relayed the tx but its response was lost, the next one rejects the
-        tx as already known. That tx is live, so we answer with its txid rather
-        than reporting a failure for a transaction the network accepted. Scoped
-        to broadcast — no other call treats a rejection as success.
+        A retry can find the previous attempt's tx already relayed; report its
+        txid instead of failing a transaction the network already accepted.
         """
 
         def attempt(client: LiquidClient) -> str:

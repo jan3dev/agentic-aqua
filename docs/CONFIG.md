@@ -88,13 +88,19 @@ reported as-is and never retried elsewhere.
 Airavata is AQUA's own electrs, so it is scanned with a high parallel-request
 count (12). Every other Esplora backend — the public instances above and any
 `electrum_url` override — gets a conservative 3, because public instances drop
-connections under parallel load. Requests time out after 15 seconds so an
-unresponsive backend hands over quickly instead of stalling the call.
+connections under parallel load. Requests time out after 15 seconds; lwk's
+Esplora client has no built-in timeout otherwise, so an unresponsive backend
+would stall the whole call instead of handing over quickly.
 
 The URL scheme picks the protocol, for both the built-in list and an override:
 `http(s)://…` is the Esplora HTTP API (electrs), `ssl://host:port` is Electrum
 over TLS, and anything else (`tcp://host:port` or a bare `host:port`) is Electrum
 in plaintext.
+
+`lw_tx_status` (and the CLI's `liquid tx-status`) reads from this same list. A
+404 is retried against the next backend — a tx broadcast through Airavata may
+not have reached the public instances yet — and is reported not-found only once
+every backend has answered 404.
 
 ---
 

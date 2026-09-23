@@ -16,8 +16,7 @@ from .wallet import LIQUID_BACKEND_URLS, WalletManager
 
 logger = logging.getLogger(__name__)
 
-# Last-resort Esplora bases, used only when the wallet backend list holds no
-# HTTP endpoint (it may be all Electrum). The live list is LIQUID_BACKEND_URLS.
+# Last-resort bases if LIQUID_BACKEND_URLS (the live list) holds no HTTP endpoint.
 ESPLORA_URLS = {
     "mainnet": "https://blockstream.info/liquid/api",
     "testnet": "https://blockstream.info/liquidtestnet/api",
@@ -495,12 +494,8 @@ class _EsploraNotFound(Exception):
 
 
 def _esplora_bases(network: str) -> list[str]:
-    """Ordered Esplora HTTP bases for ``network``.
-
-    Mirrors the wallet's backend list so tx status is read from whichever
-    backend the wallet scans and broadcasts through. Electrum entries
-    (``ssl://`` / ``tcp://``) are dropped — urllib cannot query them.
-    """
+    """Ordered Esplora HTTP bases for ``network`` — mirrors the wallet's backend
+    list (Electrum entries dropped; urllib can't query them)."""
     urls = LIQUID_BACKEND_URLS.get(network) or []
     bases = [url.rstrip("/") for url in urls if url.startswith(("http://", "https://"))]
     if bases:
@@ -509,18 +504,10 @@ def _esplora_bases(network: str) -> list[str]:
 
 
 def _esplora_request(network: str, path: str, parse: Callable[[str], Any]) -> Any:
-    """GET ``path`` from each Esplora base in order and return ``parse(body)``.
+    """GET ``path`` from each Esplora base in order; returns ``parse(body)``.
 
-    Falls through to the next backend on a network failure, a timeout, HTTP 5xx,
-    HTTP 429, a definitive 404, or a body ``parse`` cannot make sense of. A 404
-    is retried because a tx broadcast via AQUA's own backend may not have
-    reached the others yet; only when no backend has it is it reported missing.
-
-    Raises:
-        _EsploraNotFound: at least one backend answered 404 and none had the data.
-            Its message names the backends that failed for another reason (empty
-            when every backend gave a clean 404).
-        ValueError: every backend failed, or one returned a definitive error.
+    Fallback and 404-retry rules: see docs/CONFIG.md "Liquid chain backends".
+    Raises ``_EsploraNotFound`` (all backends 404) or ``ValueError`` (all failed).
     """
     failures: list[str] = []
     not_found: list[str] = []
@@ -638,8 +625,7 @@ def lw_tx_status(tx: str) -> dict[str, Any]:
             tip_height = _esplora_request(
                 network, "blocks/tip/height", lambda body: int(body.strip())
             )
-            # The tx and the tip may come from different backends at different
-            # tips; a confirmed tx always has at least one confirmation.
+            # Floor at 1: tx and tip may come from different backends at different heights.
             result["confirmations"] = max(1, tip_height - block_height + 1)
         except Exception as e:
             result["confirmations"] = None
