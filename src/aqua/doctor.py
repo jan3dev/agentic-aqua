@@ -17,6 +17,7 @@ from collections import Counter
 from typing import Any
 
 from .features import SHIPPED_DEFAULTS_ENABLED_TOOLS
+from .lightning_providers import PROVIDERS
 from .storage import KNOWN_CONFIG_KEYS, Storage
 from .tools import TOOLS
 
@@ -107,6 +108,21 @@ def run_doctor(storage: Storage | None = None, fix: bool = False) -> dict[str, A
             "detail": f"Unknown top-level key {key!r} (ignored at load).",
             "action": "remove",
         })
+
+    # --- lightning_provider ---
+    # Deliberate choice, never auto-corrected — see docs/CONFIG.md.
+    if "lightning_provider" in raw:
+        provider = raw["lightning_provider"]
+        if not isinstance(provider, str) or provider not in PROVIDERS:
+            findings.append({
+                "type": "invalid_lightning_provider",
+                "key": "lightning_provider",
+                "detail": (
+                    f"{provider!r} is not a known Lightning swap provider; "
+                    f"valid values: {', '.join(sorted(PROVIDERS))}."
+                ),
+                "action": "manual",
+            })
 
     # --- enabled_tools analysis ---
     enabled = raw.get("enabled_tools")

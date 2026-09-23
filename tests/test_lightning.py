@@ -272,7 +272,7 @@ class TestLightningManagerSend:
         ],
     )
     @patch("aqua.lightning.decode_bolt11_amount_sats")
-    @patch("aqua.lightning.BoltzClient")
+    @patch("aqua.indra.IndraClient")
     @patch("aqua.wallet.WalletManager.send")
     def test_send_happy_path(
         self,
@@ -300,7 +300,7 @@ class TestLightningManagerSend:
 
         assert swap.swap_id == "boltz_swap_123"
         assert swap.swap_type == "send"
-        assert swap.provider == "boltz"
+        assert swap.provider == "indra"
         assert swap.status == "processing"
         assert swap.lockup_txid == "lockup_txid_123"
         assert swap.refund_private_key == "privkey"
@@ -351,7 +351,7 @@ class TestLightningManagerSend:
         return_value=[],  # No balance
     )
     @patch("aqua.lightning.decode_bolt11_amount_sats")
-    @patch("aqua.lightning.BoltzClient")
+    @patch("aqua.indra.IndraClient")
     def test_send_insufficient_balance(
         self, mock_boltz, mock_decode, mock_get_balance, mock_keygen, test_wallet
     ):
@@ -382,7 +382,7 @@ class TestLightningManagerSend:
         ],
     )
     @patch("aqua.lightning.decode_bolt11_amount_sats")
-    @patch("aqua.lightning.BoltzClient")
+    @patch("aqua.indra.IndraClient")
     def test_send_pair_not_available(
         self, mock_boltz, mock_decode, mock_get_balance, test_wallet
     ):
@@ -416,7 +416,7 @@ class TestLightningManagerSend:
         ],
     )
     @patch("aqua.lightning.decode_bolt11_amount_sats")
-    @patch("aqua.lightning.BoltzClient")
+    @patch("aqua.indra.IndraClient")
     def test_send_persists_before_sending(
         self,
         mock_boltz,
@@ -466,7 +466,7 @@ class TestLightningManagerSend:
         ],
     )
     @patch("aqua.lightning.decode_bolt11_amount_sats")
-    @patch("aqua.lightning.BoltzClient")
+    @patch("aqua.indra.IndraClient")
     @patch("aqua.wallet.WalletManager.send")
     def test_pay_invoice_accepts_uppercase_bolt11(
         self,
@@ -516,7 +516,7 @@ class TestLightningManagerSendLNAddress:
                     amount=200_000,
                 )
             ],
-        ), patch("aqua.lightning.BoltzClient") as mock_boltz, patch(
+        ), patch("aqua.indra.IndraClient") as mock_boltz, patch(
             "aqua.lightning.generate_keypair", return_value=("privkey", "pubkey")
         ), patch("aqua.wallet.WalletManager.send", return_value="lockup_txid"):
             mock_resolve.return_value = VALID_INVOICE_MAINNET
@@ -540,19 +540,19 @@ class TestLightningManagerSendLNAddress:
                 manager.pay_invoice("alice@getalby.com", "default")
             mock_resolve.assert_not_called()
 
-    def test_lightning_address_amount_outside_boltz_limits_raises_early(self, test_wallet):
-        """amount_sats below Boltz min raises before any HTTP call."""
+    def test_lightning_address_amount_outside_provider_limits_raises_early(self, test_wallet):
+        """amount_sats below the provider min raises before any HTTP call."""
         manager = get_lightning_manager()
         with patch("aqua.lightning.resolve_lightning_address") as mock_resolve:
-            with pytest.raises(ValueError, match="outside Boltz limits"):
+            with pytest.raises(ValueError, match="outside Indra limits"):
                 manager.pay_invoice("alice@getalby.com", "default", amount_sats=50)
             mock_resolve.assert_not_called()
 
-    def test_lightning_address_amount_above_boltz_max_raises_early(self, test_wallet):
-        """amount_sats above Boltz max raises before any HTTP call."""
+    def test_lightning_address_amount_above_provider_max_raises_early(self, test_wallet):
+        """amount_sats above the provider max raises before any HTTP call."""
         manager = get_lightning_manager()
         with patch("aqua.lightning.resolve_lightning_address") as mock_resolve:
-            with pytest.raises(ValueError, match="outside Boltz limits"):
+            with pytest.raises(ValueError, match="outside Indra limits"):
                 manager.pay_invoice(
                     "alice@getalby.com", "default", amount_sats=30_000_000
                 )
@@ -574,7 +574,7 @@ class TestLightningManagerSendLNAddress:
             ],
         ), patch(
             "aqua.lightning.decode_bolt11_amount_sats", return_value=50_000
-        ), patch("aqua.lightning.BoltzClient") as mock_boltz, patch(
+        ), patch("aqua.indra.IndraClient") as mock_boltz, patch(
             "aqua.lightning.generate_keypair", return_value=("privkey", "pubkey")
         ), patch("aqua.wallet.WalletManager.send", return_value="lockup_txid"):
             mock_client = MagicMock()
@@ -603,7 +603,7 @@ class TestLightningManagerSendLNAddress:
         manager = get_lightning_manager()
         with patch(
             "aqua.lightning.decode_bolt11_amount_sats", return_value=None
-        ), patch("aqua.lightning.BoltzClient") as mock_boltz:
+        ), patch("aqua.indra.IndraClient") as mock_boltz:
             with pytest.raises(ValueError, match="Amountless BOLT11"):
                 manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
             mock_boltz.assert_not_called()
@@ -613,7 +613,7 @@ class TestLightningManagerSendLNAddress:
         manager = get_lightning_manager()
         with patch(
             "aqua.lightning.decode_bolt11_amount_sats", return_value=None
-        ), patch("aqua.lightning.BoltzClient") as mock_boltz:
+        ), patch("aqua.indra.IndraClient") as mock_boltz:
             with pytest.raises(ValueError, match="Amountless BOLT11"):
                 manager.pay_invoice(
                     VALID_INVOICE_MAINNET, "default", amount_sats=50_000
@@ -837,7 +837,7 @@ class TestLightningManagerSendStatus:
         )
         isolated_managers.storage.save_lightning_swap(swap)
 
-        with patch("aqua.lightning.BoltzClient") as mock_boltz:
+        with patch("aqua.boltz.BoltzClient") as mock_boltz:
             mock_client = MagicMock()
             mock_boltz.return_value = mock_client
             mock_client.get_swap_status.return_value = {"status": "transaction.mempool"}
@@ -845,7 +845,7 @@ class TestLightningManagerSendStatus:
             result = manager.get_send_status("wneeB76Iu5k2")
 
             assert result["status"] == "processing"
-            assert result["boltz_status"] == "transaction.mempool"
+            assert result["provider_status"] == "transaction.mempool"
             assert result["lockup_txid"] == "abc123"
             assert result["swap_type"] == "send"
 
@@ -867,7 +867,7 @@ class TestLightningManagerSendStatus:
         )
         isolated_managers.storage.save_lightning_swap(swap)
 
-        with patch("aqua.lightning.BoltzClient") as mock_boltz:
+        with patch("aqua.boltz.BoltzClient") as mock_boltz:
             mock_client = MagicMock()
             mock_boltz.return_value = mock_client
             mock_client.get_swap_status.return_value = {"status": "transaction.claimed"}
@@ -879,7 +879,7 @@ class TestLightningManagerSendStatus:
             result = manager.get_send_status("boltz_claimed_123")
 
             assert result["status"] == "completed"
-            assert result["boltz_status"] == "transaction.claimed"
+            assert result["provider_status"] == "transaction.claimed"
             assert result["preimage"] == "bb" * 32
             assert result["claim_txid"] == "claim_txid_hex"
             loaded = isolated_managers.storage.load_lightning_swap("boltz_claimed_123")
@@ -904,7 +904,7 @@ class TestLightningManagerSendStatus:
         )
         isolated_managers.storage.save_lightning_swap(swap)
 
-        with patch("aqua.lightning.BoltzClient") as mock_boltz:
+        with patch("aqua.boltz.BoltzClient") as mock_boltz:
             mock_client = MagicMock()
             mock_boltz.return_value = mock_client
             mock_client.get_swap_status.return_value = {"status": "transaction.claimed"}
@@ -934,7 +934,7 @@ class TestLightningManagerSendStatus:
         )
         isolated_managers.storage.save_lightning_swap(swap)
 
-        with patch("aqua.lightning.BoltzClient") as mock_boltz:
+        with patch("aqua.boltz.BoltzClient") as mock_boltz:
             mock_client = MagicMock()
             mock_boltz.return_value = mock_client
             mock_client.get_swap_status.return_value = {"status": "swap.expired"}
@@ -942,7 +942,7 @@ class TestLightningManagerSendStatus:
             result = manager.get_send_status("boltz_expired_123")
 
             assert result["status"] == "failed"
-            assert result["boltz_status"] == "swap.expired"
+            assert result["provider_status"] == "swap.expired"
             assert "refund_info" in result
             assert result["refund_info"]["timeout_block_height"] == 2500000
 
@@ -964,7 +964,7 @@ class TestLightningManagerSendStatus:
         )
         isolated_managers.storage.save_lightning_swap(swap)
 
-        with patch("aqua.lightning.BoltzClient") as mock_boltz:
+        with patch("aqua.boltz.BoltzClient") as mock_boltz:
             mock_client = MagicMock()
             mock_boltz.return_value = mock_client
             mock_client.get_swap_status.side_effect = RuntimeError("Boltz API unreachable")
@@ -1027,7 +1027,7 @@ class TestLightningManagerGetSwapStatus:
         )
         isolated_managers.storage.save_lightning_swap(swap)
 
-        with patch("aqua.lightning.BoltzClient") as mock_boltz:
+        with patch("aqua.boltz.BoltzClient") as mock_boltz:
             mock_client = MagicMock()
             mock_boltz.return_value = mock_client
             mock_client.get_swap_status.return_value = {"status": "transaction.confirmed"}
@@ -1036,7 +1036,7 @@ class TestLightningManagerGetSwapStatus:
 
             assert result["swap_type"] == "send"
             assert result["status"] == "processing"
-            assert result["boltz_status"] == "transaction.confirmed"
+            assert result["provider_status"] == "transaction.confirmed"
 
     def test_not_found_raises(self):
         """Non-existent swap_id raises ValueError."""
@@ -1178,3 +1178,271 @@ class TestLightningTools:
 
             assert result["status"] == "completed"
             mock_manager.get_swap_status.assert_called_once_with("test_123")
+
+
+class TestLightningProviderSelection:
+    """pay_invoice honours the configured swap provider."""
+
+    def _balance(self, sats=200_000):
+        return [
+            Balance(
+                asset_id="policy_asset",
+                asset_name="L-BTC",
+                ticker="L-BTC",
+                amount=sats,
+            )
+        ]
+
+    def test_default_provider_is_indra(self, test_wallet, isolated_managers):
+        """With a factory config, the swap is created against Indra."""
+        manager = get_lightning_manager()
+        with patch.object(
+            type(get_manager()), "get_balance", return_value=self._balance()
+        ), patch(
+            "aqua.lightning.decode_bolt11_amount_sats", return_value=50_000
+        ), patch("aqua.indra.IndraClient") as mock_indra, patch(
+            "aqua.boltz.BoltzClient"
+        ) as mock_boltz, patch(
+            "aqua.lightning.generate_keypair", return_value=("privkey", "pubkey")
+        ), patch("aqua.wallet.WalletManager.send", return_value="lockup_txid"):
+            mock_client = MagicMock()
+            mock_indra.return_value = mock_client
+            mock_client.get_submarine_pairs.return_value = MOCK_BOLTZ_SUBMARINE_PAIRS
+            mock_client.create_submarine_swap.return_value = MOCK_BOLTZ_SWAP_RESPONSE
+
+            swap = manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
+
+            assert swap.provider == "indra"
+            mock_boltz.assert_not_called()
+            loaded = isolated_managers.storage.load_lightning_swap(swap.swap_id)
+            assert loaded.provider == "indra"
+
+    def test_config_selects_boltz(self, test_wallet, isolated_managers):
+        """lightning_provider="boltz" routes the swap through Boltz."""
+        from aqua.storage import Config
+
+        isolated_managers.storage.save_config(Config(lightning_provider="boltz"))
+        manager = get_lightning_manager()
+        with patch.object(
+            type(get_manager()), "get_balance", return_value=self._balance()
+        ), patch(
+            "aqua.lightning.decode_bolt11_amount_sats", return_value=50_000
+        ), patch("aqua.boltz.BoltzClient") as mock_boltz, patch(
+            "aqua.indra.IndraClient"
+        ) as mock_indra, patch(
+            "aqua.lightning.generate_keypair", return_value=("privkey", "pubkey")
+        ), patch("aqua.wallet.WalletManager.send", return_value="lockup_txid"):
+            mock_client = MagicMock()
+            mock_boltz.return_value = mock_client
+            mock_client.get_submarine_pairs.return_value = MOCK_BOLTZ_SUBMARINE_PAIRS
+            mock_client.create_submarine_swap.return_value = MOCK_BOLTZ_SWAP_RESPONSE
+
+            swap = manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
+
+            assert swap.provider == "boltz"
+            mock_indra.assert_not_called()
+
+    def test_env_var_overrides_config(self, test_wallet, isolated_managers, monkeypatch):
+        """AQUA_LIGHTNING_PROVIDER beats config.lightning_provider."""
+        from aqua.storage import Config
+
+        isolated_managers.storage.save_config(Config(lightning_provider="indra"))
+        monkeypatch.setenv("AQUA_LIGHTNING_PROVIDER", "boltz")
+        manager = get_lightning_manager()
+        with patch.object(
+            type(get_manager()), "get_balance", return_value=self._balance()
+        ), patch(
+            "aqua.lightning.decode_bolt11_amount_sats", return_value=50_000
+        ), patch("aqua.boltz.BoltzClient") as mock_boltz, patch(
+            "aqua.lightning.generate_keypair", return_value=("privkey", "pubkey")
+        ), patch("aqua.wallet.WalletManager.send", return_value="lockup_txid"):
+            mock_client = MagicMock()
+            mock_boltz.return_value = mock_client
+            mock_client.get_submarine_pairs.return_value = MOCK_BOLTZ_SUBMARINE_PAIRS
+            mock_client.create_submarine_swap.return_value = MOCK_BOLTZ_SWAP_RESPONSE
+
+            swap = manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
+
+            assert swap.provider == "boltz"
+
+    def test_unknown_provider_raises_before_any_call(self, test_wallet, isolated_managers):
+        """An invalid provider name fails loudly, with no HTTP call."""
+        from aqua.storage import Config
+
+        isolated_managers.storage.save_config(Config(lightning_provider="nostr"))
+        manager = get_lightning_manager()
+        with patch("aqua.indra.IndraClient") as mock_indra:
+            with pytest.raises(ValueError, match="Unknown Lightning swap provider"):
+                manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
+            mock_indra.assert_not_called()
+
+    def test_amount_above_indra_max_rejected_before_http(self, test_wallet):
+        """100_001 sats passes Boltz's old ceiling but not Indra's."""
+        manager = get_lightning_manager()
+        with patch(
+            "aqua.lightning.decode_bolt11_amount_sats", return_value=100_001
+        ), patch("aqua.indra.IndraClient") as mock_indra:
+            with pytest.raises(ValueError, match="exceeds maximum"):
+                manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
+            mock_indra.assert_not_called()
+
+    def test_live_pair_limits_reject_amount_inside_constants(self, test_wallet):
+        """The live pair's own limits are the authority, even inside the constants."""
+        manager = get_lightning_manager()
+        tight_pair = {
+            "L-BTC": {
+                "BTC": {
+                    "rate": 1.0,
+                    "fees": {"percentage": 0.1, "minerFees": 21},
+                    "limits": {"minimal": 1_000, "maximal": 20_000},
+                }
+            }
+        }
+        with patch.object(
+            type(get_manager()), "get_balance", return_value=self._balance()
+        ), patch(
+            "aqua.lightning.decode_bolt11_amount_sats", return_value=50_000
+        ), patch("aqua.indra.IndraClient") as mock_indra, patch(
+            "aqua.lightning.generate_keypair", return_value=("privkey", "pubkey")
+        ):
+            mock_client = MagicMock()
+            mock_indra.return_value = mock_client
+            mock_client.get_submarine_pairs.return_value = tight_pair
+
+            with pytest.raises(ValueError, match="exceeds the current Indra"):
+                manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
+
+            mock_client.create_submarine_swap.assert_not_called()
+
+    def test_live_pair_minimum_rejects_amount_inside_constants(self, test_wallet):
+        """Same guard on the low side."""
+        manager = get_lightning_manager()
+        tight_pair = {
+            "L-BTC": {
+                "BTC": {
+                    "limits": {"minimal": 5_000, "maximal": 100_000},
+                }
+            }
+        }
+        with patch.object(
+            type(get_manager()), "get_balance", return_value=self._balance()
+        ), patch(
+            "aqua.lightning.decode_bolt11_amount_sats", return_value=2_000
+        ), patch("aqua.indra.IndraClient") as mock_indra, patch(
+            "aqua.lightning.generate_keypair", return_value=("privkey", "pubkey")
+        ):
+            mock_client = MagicMock()
+            mock_indra.return_value = mock_client
+            mock_client.get_submarine_pairs.return_value = tight_pair
+
+            with pytest.raises(ValueError, match="below the current Indra"):
+                manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
+
+            mock_client.create_submarine_swap.assert_not_called()
+
+
+class TestSwapStatusMapping:
+    """Indra's status enum maps onto the local lifecycle statuses."""
+
+    def _stored_swap(self, storage, swap_id, provider="indra"):
+        swap = LightningSwap(
+            swap_id=swap_id,
+            swap_type="send",
+            provider=provider,
+            invoice=VALID_INVOICE_MAINNET,
+            amount=1_021,
+            wallet_name="default",
+            status="processing",
+            network="mainnet",
+            created_at=datetime.now(UTC).isoformat(),
+            lockup_txid="lockup_abc",
+            timeout_block_height=2_500_000,
+        )
+        storage.save_lightning_swap(swap)
+        return swap
+
+    @pytest.mark.parametrize(
+        "remote_status,expected",
+        [
+            ("invoice.set", "processing"),
+            ("invoice.pending", "processing"),
+            ("invoice.paid", "completed"),
+            ("invoice.settled", "completed"),
+            ("invoice.expired", "failed"),
+            ("invoice.failedToPay", "failed"),
+            ("transaction.lockupFailed", "failed"),
+        ],
+    )
+    def test_indra_statuses_map(
+        self, test_wallet, isolated_managers, remote_status, expected
+    ):
+        manager = get_lightning_manager()
+        swap_id = f"indra_{remote_status.replace('.', '_')}"
+        self._stored_swap(isolated_managers.storage, swap_id)
+
+        with patch("aqua.indra.IndraClient") as mock_indra:
+            mock_client = MagicMock()
+            mock_indra.return_value = mock_client
+            mock_client.get_swap_status.return_value = {"status": remote_status}
+            mock_client.get_claim_details.return_value = {"preimage": "cc" * 32}
+
+            result = manager.get_send_status(swap_id)
+
+            assert result["status"] == expected
+            assert result["provider_status"] == remote_status
+            assert result["provider"] == "indra"
+
+    def test_invoice_paid_pulls_the_preimage(self, test_wallet, isolated_managers):
+        """A completed Indra swap surfaces proof of payment."""
+        manager = get_lightning_manager()
+        self._stored_swap(isolated_managers.storage, "indra_paid")
+
+        with patch("aqua.indra.IndraClient") as mock_indra:
+            mock_client = MagicMock()
+            mock_indra.return_value = mock_client
+            mock_client.get_swap_status.return_value = {"status": "invoice.paid"}
+            mock_client.get_claim_details.return_value = {
+                "preimage": "dd" * 32,
+                "claimTxid": "claim_hex",
+            }
+
+            result = manager.get_send_status("indra_paid")
+
+            assert result["preimage"] == "dd" * 32
+            assert result["claim_txid"] == "claim_hex"
+
+    def test_old_boltz_swap_still_queries_boltz(self, test_wallet, isolated_managers):
+        """A swap persisted before the switch keeps resolving against Boltz."""
+        manager = get_lightning_manager()
+        self._stored_swap(isolated_managers.storage, "legacy_boltz", provider="boltz")
+
+        with patch("aqua.boltz.BoltzClient") as mock_boltz, patch(
+            "aqua.indra.IndraClient"
+        ) as mock_indra:
+            mock_client = MagicMock()
+            mock_boltz.return_value = mock_client
+            mock_client.get_swap_status.return_value = {"status": "transaction.mempool"}
+
+            result = manager.get_send_status("legacy_boltz")
+
+            assert result["provider"] == "boltz"
+            assert result["provider_status"] == "transaction.mempool"
+            mock_indra.assert_not_called()
+
+    def test_unknown_stored_provider_warns_instead_of_guessing(
+        self, test_wallet, isolated_managers
+    ):
+        """An unrecognised provider name never falls back to another service."""
+        manager = get_lightning_manager()
+        self._stored_swap(isolated_managers.storage, "weird", provider="atlantis")
+
+        with patch("aqua.indra.IndraClient") as mock_indra, patch(
+            "aqua.boltz.BoltzClient"
+        ) as mock_boltz:
+            result = manager.get_send_status("weird")
+
+            assert "warning" in result
+            assert "atlantis" in result["warning"]
+            assert "provider_status" not in result
+            mock_indra.assert_not_called()
+            mock_boltz.assert_not_called()
