@@ -11,6 +11,7 @@ import pytest
 import wallycore as wally
 from coincurve import PrivateKey
 
+import aqua.boltz_refund as boltz_refund
 from aqua.boltz_refund import (
     GENESIS_BLOCK_HASH,
     LEAF_VERSION_LIQUID,
@@ -18,6 +19,7 @@ from aqua.boltz_refund import (
     LockupSpentError,
     LockupUtxo,
     RefundError,
+    _build_signed_refund,
     _looks_like_spent_lockup,
     _varslice,
     build_refund_transaction,
@@ -438,3 +440,38 @@ class TestRefundTransactionShape:
                 self._utxo(value=121), CONFIDENTIAL_ADDRESS, 1, 0, "mainnet"
             )
         assert "does not cover" not in str(exc_info.value)
+
+
+class TestFeeSizingWitness:
+    """The fee draft must carry the witness shape the signed tx will have."""
+
+    @pytest.mark.parametrize(
+        "locktime,expected_items", [(0, 1), (SWAP["timeout_block_height"], 3)]
+    )
+    def test_draft_witness_matches_spend_path(self, monkeypatch, locktime, expected_items):
+        tree = tree_from(SWAP)
+        sized = []
+
+        def fake_estimate(tx, fee_rate):
+            sized.append(wally.tx_get_input_witness_num_items(tx, 0))
+            return 20
+
+        def fake_build(*args):
+            tx = build_fixture_transaction()
+            boltz_refund._attach_witness(tx, 0, [bytes(64)])  # as the real builder does
+            return tx
+
+        monkeypatch.setattr(boltz_refund, "build_refund_transaction", fake_build)
+        monkeypatch.setattr(boltz_refund, "_estimate_fee", fake_estimate)
+        monkeypatch.setattr(boltz_refund, "elements_taproot_sighash", lambda *a, **k: bytes(32))
+
+        _build_signed_refund(
+            tree=tree,
+            utxo=TestRefundTransactionShape()._utxo(),
+            destination_address=CONFIDENTIAL_ADDRESS,
+            network="mainnet",
+            locktime=locktime,
+            fee_rate=0.1,
+            sign_input=lambda tx, message: [bytes(64)],
+        )
+        assert sized == [expected_items]

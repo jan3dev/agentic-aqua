@@ -587,6 +587,9 @@ def _build_signed_refund(
     genesis = GENESIS_BLOCK_HASH[network]
     # Nominal fee: size doesn't depend on it, and even the smallest lockup covers 1 sat.
     draft = build_refund_transaction(utxo, destination_address, 1, locktime, network)
+    # Size it with the real witness shape: the script path adds leaf + control block.
+    if locktime:
+        _attach_witness(draft, 0, [_DUMMY_SIGNATURE, tree.refund_leaf, tree.control_block()])
     fee = _estimate_fee(draft, fee_rate)
     if fee > MAX_REFUND_FEE_SATS:
         raise RefundError(
@@ -791,7 +794,7 @@ def refund_submarine_swap(
         if not timed_out:
             blocks_left = timeout_block_height - tip_height
             raise RefundError(
-                f"The provider would not cosign a refund for swap {swap_id} "
+                f"There was an error doing the cosign for swap {swap_id} "
                 f"({cooperative_error}). Spending the refund branch without it only "
                 f"becomes valid at Liquid block {timeout_block_height}, "
                 f"{blocks_left} blocks away (~{blocks_left} minutes at one block per "
