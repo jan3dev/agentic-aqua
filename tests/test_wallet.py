@@ -10,11 +10,19 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock
 
+import lwk
 import pytest
 
 from aqua.storage import Storage
-from aqua.wallet import WalletManager
+from aqua.wallet import (
+    LIQUID_BACKEND_URLS,
+    OWN_ESPLORA_CONCURRENCY,
+    PUBLIC_ESPLORA_CONCURRENCY,
+    WalletManager,
+    _esplora_concurrency,
+)
 from tests.conftest import TEST_MNEMONIC
 
 
@@ -261,9 +269,261 @@ class TestPeekAddress:
 
         fake = MagicMock()
         fake.full_scan_to_index.return_value = None
-        monkeypatch.setattr(wallet_manager, "_get_client", lambda network: fake)
+        monkeypatch.setattr(wallet_manager, "_get_client", lambda network, url: fake)
         wallet_manager.sync_wallet("default")
 
         fake.full_scan_to_index.assert_called_once()
         scanned_to = fake.full_scan_to_index.call_args.args[1]
         assert scanned_to > peek.index
+
+
+class TestBackendFallback:
+    """_with_client_fallback walks LIQUID_BACKEND_URLS, building each client
+    lazily and only stepping to the next backend on transient network errors.
+    Mirrors tests/test_bitcoin.py::TestEsploraFallback.
+    """
+
+    @staticmethod
+    def _stub_clients(wallet_manager, monkeypatch, clients):
+        """Map the network's backend URLs onto ``clients``, in order.
+
+        Patching _get_client keeps every test free of network I/O; a client
+        given as an Exception instance simulates a failing constructor.
+        """
+        urls = wallet_manager._backend_urls("testnet")
+        assert len(clients) <= len(urls), "more stubs than configured backends"
+        by_url = dict(zip(urls, clients))
+
+        def fake_get_client(network, url):
+            client = by_url[url]
+            if isinstance(client, Exception):
+                raise client
+            return client
+
+        monkeypatch.setattr(wallet_manager, "_get_client", fake_get_client)
+        return urls
+
+    def test_fallback_uses_second_when_first_raises_transient(
+        self, wallet_manager, monkeypatch
+    ):
+        c1 = MagicMock()
+        c1.full_scan.side_effect = Exception("connection reset by peer")
+        c2 = MagicMock()
+        c2.full_scan.return_value = "ok"
+        self._stub_clients(wallet_manager, monkeypatch, [c1, c2])
+
+        result = wallet_manager._with_client_fallback(
+            "testnet", lambda c: c.full_scan("wollet")
+        )
+
+        assert result == "ok"
+        c1.full_scan.assert_called_once()
+        c2.full_scan.assert_called_once()
+
+    def test_non_transient_error_is_reraised_without_fallback(
+        self, wallet_manager, monkeypatch
+    ):
+        """A rejected request would fail identically on every backend, so it
+        surfaces as-is (CLAUDE.md "No silent fallbacks")."""
+        c1 = MagicMock()
+        c1.broadcast.side_effect = ValueError("bad-txns-inputs-missingorspent")
+        c2 = MagicMock()
+        self._stub_clients(wallet_manager, monkeypatch, [c1, c2])
+
+        with pytest.raises(ValueError, match="bad-txns-inputs-missingorspent"):
+            wallet_manager._with_client_fallback("testnet", lambda c: c.broadcast("tx"))
+
+        c1.broadcast.assert_called_once()
+        c2.broadcast.assert_not_called()
+
+    def test_all_backends_transient_raises_last_error(
+        self, wallet_manager, monkeypatch
+    ):
+        clients = []
+        for i in range(len(wallet_manager._backend_urls("testnet"))):
+            c = MagicMock()
+            c.full_scan.side_effect = Exception(f"timed out on backend {i}")
+            clients.append(c)
+        self._stub_clients(wallet_manager, monkeypatch, clients)
+
+        with pytest.raises(Exception, match=f"backend {len(clients) - 1}"):
+            wallet_manager._with_client_fallback("testnet", lambda c: c.full_scan("w"))
+
+        for c in clients:
+            c.full_scan.assert_called_once()
+
+    def test_json_parse_error_counts_as_transient(self, wallet_manager, monkeypatch):
+        """A backend answering 200 with an HTML error page makes lwk fail inside
+        serde_json; that is the backend being down, not a bad request."""
+        c1 = MagicMock()
+        c1.full_scan.side_effect = lwk.LwkError.Generic(
+            'JsonFrom(Error("expected value", line: 1, column: 1))'
+        )
+        c2 = MagicMock()
+        c2.full_scan.return_value = "ok"
+        self._stub_clients(wallet_manager, monkeypatch, [c1, c2])
+
+        assert (
+            wallet_manager._with_client_fallback("testnet", lambda c: c.full_scan("w"))
+            == "ok"
+        )
+        c2.full_scan.assert_called_once()
+
+    def test_unexpected_value_is_not_transient(self, wallet_manager, monkeypatch):
+        """Guards the 'expected value' marker: lwk's own "returned an unexpected
+        value for call" must not be mistaken for a serde_json parse failure."""
+        c1 = MagicMock()
+        c1.full_scan.side_effect = lwk.LwkError.Generic(
+            "Elements RPC returned an unexpected value for call getblock"
+        )
+        c2 = MagicMock()
+        self._stub_clients(wallet_manager, monkeypatch, [c1, c2])
+
+        with pytest.raises(Exception, match="unexpected value"):
+            wallet_manager._with_client_fallback("testnet", lambda c: c.full_scan("w"))
+        c2.full_scan.assert_not_called()
+
+    def test_http_5xx_counts_as_transient(self, wallet_manager, monkeypatch):
+        """lwk reports HTTP status structurally on EsploraHttpError, not in text."""
+        c1 = MagicMock()
+        c1.full_scan.side_effect = lwk.LwkError.EsploraHttpError(
+            "https://example.invalid/blocks/tip/hash", 503, "<h1>503</h1>"
+        )
+        c2 = MagicMock()
+        c2.full_scan.return_value = "ok"
+        self._stub_clients(wallet_manager, monkeypatch, [c1, c2])
+
+        assert (
+            wallet_manager._with_client_fallback("testnet", lambda c: c.full_scan("w"))
+            == "ok"
+        )
+        c2.full_scan.assert_called_once()
+
+    def test_electrum_dns_failure_counts_as_transient(
+        self, wallet_manager, monkeypatch
+    ):
+        c1 = MagicMock()
+        c1.full_scan.side_effect = lwk.LwkError.Generic(
+            'ClientError(IOError(Custom { kind: Uncategorized, error: "failed to '
+            'lookup address information: nodename nor servname provided, or not '
+            'known" }))'
+        )
+        c2 = MagicMock()
+        c2.full_scan.return_value = "ok"
+        self._stub_clients(wallet_manager, monkeypatch, [c1, c2])
+
+        assert (
+            wallet_manager._with_client_fallback("testnet", lambda c: c.full_scan("w"))
+            == "ok"
+        )
+
+    def test_failing_client_constructor_does_not_stop_next_backend(
+        self, wallet_manager, monkeypatch
+    ):
+        """lwk.ElectrumClient connects in its constructor, so a dead entry blows
+        up at build time. That must not mask the remaining backends."""
+        c2 = MagicMock()
+        c2.full_scan.return_value = "ok"
+        self._stub_clients(
+            wallet_manager, monkeypatch, [RuntimeError("cannot connect"), c2]
+        )
+
+        assert (
+            wallet_manager._with_client_fallback("testnet", lambda c: c.full_scan("w"))
+            == "ok"
+        )
+        c2.full_scan.assert_called_once()
+
+    def test_backend_urls_rejects_unknown_network(self, wallet_manager):
+        with pytest.raises(ValueError, match="Unknown network"):
+            wallet_manager._backend_urls("regtest")
+
+    def test_backend_urls_returns_a_copy(self, wallet_manager):
+        urls = wallet_manager._backend_urls("mainnet")
+        urls.append("https://attacker.invalid/api")
+        assert "https://attacker.invalid/api" not in LIQUID_BACKEND_URLS["mainnet"]
+
+    def test_backend_url_override_disables_fallback(self, wallet_manager):
+        config = wallet_manager.storage.load_config()
+        config.electrum_url = "ssl://electrum.example:50002"
+        wallet_manager.storage.save_config(config)
+        assert wallet_manager._backend_urls("mainnet") == [
+            "ssl://electrum.example:50002"
+        ]
+
+    def test_own_backend_keeps_high_concurrency_public_does_not(self):
+        assert (
+            _esplora_concurrency("https://airavata.aquabtc.com/liquid/api")
+            == OWN_ESPLORA_CONCURRENCY
+        )
+        for url in ("https://blockstream.info/liquid/api", "https://liquid.network/api"):
+            assert _esplora_concurrency(url) == PUBLIC_ESPLORA_CONCURRENCY
+
+
+class TestBroadcastIdempotency:
+    """Broadcast is retried across backends, so a node that already has the tx
+    must read as success — the tx is live. Every other rejection still raises.
+    """
+
+    @staticmethod
+    def _fake_tx(txid="ab" * 32):
+        tx = MagicMock()
+        tx.txid.return_value = txid
+        return tx
+
+    def test_already_in_block_chain_on_fallback_returns_txid(
+        self, wallet_manager, monkeypatch
+    ):
+        tx = self._fake_tx()
+        c1 = MagicMock()
+        c1.broadcast.side_effect = Exception("error sending request")
+        c2 = MagicMock()
+        # Real wording seen from Esplora POST /tx against a Liquid node.
+        c2.broadcast.side_effect = lwk.LwkError.EsploraHttpError(
+            "https://example.invalid/tx",
+            400,
+            "sendrawtransaction RPC error -27: Transaction already in block chain",
+        )
+        TestBackendFallback._stub_clients(wallet_manager, monkeypatch, [c1, c2])
+
+        assert wallet_manager._broadcast("testnet", tx) == "ab" * 32
+
+    def test_already_known_on_first_backend_returns_txid(
+        self, wallet_manager, monkeypatch
+    ):
+        tx = self._fake_tx("cd" * 32)
+        c1 = MagicMock()
+        c1.broadcast.side_effect = Exception(
+            "sendrawtransaction RPC error -26: txn-already-in-mempool"
+        )
+        c2 = MagicMock()
+        TestBackendFallback._stub_clients(wallet_manager, monkeypatch, [c1, c2])
+
+        assert wallet_manager._broadcast("testnet", tx) == "cd" * 32
+        c2.broadcast.assert_not_called()
+
+    def test_other_rejection_still_raises(self, wallet_manager, monkeypatch):
+        tx = self._fake_tx()
+        c1 = MagicMock()
+        c1.broadcast.side_effect = lwk.LwkError.EsploraHttpError(
+            "https://example.invalid/tx",
+            400,
+            "sendrawtransaction RPC error -26: bad-txns-in-belowout",
+        )
+        c2 = MagicMock()
+        TestBackendFallback._stub_clients(wallet_manager, monkeypatch, [c1, c2])
+
+        with pytest.raises(Exception, match="bad-txns-in-belowout"):
+            wallet_manager._broadcast("testnet", tx)
+        c2.broadcast.assert_not_called()
+
+    def test_successful_broadcast_returns_backend_txid(
+        self, wallet_manager, monkeypatch
+    ):
+        tx = self._fake_tx()
+        c1 = MagicMock()
+        c1.broadcast.return_value = "ef" * 32
+        TestBackendFallback._stub_clients(wallet_manager, monkeypatch, [c1])
+
+        assert wallet_manager._broadcast("testnet", tx) == "ef" * 32
+        tx.txid.assert_not_called()

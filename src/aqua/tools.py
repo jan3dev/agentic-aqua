@@ -6,25 +6,29 @@ import re
 import urllib.error
 import urllib.request
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Callable
 
 from .assets import MAINNET_ASSETS, TESTNET_ASSETS, resolve_asset_name, resolve_liquid_asset_id
 from .bitcoin import BitcoinWalletManager
 from .bolt11 import decode_bolt11_fields
 from .qr import decode_qr, generate_qr, render_qr_terminal
-from .wallet import WalletManager
+from .wallet import LIQUID_BACKEND_URLS, WalletManager
 
 logger = logging.getLogger(__name__)
 
+# Last-resort bases if LIQUID_BACKEND_URLS (the live list) holds no HTTP endpoint.
 ESPLORA_URLS = {
     "mainnet": "https://blockstream.info/liquid/api",
     "testnet": "https://blockstream.info/liquidtestnet/api",
 }
 
+# Canonical human-facing explorer, independent of which backend answered.
 EXPLORER_URLS = {
     "mainnet": "https://blockstream.info/liquid/tx",
     "testnet": "https://blockstream.info/liquidtestnet/tx",
 }
+
+ESPLORA_TIMEOUT = 15
 
 
 # Global wallet manager instance
@@ -455,24 +459,96 @@ def lw_sweep(
 
 
 def _parse_tx_input(tx_input: str) -> tuple[str, str]:
-    """Parse a txid or Blockstream URL into (txid, network)."""
-    # Try to match a Blockstream URL
+    """Parse a txid or a Liquid explorer URL into (txid, network)."""
+    candidate = tx_input.strip()
+
+    # blockstream.info/<liquid|liquidtestnet>/tx/<txid>
     match = re.match(
         r"https?://blockstream\.info/(liquidtestnet|liquid)/tx/([0-9a-fA-F]{64})",
-        tx_input.strip(),
+        candidate,
     )
     if match:
         network = "testnet" if match.group(1) == "liquidtestnet" else "mainnet"
         return match.group(2), network
 
+    # liquid.network/tx/<txid> and liquid.network/liquidtestnet/tx/<txid>
+    match = re.match(
+        r"https?://(?:www\.)?liquid\.network/(liquidtestnet/)?tx/([0-9a-fA-F]{64})",
+        candidate,
+    )
+    if match:
+        network = "testnet" if match.group(1) else "mainnet"
+        return match.group(2), network
+
     # Try raw txid
-    txid = tx_input.strip()
-    if re.fullmatch(r"[0-9a-fA-F]{64}", txid):
-        return txid, "mainnet"
+    if re.fullmatch(r"[0-9a-fA-F]{64}", candidate):
+        return candidate, "mainnet"
 
     raise ValueError(
-        f"Invalid input: expected a 64-char hex txid or a Blockstream URL, got: {tx_input}"
+        f"Invalid input: expected a 64-char hex txid or a Liquid explorer URL, got: {tx_input}"
     )
+
+
+class _EsploraNotFound(Exception):
+    """Every backend that answered returned 404 for the requested path."""
+
+
+def _esplora_bases(network: str) -> list[str]:
+    """Ordered Esplora HTTP bases for ``network`` — mirrors the wallet's backend
+    list (Electrum entries dropped; urllib can't query them)."""
+    urls = LIQUID_BACKEND_URLS.get(network) or []
+    bases = [url.rstrip("/") for url in urls if url.startswith(("http://", "https://"))]
+    if bases:
+        return bases
+    return [ESPLORA_URLS.get(network) or ESPLORA_URLS["mainnet"]]
+
+
+def _esplora_request(network: str, path: str, parse: Callable[[str], Any]) -> Any:
+    """GET ``path`` from each Esplora base in order; returns ``parse(body)``.
+
+    Fallback and 404-retry rules: see docs/CONFIG.md "Liquid chain backends".
+    Raises ``_EsploraNotFound`` (all backends 404) or ``ValueError`` (all failed).
+    """
+    failures: list[str] = []
+    not_found: list[str] = []
+
+    for base in _esplora_bases(network):
+        url = f"{base}/{path.lstrip('/')}"
+        req = urllib.request.Request(url, headers={"User-Agent": "agentic-aqua"})
+        try:
+            with urllib.request.urlopen(req, timeout=ESPLORA_TIMEOUT) as resp:
+                body = resp.read().decode()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                not_found.append(base)
+                continue
+            if e.code >= 500 or e.code == 429:
+                failures.append(f"{base}: HTTP {e.code}")
+                continue
+            raise ValueError(f"Esplora API error at {base}: HTTP {e.code}") from e
+        except OSError as e:
+            # URLError, socket timeouts and read-phase resets are all OSError.
+            failures.append(f"{base}: {getattr(e, 'reason', None) or e}")
+            continue
+
+        try:
+            return parse(body)
+        except ValueError:
+            logger.warning("Unparseable Esplora response from %s", base)
+            failures.append(f"{base}: unparseable response")
+
+    detail = "; ".join(failures)
+    if not_found:
+        raise _EsploraNotFound(detail)
+    raise ValueError(f"Could not reach any Liquid Esplora backend ({detail})")
+
+
+def _parse_tx_json(body: str) -> dict[str, Any]:
+    """Decode an Esplora tx body, rejecting anything that is not a JSON object."""
+    data = json.loads(body)
+    if not isinstance(data, dict):
+        raise ValueError("expected a JSON object")
+    return data
 
 
 def _validate_positive_decimal_string(value: str, field_name: str) -> None:
@@ -494,28 +570,22 @@ def lw_tx_status(tx: str) -> dict[str, Any]:
     """
     Get the status of a Liquid transaction.
 
-    Accepts a txid or a Blockstream explorer URL, e.g.:
-    https://blockstream.info/liquid/tx/9763a7...
+    Accepts a txid or a Liquid explorer URL, e.g.:
+    https://blockstream.info/liquid/tx/9763a7... or https://liquid.network/tx/9763a7...
 
     Args:
-        tx: Transaction ID (hex) or Blockstream URL
+        tx: Transaction ID (hex) or Liquid explorer URL
 
     Returns:
         txid, status (confirmed/unconfirmed), block_height, fee, amounts, explorer_url
     """
     txid, network = _parse_tx_input(tx)
-    api_url = f"{ESPLORA_URLS[network]}/tx/{txid}"
 
-    req = urllib.request.Request(api_url, headers={"User-Agent": "agentic-aqua"})
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            raise ValueError(f"Transaction not found: {txid}")
-        raise ValueError(f"Blockstream API error: HTTP {e.code}")
-    except urllib.error.URLError as e:
-        raise ValueError(f"Could not reach Blockstream API: {e.reason}")
+        data = _esplora_request(network, f"tx/{txid}", _parse_tx_json)
+    except _EsploraNotFound as e:
+        detail = f" ({e})" if str(e) else ""
+        raise ValueError(f"Transaction not found: {txid}{detail}") from None
 
     status = data.get("status", {})
     confirmed = status.get("confirmed", False)
@@ -551,12 +621,12 @@ def lw_tx_status(tx: str) -> dict[str, Any]:
         if block_time:
             result["block_time"] = block_time
         # Fetch current tip to calculate confirmations
-        tip_url = f"{ESPLORA_URLS[network]}/blocks/tip/height"
-        tip_req = urllib.request.Request(tip_url, headers={"User-Agent": "agentic-aqua"})
         try:
-            with urllib.request.urlopen(tip_req, timeout=15) as resp:
-                tip_height = int(resp.read().decode().strip())
-            result["confirmations"] = tip_height - block_height + 1
+            tip_height = _esplora_request(
+                network, "blocks/tip/height", lambda body: int(body.strip())
+            )
+            # Floor at 1: tx and tip may come from different backends at different heights.
+            result["confirmations"] = max(1, tip_height - block_height + 1)
         except Exception as e:
             result["confirmations"] = None
             result["warning"] = (

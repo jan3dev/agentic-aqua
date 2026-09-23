@@ -1,6 +1,8 @@
 """Tests for all MCP tool functions exposed by the liquid wallet server."""
 
+import json
 import tempfile
+import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -11,8 +13,11 @@ from aqua.bitcoin import BitcoinWalletManager
 from aqua.storage import Storage, WalletData
 from aqua.qr import decode_qr
 from aqua.tools import (
+    ESPLORA_URLS,
     _attach_deposit_qr,
+    _esplora_bases,
     _manager,
+    _parse_tx_input,
     btc_address,
     btc_export_descriptor,
     btc_import_descriptor,
@@ -31,8 +36,9 @@ from aqua.tools import (
     lw_send,
     lw_send_asset,
     lw_transactions,
+    lw_tx_status,
 )
-from aqua.wallet import WalletManager
+from aqua.wallet import LIQUID_BACKEND_URLS, WalletManager
 
 from tests.conftest import TEST_MNEMONIC
 
@@ -1477,3 +1483,343 @@ class TestChangellySendAmountValidation:
 # ---------------------------------------------------------------------------
 
 
+
+# ---------------------------------------------------------------------------
+# lw_tx_status — Esplora backend fallback  # Significance: 5 (Essential)
+# ---------------------------------------------------------------------------
+
+TX_ID = "a" * 64
+
+FIRST_BACKEND = "https://first.example/api"
+SECOND_BACKEND = "https://second.example/api"
+
+UNCONFIRMED_TX = json.dumps(
+    {
+        "txid": TX_ID,
+        "status": {"confirmed": False},
+        "fee": 42,
+        "vout": [{"scriptpubkey_address": "lq1qqvalid", "value": 1000}],
+    }
+)
+
+CONFIRMED_TX = json.dumps(
+    {
+        "txid": TX_ID,
+        "status": {"confirmed": True, "block_height": 100, "block_time": 1700000000},
+        "fee": 42,
+        "vout": [],
+    }
+)
+
+
+class _FakeEsploraResponse:
+    """Minimal stand-in for the object urlopen returns as a context manager."""
+
+    def __init__(self, body: str):
+        self._body = body.encode()
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _http_error(url: str, code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(url, code, "fake error", {}, None)
+
+
+def _routed_urlopen(routes: dict):
+    """urlopen replacement answering by URL prefix; unrouted URLs are a test bug."""
+
+    def _open(req, timeout=None):
+        url = req.full_url
+        for prefix, outcome in routes.items():
+            if url.startswith(prefix):
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return _FakeEsploraResponse(outcome)
+        raise AssertionError(f"unexpected request to {url}")
+
+    return _open
+
+
+@pytest.fixture
+def two_backends(monkeypatch):
+    """Point the tx-status helper at two fake HTTP backends."""
+    import aqua.tools as tools_module
+
+    monkeypatch.setattr(
+        tools_module,
+        "LIQUID_BACKEND_URLS",
+        {"mainnet": [FIRST_BACKEND, SECOND_BACKEND]},
+    )
+
+
+class TestEsploraBases:
+    def test_mirrors_wallet_backend_list(self):
+        """The tx-status base list is derived from the wallet's, not a second copy."""
+        expected = [
+            url.rstrip("/")
+            for url in LIQUID_BACKEND_URLS["mainnet"]
+            if url.startswith(("http://", "https://"))
+        ]
+        assert _esplora_bases("mainnet") == expected
+        assert expected, "wallet mainnet backends should include at least one HTTP base"
+
+    def test_testnet_mirrors_wallet_backend_list(self):
+        expected = [
+            url.rstrip("/")
+            for url in LIQUID_BACKEND_URLS["testnet"]
+            if url.startswith(("http://", "https://"))
+        ]
+        assert _esplora_bases("testnet") == expected
+
+    def test_electrum_entries_are_filtered_out(self, monkeypatch):
+        """ssl:// / tcp:// entries cannot be queried over HTTP and are dropped."""
+        import aqua.tools as tools_module
+
+        monkeypatch.setattr(
+            tools_module,
+            "LIQUID_BACKEND_URLS",
+            {"mainnet": ["ssl://electrum.example:50002", FIRST_BACKEND]},
+        )
+        assert _esplora_bases("mainnet") == [FIRST_BACKEND]
+
+    def test_trailing_slash_stripped(self, monkeypatch):
+        import aqua.tools as tools_module
+
+        monkeypatch.setattr(
+            tools_module, "LIQUID_BACKEND_URLS", {"mainnet": [FIRST_BACKEND + "/"]}
+        )
+        assert _esplora_bases("mainnet") == [FIRST_BACKEND]
+
+    def test_falls_back_to_blockstream_when_no_http_backend(self, monkeypatch):
+        """An all-Electrum backend list still leaves a queryable Esplora base."""
+        import aqua.tools as tools_module
+
+        monkeypatch.setattr(
+            tools_module,
+            "LIQUID_BACKEND_URLS",
+            {"mainnet": ["ssl://electrum.example:50002"]},
+        )
+        assert _esplora_bases("mainnet") == [ESPLORA_URLS["mainnet"]]
+
+
+class TestTxStatusBackendFallback:
+    def test_first_backend_unreachable_second_answers(self, two_backends):
+        """A dead first backend falls through instead of failing the call."""
+        routes = {
+            FIRST_BACKEND: urllib.error.URLError("connection refused"),
+            SECOND_BACKEND: UNCONFIRMED_TX,
+        }
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            result = lw_tx_status(TX_ID)
+
+        assert result["txid"] == TX_ID
+        assert result["status"] == "unconfirmed"
+        assert result["confirmations"] == 0
+        assert result["fee"] == 42
+
+    def test_first_backend_times_out_second_answers(self, two_backends):
+        routes = {
+            FIRST_BACKEND: TimeoutError("timed out"),
+            SECOND_BACKEND: UNCONFIRMED_TX,
+        }
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            result = lw_tx_status(TX_ID)
+
+        assert result["status"] == "unconfirmed"
+
+    def test_first_backend_404_second_has_tx(self, two_backends):
+        """A tx broadcast via AQUA's backend may not be on the other one yet."""
+        routes = {
+            FIRST_BACKEND: _http_error(FIRST_BACKEND, 404),
+            SECOND_BACKEND: UNCONFIRMED_TX,
+        }
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            result = lw_tx_status(TX_ID)
+
+        assert result["txid"] == TX_ID
+        assert result["status"] == "unconfirmed"
+
+    def test_first_backend_500_second_answers(self, two_backends):
+        routes = {
+            FIRST_BACKEND: _http_error(FIRST_BACKEND, 503),
+            SECOND_BACKEND: UNCONFIRMED_TX,
+        }
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            result = lw_tx_status(TX_ID)
+
+        assert result["status"] == "unconfirmed"
+
+    def test_first_backend_429_second_answers(self, two_backends):
+        routes = {
+            FIRST_BACKEND: _http_error(FIRST_BACKEND, 429),
+            SECOND_BACKEND: UNCONFIRMED_TX,
+        }
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            result = lw_tx_status(TX_ID)
+
+        assert result["status"] == "unconfirmed"
+
+    def test_non_json_body_falls_through(self, two_backends):
+        """An HTML error page from a proxy is not a valid answer."""
+        routes = {
+            FIRST_BACKEND: "<html>502 Bad Gateway</html>",
+            SECOND_BACKEND: UNCONFIRMED_TX,
+        }
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            result = lw_tx_status(TX_ID)
+
+        assert result["status"] == "unconfirmed"
+
+    def test_json_that_is_not_an_object_falls_through(self, two_backends):
+        """'null' parses as JSON but is not a transaction."""
+        routes = {FIRST_BACKEND: "null", SECOND_BACKEND: UNCONFIRMED_TX}
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            result = lw_tx_status(TX_ID)
+
+        assert result["status"] == "unconfirmed"
+
+    def test_all_backends_404_reports_not_found(self, two_backends):
+        routes = {
+            FIRST_BACKEND: _http_error(FIRST_BACKEND, 404),
+            SECOND_BACKEND: _http_error(SECOND_BACKEND, 404),
+        }
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            with pytest.raises(ValueError, match="Transaction not found") as exc:
+                lw_tx_status(TX_ID)
+
+        # A clean "every backend says no" keeps the original bare message.
+        assert str(exc.value) == f"Transaction not found: {TX_ID}"
+
+    def test_all_backends_unreachable_raises(self, two_backends):
+        """No fake success when every backend is down (CLAUDE.md no-lies rule)."""
+        routes = {
+            FIRST_BACKEND: urllib.error.URLError("connection refused"),
+            SECOND_BACKEND: urllib.error.URLError("dns failure"),
+        }
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            with pytest.raises(ValueError, match="Could not reach any Liquid Esplora backend"):
+                lw_tx_status(TX_ID)
+
+    def test_mixed_404_and_unreachable_reports_not_found_with_detail(self, two_backends):
+        """The only backend that answered says 404, but say what was unreachable."""
+        routes = {
+            FIRST_BACKEND: urllib.error.URLError("connection refused"),
+            SECOND_BACKEND: _http_error(SECOND_BACKEND, 404),
+        }
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            with pytest.raises(ValueError, match="Transaction not found") as exc:
+                lw_tx_status(TX_ID)
+
+        assert FIRST_BACKEND in str(exc.value)
+
+    def test_definitive_http_error_surfaces(self, two_backends):
+        """A 400 is an application error, not a reason to try the next backend."""
+        routes = {FIRST_BACKEND: _http_error(FIRST_BACKEND, 400)}
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            with pytest.raises(ValueError, match="Esplora API error"):
+                lw_tx_status(TX_ID)
+
+    def test_explorer_url_stays_blockstream(self, two_backends):
+        """The display link is canonical, whichever backend answered."""
+        routes = {
+            FIRST_BACKEND: urllib.error.URLError("down"),
+            SECOND_BACKEND: UNCONFIRMED_TX,
+        }
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            result = lw_tx_status(TX_ID)
+
+        assert result["explorer_url"] == f"https://blockstream.info/liquid/tx/{TX_ID}"
+
+    def test_confirmed_tx_tip_height_also_falls_back(self, two_backends):
+        """The tip query gets the same fallback as the tx query."""
+        routes = {
+            f"{FIRST_BACKEND}/tx/": CONFIRMED_TX,
+            f"{FIRST_BACKEND}/blocks/tip/height": urllib.error.URLError("down"),
+            f"{SECOND_BACKEND}/blocks/tip/height": "105",
+        }
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            result = lw_tx_status(TX_ID)
+
+        assert result["status"] == "confirmed"
+        assert result["block_height"] == 100
+        assert result["confirmations"] == 6
+
+    def test_lagging_tip_backend_never_yields_zero_confirmations(self, two_backends):
+        """A confirmed tx has >= 1 confirmation even if the tip backend lags behind."""
+        routes = {
+            f"{FIRST_BACKEND}/tx/": CONFIRMED_TX,
+            f"{FIRST_BACKEND}/blocks/tip/height": urllib.error.URLError("down"),
+            f"{SECOND_BACKEND}/blocks/tip/height": "98",  # two blocks behind the tx
+        }
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            result = lw_tx_status(TX_ID)
+
+        assert result["status"] == "confirmed"
+        assert result["confirmations"] >= 1
+
+    def test_read_phase_connection_reset_falls_through(self, two_backends):
+        """A reset during the response body read is transient, not fatal."""
+        routes = {
+            FIRST_BACKEND: ConnectionResetError("connection reset by peer"),
+            SECOND_BACKEND: UNCONFIRMED_TX,
+        }
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            result = lw_tx_status(TX_ID)
+
+        assert result["status"] == "unconfirmed"
+
+    def test_confirmed_tx_survives_total_tip_failure(self, two_backends):
+        """Tip unavailable degrades to a warning, it does not fail the status call."""
+        routes = {
+            f"{FIRST_BACKEND}/tx/": CONFIRMED_TX,
+            f"{FIRST_BACKEND}/blocks/tip/height": urllib.error.URLError("down"),
+            f"{SECOND_BACKEND}/blocks/tip/height": urllib.error.URLError("down"),
+        }
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            result = lw_tx_status(TX_ID)
+
+        assert result["status"] == "confirmed"
+        assert result["confirmations"] is None
+        assert "warning" in result
+
+
+# ---------------------------------------------------------------------------
+# _parse_tx_input  # Significance: 4 (Important)
+# ---------------------------------------------------------------------------
+
+
+class TestParseTxInput:
+    def test_liquid_network_mainnet_url(self):
+        assert _parse_tx_input(f"https://liquid.network/tx/{TX_ID}") == (TX_ID, "mainnet")
+
+    def test_liquid_network_testnet_url(self):
+        assert _parse_tx_input(f"https://liquid.network/liquidtestnet/tx/{TX_ID}") == (
+            TX_ID,
+            "testnet",
+        )
+
+    def test_blockstream_mainnet_url_still_works(self):
+        assert _parse_tx_input(f"https://blockstream.info/liquid/tx/{TX_ID}") == (
+            TX_ID,
+            "mainnet",
+        )
+
+    def test_blockstream_testnet_url_still_works(self):
+        assert _parse_tx_input(f"https://blockstream.info/liquidtestnet/tx/{TX_ID}") == (
+            TX_ID,
+            "testnet",
+        )
+
+    def test_raw_txid_defaults_to_mainnet(self):
+        assert _parse_tx_input(f"  {TX_ID}  ") == (TX_ID, "mainnet")
+
+    def test_garbage_raises(self):
+        with pytest.raises(ValueError, match="Invalid input"):
+            _parse_tx_input("not-a-txid")
