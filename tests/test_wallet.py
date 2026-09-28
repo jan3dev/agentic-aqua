@@ -399,6 +399,22 @@ class TestBackendFallback:
         )
         c2.full_scan.assert_called_once()
 
+    def test_http_429_counts_as_transient(self, wallet_manager, monkeypatch):
+        """A rate-limited backend must not block the fallback (same rule as lw_tx_status)."""
+        c1 = MagicMock()
+        c1.full_scan.side_effect = lwk.LwkError.EsploraHttpError(
+            "https://example.invalid/blocks/tip/hash", 429, "Too Many Requests"
+        )
+        c2 = MagicMock()
+        c2.full_scan.return_value = "ok"
+        self._stub_clients(wallet_manager, monkeypatch, [c1, c2])
+
+        assert (
+            wallet_manager._with_client_fallback("testnet", lambda c: c.full_scan("w"))
+            == "ok"
+        )
+        c2.full_scan.assert_called_once()
+
     def test_electrum_dns_failure_counts_as_transient(
         self, wallet_manager, monkeypatch
     ):

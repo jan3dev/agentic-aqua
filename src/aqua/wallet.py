@@ -38,7 +38,7 @@ ESPLORA_TIMEOUT_SECONDS = 15
 
 _T = TypeVar("_T")
 
-# Substrings of lwk's wrapped reqwest/hyper/serde error text (5xx is handled structurally below).
+# Substrings of lwk's wrapped reqwest/hyper/serde error text (5xx/429: handled structurally below).
 _TRANSIENT_MARKERS = (
     "connection reset",
     "connection refused",
@@ -72,8 +72,10 @@ def _is_transient_backend_error(exc: Exception) -> bool:
     Only these failures may fall back to the next backend. A rejected broadcast
     or an invalid PSET must surface as-is (see CLAUDE.md "No silent fallbacks").
     """
-    if isinstance(exc, lwk.LwkError.EsploraHttpError) and exc.status >= 500:
-        # The backend (or the proxy in front of it) failed, not the request.
+    if isinstance(exc, lwk.LwkError.EsploraHttpError) and (
+        exc.status >= 500 or exc.status == 429
+    ):
+        # The backend (or its proxy) failed or rate-limited us, not the request.
         return True
     msg = str(exc).lower()
     return any(marker in msg for marker in _TRANSIENT_MARKERS)

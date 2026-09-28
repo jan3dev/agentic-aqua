@@ -507,7 +507,8 @@ def _esplora_request(network: str, path: str, parse: Callable[[str], Any]) -> An
     """GET ``path`` from each Esplora base in order; returns ``parse(body)``.
 
     Fallback and 404-retry rules: see docs/CONFIG.md "Liquid chain backends".
-    Raises ``_EsploraNotFound`` (all backends 404) or ``ValueError`` (all failed).
+    Raises ``_EsploraNotFound`` (every backend 404) or ``ValueError`` (any backend
+    failed without a result — a 404 elsewhere is not proof the tx doesn't exist).
     """
     failures: list[str] = []
     not_found: list[str] = []
@@ -537,9 +538,9 @@ def _esplora_request(network: str, path: str, parse: Callable[[str], Any]) -> An
             logger.warning("Unparseable Esplora response from %s", base)
             failures.append(f"{base}: unparseable response")
 
-    detail = "; ".join(failures)
-    if not_found:
-        raise _EsploraNotFound(detail)
+    if not failures:
+        raise _EsploraNotFound()
+    detail = "; ".join(failures + [f"{base}: HTTP 404" for base in not_found])
     raise ValueError(f"Could not reach any Liquid Esplora backend ({detail})")
 
 
@@ -583,9 +584,8 @@ def lw_tx_status(tx: str) -> dict[str, Any]:
 
     try:
         data = _esplora_request(network, f"tx/{txid}", _parse_tx_json)
-    except _EsploraNotFound as e:
-        detail = f" ({e})" if str(e) else ""
-        raise ValueError(f"Transaction not found: {txid}{detail}") from None
+    except _EsploraNotFound:
+        raise ValueError(f"Transaction not found: {txid}") from None
 
     status = data.get("status", {})
     confirmed = status.get("confirmed", False)

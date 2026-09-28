@@ -1707,17 +1707,24 @@ class TestTxStatusBackendFallback:
             with pytest.raises(ValueError, match="Could not reach any Liquid Esplora backend"):
                 lw_tx_status(TX_ID)
 
-    def test_mixed_404_and_unreachable_reports_not_found_with_detail(self, two_backends):
-        """The only backend that answered says 404, but say what was unreachable."""
+    def test_mixed_404_and_unreachable_is_not_reported_as_not_found(self, two_backends):
+        """A 404 while another backend was unreachable is not proof the tx doesn't exist.
+
+        e.g. broadcast via Airavata, Airavata down, Blockstream hasn't seen it yet.
+        """
         routes = {
             FIRST_BACKEND: urllib.error.URLError("connection refused"),
             SECOND_BACKEND: _http_error(SECOND_BACKEND, 404),
         }
         with patch("urllib.request.urlopen", _routed_urlopen(routes)):
-            with pytest.raises(ValueError, match="Transaction not found") as exc:
+            with pytest.raises(
+                ValueError, match="Could not reach any Liquid Esplora backend"
+            ) as exc:
                 lw_tx_status(TX_ID)
 
+        assert "not found" not in str(exc.value).lower()
         assert FIRST_BACKEND in str(exc.value)
+        assert f"{SECOND_BACKEND}: HTTP 404" in str(exc.value)
 
     def test_definitive_http_error_surfaces(self, two_backends):
         """A 400 is an application error, not a reason to try the next backend."""
