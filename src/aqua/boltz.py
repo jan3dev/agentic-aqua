@@ -45,7 +45,7 @@ MAX_SWAP_AMOUNT_SATS = 25_000_000
 
 
 class BoltzSwapAlreadyExistsError(RuntimeError):
-    """Raised when Boltz reports an invoice already has a swap."""
+    """Raised when the swap provider reports an invoice already has a swap."""
 
 
 @dataclass
@@ -73,14 +73,38 @@ class SwapInfo:
 
 
 class BoltzClient:
-    """HTTP client for Boltz API v2."""
+    """HTTP client for the Boltz v2 swap API.
 
-    def __init__(self, network: str = "mainnet", tls_context: ssl.SSLContext | None = None):
-        self.base_url = BOLTZ_API[network]
+    Parameterised by `api_urls` / `provider_label` so any Boltz-v2-compatible
+    service (see `aqua.indra`) reuses this transport while errors and logs name
+    the provider actually being called.
+    """
+
+    def __init__(
+        self,
+        network: str = "mainnet",
+        tls_context: ssl.SSLContext | None = None,
+        api_urls: dict[str, str] | None = None,
+        provider_label: str = "Boltz",
+    ):
+        api_urls = api_urls if api_urls is not None else BOLTZ_API
+        self.provider_label = provider_label
+        try:
+            self.base_url = api_urls[network]
+        except KeyError:
+            raise ValueError(
+                f"{provider_label} has no {network} endpoint. "
+                f"Available: {', '.join(sorted(api_urls))}. "
+                "Set lightning_provider=\"boltz\" in ~/.aqua/config.json "
+                "(or AQUA_LIGHTNING_PROVIDER=boltz) to use a network this provider "
+                "does not serve."
+            ) from None
         self.network = network
         self._tls_context = tls_context or _TLS_CONTEXT
         if not self.base_url.startswith("https://"):
-            raise ValueError(f"Boltz base URL must be https, got: {self.base_url}")
+            raise ValueError(
+                f"{provider_label} base URL must be https, got: {self.base_url}"
+            )
 
     def _api_request(self, method: str, path: str, body: dict | None = None) -> dict:
         """Make HTTP request to Boltz API."""
@@ -95,12 +119,13 @@ class BoltzClient:
                 "User-Agent": "agentic-aqua",
             },
         )
-        logger.debug("Boltz request %s %s body=%s", method, path, body)
+        logger.debug("%s request %s %s body=%s", self.provider_label, method, path, body)
         try:
             with urllib.request.urlopen(req, timeout=30, context=self._tls_context) as resp:
                 raw = resp.read().decode()
                 logger.debug(
-                    "Boltz response %s %s status=%s body=%s",
+                    "%s response %s %s status=%s body=%s",
+                    self.provider_label,
                     method,
                     path,
                     getattr(resp, "status", "unknown"),
@@ -118,27 +143,37 @@ class BoltzClient:
             except Exception:
                 pass
             logger.error(
-                "Boltz HTTP error %s %s status=%s reason=%s body=%s",
+                "%s HTTP error %s %s status=%s reason=%s body=%s",
+                self.provider_label,
                 method,
                 path,
                 e.code,
                 getattr(e, "reason", ""),
                 raw_error,
             )
-            msg = f"Boltz API error ({e.code} {method} {path})"
+            msg = f"{self.provider_label} API error ({e.code} {method} {path})"
             if detail:
                 msg += f": {detail}"
             normalized = detail.lower().strip() if detail else ""
             if e.code == 409 and "swap with this invoice exists already" in normalized:
                 raise BoltzSwapAlreadyExistsError(
-                    "A swap for this Lightning invoice already exists on Boltz. "
+                    "A swap for this Lightning invoice already exists on "
+                    f"{self.provider_label}. "
                     "This usually means the same invoice was already submitted before, "
                     "even if the local wallet did not finish the payment flow."
                 ) from e
             raise RuntimeError(msg) from e
         except urllib.error.URLError as e:
-            logger.error("Boltz URL error %s %s reason=%s", method, path, e.reason)
-            raise RuntimeError(f"Boltz API unreachable ({method} {path}): {e.reason}") from e
+            logger.error(
+                "%s URL error %s %s reason=%s",
+                self.provider_label,
+                method,
+                path,
+                e.reason,
+            )
+            raise RuntimeError(
+                f"{self.provider_label} API unreachable ({method} {path}): {e.reason}"
+            ) from e
 
     def get_submarine_pairs(self) -> dict:
         """GET /v2/swap/submarine - fetch available pairs, fees, limits."""

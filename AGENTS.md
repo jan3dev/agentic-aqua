@@ -181,9 +181,9 @@ which now builds a `Jan3AccountsManager`) and delegates provisioning to it.
 ## WapuPay (Argentine direct-fiat)
 
 `wapupay.py` lets a user pay an Argentine bank account in **ARS**, funded with
-**USDT on Liquid**. WapuPay's API is called **directly** (`https://be-prod.wapu.app`),
+**USDT or L-BTC on Liquid**. WapuPay's API is called **directly** (`https://be-prod.wapu.app`),
 not through Ankara. Each call carries WapuPay's own **`X-API-Key`**;
-`wapupay_create_order` returns a Liquid USDT funding address; the user pays it
+`wapupay_create_order` returns a Liquid funding address; the user pays it
 with `lw_send_asset` (no auto-pay). `wapupay_exchange_rates` is **public** (no key).
 
 WapuPay logic (orders, quotes, `X-API-Key` calls)
@@ -219,7 +219,10 @@ lives in `wapupay.py`.
 - **Enabled by default.** All `jan3_*` / `wapupay_*` tools ship enabled (not in
   `features._SHIPPED_DISABLED`). Business calls still need a key — env var or
   provisioned via `wapupay_provision_account`.
-- **Rail pinned** to Liquid USDT; WapuPay rejects any other funding rail (400).
+- **Funding rail is selectable per order** — USDT (default) or L-BTC — both
+  settle from a Liquid address (`network=LIQUID`). The quote/preview endpoint
+  is USDT-only (LBTC returns a 500), so `wapupay_quote` and the create-order
+  confirmation preview never pass `funding_method`.
 - JAN3 sessions persist per-email at `~/.aqua/jan3/{email}.json`; the
   provisioned API key and order records persist under `~/.aqua/wapupay/` — all at
   `0o600`. Bank PII + tokens + API key are never logged (see `ankara._redact` /

@@ -140,6 +140,17 @@ class TestStorage:
         assert loaded.network == "testnet"
         assert loaded.default_wallet == "test"
 
+    def test_config_lightning_provider_default(self, temp_storage):
+        """The shipped default swap provider is Indra."""
+        assert Config().lightning_provider == "indra"
+        temp_storage.save_config(Config())
+        assert temp_storage.load_config().lightning_provider == "indra"
+
+    def test_config_lightning_provider_roundtrip(self, temp_storage):
+        """lightning_provider survives a save/load cycle."""
+        temp_storage.save_config(Config(lightning_provider="boltz"))
+        assert temp_storage.load_config().lightning_provider == "boltz"
+
     def test_wallet_save_load(self, temp_storage):
         """Test saving and loading wallet."""
         wallet = WalletData(

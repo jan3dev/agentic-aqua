@@ -1,0 +1,59 @@
+version: 2
+updates:
+  # Python deps (uv manages pyproject.toml + uv.lock)
+  - package-ecosystem: "uv"
+    directory: "/"
+    # Follow the develop-first flow; note security updates always target the default branch.
+    target-branch: "develop"
+    schedule:
+      interval: monthly
+      day: monday
+      time: "07:00"
+    open-pull-requests-limit: 15
+    # Wait out just-published releases — supply-chain compromises are usually caught within days.
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "python"
+    # Majors need a human decision; minors stay in because most deps here are
+    # 0.x (lwk, bdkpython, ...) where the meaningful releases are semver-minor.
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+    # One grouped PR per run instead of one per dependency — each merge into
+    # develop triggers a beta publish, so ungrouped PRs would spam releases.
+    groups:
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
+      version-updates:
+        applies-to: version-updates
+        patterns:
+          - "*"
+
+  # GitHub Actions used in .github/workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: monthly
+      day: monday
+      time: "07:00"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      actions:
+        patterns:
+          - "*"

@@ -55,6 +55,18 @@ _SKIP_ON_CI = pytest.mark.skipif(
     reason="slow Esplora scan (50–120s); runs locally, skipped on CI",
 )
 
+# TEMPORARY — Boltz outage. Boltz is the swap provider behind Ankara, so
+# `lightning receive` fails with `500 POST /api/v1/lightning/swaps/create/`.
+# That is an upstream outage, not a regression in this repo, so the Lightning
+# smoke tests are skipped by default rather than reported as failures.
+# Run them anyway with AQUA_SMOKE_LIGHTNING=1, and delete this marker (plus its
+# two usages below) once Boltz is back up.
+_SKIP_LIGHTNING_OUTAGE = pytest.mark.skipif(
+    os.getenv("AQUA_SMOKE_LIGHTNING") != "1",
+    reason="Boltz is down: Ankara swap creation returns 500. "
+           "Set AQUA_SMOKE_LIGHTNING=1 to run these anyway.",
+)
+
 
 @pytest.fixture(scope="module")
 def cli_runner():
@@ -171,6 +183,25 @@ class TestSmokeExportBtcDescriptor:
         assert result["external_descriptor"].startswith("wpkh(")
 
 
+def _lightning_receive_enabled() -> bool:
+    """True when `aqua lightning receive` is actually registered for this config.
+
+    `lightning_receive` ships disabled (see `features._SHIPPED_DISABLED`), so the
+    command only exists when the user re-enabled it in ~/.aqua/config.json.
+    """
+    from aqua.features import is_tool_enabled, load_config_with_merge
+
+    return is_tool_enabled("lightning_receive", load_config_with_merge())
+
+
+_SKIP_IF_RECEIVE_DISABLED = pytest.mark.skipif(
+    not _lightning_receive_enabled(),
+    reason="lightning_receive ships disabled; enable it in ~/.aqua/config.json to smoke it",
+)
+
+
+@_SKIP_LIGHTNING_OUTAGE
+@_SKIP_IF_RECEIVE_DISABLED
 class TestSmokeLightningReceive:
     def test_lightning_receive(self, cli_runner, wallet_name):
         """Generate a Lightning invoice for 500 sats."""
@@ -185,6 +216,7 @@ class TestSmokeLightningReceive:
         TestSmokeLightningReceive._swap_id = result["swap_id"]
 
 
+@_SKIP_LIGHTNING_OUTAGE
 class TestSmokeLightningStatus:
     def test_lightning_status(self, cli_runner):
         """Check status of the receive swap created above."""

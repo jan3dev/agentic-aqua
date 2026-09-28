@@ -295,3 +295,36 @@ def test_cli_doctor_fix_exit_0(temp_storage, monkeypatch):
 def test_cli_doctor_healthy_exit_0(temp_storage, monkeypatch):
     result = _invoke_doctor(temp_storage, monkeypatch, [])
     assert result.exit_code == 0
+
+
+def test_invalid_lightning_provider_is_manual(temp_storage):
+    """An unknown provider is reported but never auto-corrected."""
+    _write_raw(temp_storage, {"lightning_provider": "nostr"})
+    report = run_doctor(temp_storage, fix=True)
+
+    finding = next(
+        f for f in report["findings"] if f["type"] == "invalid_lightning_provider"
+    )
+    assert finding["action"] == "manual"
+    assert "boltz, indra" in finding["detail"]
+    assert report["healthy"] is False
+    # Untouched on disk.
+    assert json.loads(temp_storage.config_path.read_text())["lightning_provider"] == "nostr"
+
+
+def test_non_string_lightning_provider_is_manual(temp_storage):
+    _write_raw(temp_storage, {"lightning_provider": 7})
+    report = run_doctor(temp_storage)
+
+    assert any(
+        f["type"] == "invalid_lightning_provider" for f in report["findings"]
+    )
+    assert report["healthy"] is False
+
+
+def test_valid_lightning_provider_is_healthy(temp_storage):
+    _write_raw(temp_storage, {"lightning_provider": "boltz"})
+    report = run_doctor(temp_storage)
+
+    assert report["healthy"] is True
+    assert report["findings"] == []
