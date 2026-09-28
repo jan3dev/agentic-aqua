@@ -25,9 +25,6 @@ from .ankara import (
 )
 
 EULEN_BASE_PATH = "/api/v1/eulen"
-TERMINAL_STATUSES = frozenset(
-    {"depix_sent", "canceled", "error", "refunded", "expired"}
-)
 KNOWN_STATUSES = frozenset(
     {
         "pending",
@@ -35,7 +32,11 @@ KNOWN_STATUSES = frozenset(
         "verified_pix2fa",
         "under_review",
         "delayed",
-        *TERMINAL_STATUSES,
+        "depix_sent",
+        "canceled",
+        "error",
+        "refunded",
+        "expired",
     }
 )
 
@@ -262,8 +263,9 @@ class PixManager:
         result = self._with_auth(email, lambda client: client.create_kyc_session())
         if not result.get("session_id") or not result.get("status"):
             raise ValueError("AQUA KYC session response is missing required fields")
-        return {
-            **result,
+        response = {
+            "session_id": result["session_id"],
+            "status": result["status"],
             "email": email,
             "next_step": (
                 "Open Noviuz Hosted KYC with session_id and operator_id. "
@@ -271,6 +273,10 @@ class PixManager:
                 "Only Ankara's confirm result is authoritative."
             ),
         }
+        for key in ("operator_id", "session_url", "expires_at"):
+            if result.get(key):
+                response[key] = result[key]
+        return response
 
     def confirm_kyc_session(self, email: str, session_id: str) -> dict[str, Any]:
         email = self._normalize_email(email)
@@ -283,13 +289,24 @@ class PixManager:
         if not result.get("session_id") or not result.get("session_status"):
             raise ValueError("AQUA KYC confirm response is missing required fields")
         status = result["session_status"]
-        if status == "approved" and result.get("verification_status") == "VERIFIED":
+        verification_status = result.get("verification_status")
+        if status == "approved" and verification_status == "VERIFIED":
             next_step = "KYC approved. You can now call pix_receive."
-        elif status in {"created", "under_review"}:
+        elif status in {"created", "under_review"} or (
+            status == "approved" and verification_status != "VERIFIED"
+        ):
             next_step = "KYC is not final. Retry eulen_kyc_confirm later."
         else:
             next_step = f"KYC ended with status {status!r}; do not create a deposit."
-        return {**result, "email": email, "next_step": next_step}
+        response = {
+            "session_id": result["session_id"],
+            "session_status": status,
+            "email": email,
+            "next_step": next_step,
+        }
+        if result.get("verification_status"):
+            response["verification_status"] = result["verification_status"]
+        return response
 
     def create_deposit(
         self,
@@ -318,6 +335,10 @@ class PixManager:
         if not isinstance(net_amount, int) or not isinstance(charges, int):
             raise ValueError("AQUA fee response is missing integer amount fields")
 
+        # If the POST fails or returns an unusable body, this index stays burned
+        # on purpose: Ankara may already have stored the address, so reissuing it
+        # could attach two deposits to one address. Wallet sync scans up to
+        # next_address_index, so a skipped index never hides funds.
         depix_address = self.wallet_manager.get_address(wallet_name).address
         result = self._with_auth(
             email,
@@ -363,6 +384,7 @@ class PixManager:
                 or isinstance(deposit_id, bool)
                 or not isinstance(amount_cents, int)
                 or isinstance(amount_cents, bool)
+                or amount_cents <= 0
                 or status not in KNOWN_STATUSES
             ):
                 raise ValueError("AQUA deposits response contains invalid deposit fields")
@@ -373,6 +395,18 @@ class PixManager:
                     f"PIX deposit {deposit_id} belongs to a different JAN3 account"
                 )
 
+            depix_address = self._required_row_text(
+                row,
+                "depix_address",
+                local.depix_address if local is not None else None,
+                deposit_id,
+            )
+            qr_copy_paste = self._required_row_text(
+                row,
+                "qr_copy_paste",
+                local.qr_copy_paste if local is not None else None,
+                deposit_id,
+            )
             swap = PixSwap(
                 swap_id=str(deposit_id),
                 eulen_deposit_id=(
@@ -383,8 +417,8 @@ class PixManager:
                 amount_cents=amount_cents,
                 account_email=email,
                 wallet_name=local.wallet_name if local is not None else "",
-                depix_address=str(row.get("depix_address") or ""),
-                qr_copy_paste=str(row.get("qr_copy_paste") or ""),
+                depix_address=depix_address,
+                qr_copy_paste=qr_copy_paste,
                 qr_image_url=row.get("qr_image_url") or None,
                 status=str(status),
                 network="mainnet",
@@ -399,22 +433,47 @@ class PixManager:
                     local.net_amount_cents if local is not None else None
                 ),
             )
-            self.storage.save_pix_swap(swap)
             swaps.append(swap)
+        for swap in swaps:
+            self.storage.save_pix_swap(swap)
         return swaps
 
     @staticmethod
+    def _required_row_text(
+        row: dict[str, Any],
+        key: str,
+        local_value: Optional[str],
+        deposit_id: int,
+    ) -> str:
+        """Keep a payout field from Ankara, or the local copy when Ankara omits it."""
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(local_value, str) and local_value.strip():
+            return local_value
+        raise ValueError(f"AQUA deposit {deposit_id} is missing {key}")
+
+    @staticmethod
     def _status_response(swap: PixSwap) -> dict[str, Any]:
+        try:
+            deposit_id = int(swap.swap_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"PIX swap id is not an Ankara deposit id: {swap.swap_id}"
+            ) from exc
         response: dict[str, Any] = {
             "swap_id": swap.swap_id,
-            "deposit_id": int(swap.swap_id),
+            "deposit_id": deposit_id,
             "status": swap.status,
             "amount_cents": swap.amount_cents,
             "amount_brl": format_brl(swap.amount_cents),
             "wallet_name": swap.wallet_name,
             "depix_address": swap.depix_address,
             "network": swap.network,
-            "message": _STATUS_MESSAGES[swap.status],
+            "message": _STATUS_MESSAGES.get(
+                swap.status,
+                f"PIX deposit status is {swap.status}.",
+            ),
         }
         if swap.eulen_deposit_id:
             response["eulen_deposit_id"] = swap.eulen_deposit_id
@@ -487,6 +546,7 @@ class PixManager:
             raise ValueError("PIX swap id is not an Ankara deposit id") from exc
         if deposit_id <= 0:
             raise ValueError("PIX swap id must be a positive Ankara deposit id")
+        swap_id = str(deposit_id)
 
         local = self.storage.load_pix_swap(swap_id)
         if local is not None and local.account_email.casefold() != email.casefold():

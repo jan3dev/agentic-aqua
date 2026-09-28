@@ -65,6 +65,35 @@ def manager(storage):
     )
 
 
+def _swap(**overrides) -> PixSwap:
+    fields = {
+        "swap_id": "42",
+        "amount_cents": 5000,
+        "account_email": "person@example.com",
+        "wallet_name": "default",
+        "depix_address": "lq1address",
+        "qr_copy_paste": "pix",
+        "status": "pending",
+        "network": "mainnet",
+        "created_at": "2026-09-09T00:00:00+00:00",
+    }
+    fields.update(overrides)
+    return PixSwap(**fields)
+
+
+def test_status_response_unknown_status_uses_fallback():
+    response = PixManager._status_response(_swap(status="settlement_scheduled"))
+    assert response["status"] == "settlement_scheduled"
+    assert response["deposit_id"] == 42
+    assert response["message"] == "PIX deposit status is settlement_scheduled."
+
+
+def test_status_response_rejects_non_numeric_swap_id():
+    with pytest.raises(ValueError, match="not an Ankara deposit id") as exc:
+        PixManager._status_response(_swap(swap_id="not-a-number"))
+    assert "invalid literal" not in str(exc.value)
+
+
 def test_format_brl():
     assert format_brl(1) == "R$0,01"
     assert format_brl(123456) == "R$1.234,56"
@@ -152,8 +181,67 @@ def test_manager_kyc_flow(manager):
 
     assert started["operator_id"] == "op"
     assert "Hosted KYC" in started["next_step"]
+    assert "euid" not in started
     assert confirmed["session_status"] == "approved"
+    assert confirmed["verification_status"] == "VERIFIED"
+    assert "euid" not in confirmed
     assert "pix_receive" in confirmed["next_step"]
+
+
+def test_kyc_responses_drop_fields_the_agent_must_not_see(manager):
+    responses = [
+        _response(
+            {
+                "session_id": "session-1",
+                "status": "created",
+                "operator_id": "op",
+                "euid": "opaque",
+                "cpf": "00000000000",
+                "customer_document": "rg",
+                "internal_provider_token": "secret",
+            }
+        ),
+        _response(
+            {
+                "session_id": "session-1",
+                "session_status": "approved",
+                "verification_status": "VERIFIED",
+                "euid": "opaque",
+                "cpf": "00000000000",
+                "internal_provider_token": "secret",
+            }
+        ),
+    ]
+    with patch("urllib.request.urlopen", side_effect=responses):
+        started = manager.create_kyc_session("person@example.com")
+        confirmed = manager.confirm_kyc_session("person@example.com", "session-1")
+
+    leaked = {"euid", "cpf", "customer_document", "internal_provider_token"}
+    assert leaked.isdisjoint(started)
+    assert leaked.isdisjoint(confirmed)
+    assert set(started) == {"session_id", "status", "operator_id", "email", "next_step"}
+    assert set(confirmed) == {
+        "session_id",
+        "session_status",
+        "verification_status",
+        "email",
+        "next_step",
+    }
+
+
+def test_approved_without_verified_profile_asks_to_retry(manager):
+    payload = {
+        "session_id": "session-1",
+        "session_status": "approved",
+        "verification_status": "PENDING",
+    }
+    with patch("urllib.request.urlopen", return_value=_response(payload)):
+        confirmed = manager.confirm_kyc_session("person@example.com", "session-1")
+
+    assert confirmed["verification_status"] == "PENDING"
+    assert "Retry eulen_kyc_confirm" in confirmed["next_step"]
+    assert "pix_receive" not in confirmed["next_step"]
+    assert "do not create" not in confirmed["next_step"]
 
 
 def test_create_deposit_uses_dynamic_fee_and_persists(manager, storage):
@@ -307,6 +395,106 @@ def test_list_deposits_forwards_filters_and_refreshes_cache(manager, storage):
     assert storage.load_pix_swap("43").amount_cents == 7000
 
 
+def test_list_keeps_local_payout_fields_when_ankara_omits_them(manager, storage):
+    storage.save_pix_swap(
+        PixSwap(
+            swap_id="43",
+            amount_cents=7000,
+            account_email="person@example.com",
+            wallet_name="default",
+            depix_address="lq1address43",
+            qr_copy_paste="pix43",
+            status="pending",
+            network="mainnet",
+            created_at="2026-09-18T12:00:00Z",
+        )
+    )
+    payload = {
+        "count": 1,
+        "deposits": [
+            {
+                "deposit_id": 43,
+                "status": "depix_sent",
+                "amount_brl_cents": 7000,
+                "depix_address": None,
+                "qr_copy_paste": "",
+            }
+        ],
+    }
+    with patch("urllib.request.urlopen", return_value=_response(payload)):
+        result = manager.list_deposits("person@example.com")
+
+    saved = storage.load_pix_swap("43")
+    assert result["deposits"][0]["depix_address"] == "lq1address43"
+    assert saved.qr_copy_paste == "pix43"
+    assert saved.status == "depix_sent"
+
+
+def test_list_rejects_row_without_payout_fields_when_nothing_is_local(manager, storage):
+    payload = {
+        "count": 1,
+        "deposits": [
+            {
+                "deposit_id": 44,
+                "status": "pending",
+                "amount_brl_cents": 100,
+            }
+        ],
+    }
+    with patch("urllib.request.urlopen", return_value=_response(payload)):
+        with pytest.raises(ValueError, match="missing depix_address"):
+            manager.list_deposits("person@example.com")
+    assert storage.load_pix_swap("44") is None
+
+
+def test_list_rejects_non_positive_amount(manager, storage):
+    payload = {
+        "count": 1,
+        "deposits": [
+            {
+                "deposit_id": 45,
+                "status": "pending",
+                "amount_brl_cents": -1,
+                "depix_address": "lq1address",
+                "qr_copy_paste": "pix",
+            }
+        ],
+    }
+    with patch("urllib.request.urlopen", return_value=_response(payload)):
+        with pytest.raises(ValueError, match="invalid deposit fields"):
+            manager.list_deposits("person@example.com")
+    assert storage.load_pix_swap("45") is None
+
+
+def test_list_does_not_persist_earlier_rows_when_a_later_row_is_invalid(
+    manager, storage
+):
+    payload = {
+        "count": 2,
+        "deposits": [
+            {
+                "deposit_id": 46,
+                "status": "pending",
+                "amount_brl_cents": 100,
+                "depix_address": "lq1address",
+                "qr_copy_paste": "pix46",
+            },
+            {
+                "deposit_id": 47,
+                "status": "pending",
+                "amount_brl_cents": -1,
+                "depix_address": "lq1address",
+                "qr_copy_paste": "pix47",
+            },
+        ],
+    }
+    with patch("urllib.request.urlopen", return_value=_response(payload)):
+        with pytest.raises(ValueError, match="invalid deposit fields"):
+            manager.list_deposits("person@example.com")
+    assert storage.load_pix_swap("46") is None
+    assert storage.load_pix_swap("47") is None
+
+
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
@@ -335,6 +523,19 @@ def test_status_local_miss_fails_when_ankara_does_not_contain_id(manager):
             manager.get_deposit_status("999", "person@example.com")
     assert urlopen.call_args.args[0].full_url.endswith(
         "/api/v1/eulen/deposits/?deposit_id=999"
+    )
+
+
+def test_status_canonicalizes_swap_id_before_storage(manager):
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_response({"count": 0, "deposits": []}),
+    ) as urlopen:
+        with pytest.raises(ValueError, match="not found in Ankara: 12") as exc:
+            manager.get_deposit_status("+12", "person@example.com")
+    assert "Invalid swap ID" not in str(exc.value)
+    assert urlopen.call_args.args[0].full_url.endswith(
+        "/api/v1/eulen/deposits/?deposit_id=12"
     )
 
 
