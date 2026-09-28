@@ -49,6 +49,10 @@ _SENSITIVE_LOG_FIELDS = frozenset(
         "x-api-key",
         "api_key",
         "token",
+        "euid",
+        "pix2fa_code",
+        "payer_name",
+        "payer_tax_number",
     }
 )
 
