@@ -475,3 +475,469 @@ class TestFeeSizingWitness:
             sign_input=lambda tx, message: [bytes(64)],
         )
         assert sized == [expected_items]
+
+
+# --- Full confidential refund path ------------------------------------------
+#
+# Everything below runs against a lockup blinded in-test with known keys, so
+# the unblind, the signatures and the refund output can all be checked end to
+# end. The oracles stay independent of the module: L-BTC asset ids come from
+# the display-hex literals, the key-path sighash from libwally, and signatures
+# are verified with coincurve rather than the in-tree BIP-340 code.
+
+LBTC_DISPLAY_HEX = {
+    "mainnet": "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d",
+    "testnet": "144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49",
+}
+ADDRESS_HRPS = {"mainnet": ("ex", "lq"), "testnet": ("tex", "tlq")}
+
+REFUND_SK = bytes.fromhex("22" * 32)
+CLAIM_SK = bytes.fromhex("33" * 32)
+LOCKUP_BLINDING_SK = bytes.fromhex("44" * 32)
+LOCKUP_EPHEMERAL_SK = bytes.fromhex("55" * 32)
+LOCKUP_ABF = bytes.fromhex("66" * 32)
+LOCKUP_VBF = bytes.fromhex("77" * 32)
+DEST_BLINDING_SK = bytes.fromhex("99" * 32)
+PAYMENT_HASH = bytes.fromhex("88" * 32)
+TIMEOUT = 4_000_000
+LOCKUP_VALUE = 50_000
+LOCKUP_VOUT = 1  # a decoy output sits at vout 0
+
+
+def _pub(sk: bytes) -> bytes:
+    return PrivateKey(sk).public_key.format(compressed=True)
+
+
+def _local_tree():
+    return build_swap_tree(PAYMENT_HASH, _pub(CLAIM_SK), _pub(REFUND_SK), TIMEOUT)
+
+
+def _blinded_lockup(tree, asset_internal: bytes, value: int = LOCKUP_VALUE):
+    """A lockup tx whose vout 1 pays `tree` confidentially to LOCKUP_BLINDING_SK."""
+    generator = bytes(wally.asset_generator_from_bytes(asset_internal, LOCKUP_ABF))
+    value_commitment = bytes(wally.asset_value_commitment(value, LOCKUP_VBF, generator))
+    rangeproof = bytes(
+        wally.asset_rangeproof(
+            value,
+            bytes(wally.ec_public_key_from_private_key(LOCKUP_BLINDING_SK)),
+            LOCKUP_EPHEMERAL_SK,
+            asset_internal,
+            LOCKUP_ABF,
+            LOCKUP_VBF,
+            value_commitment,
+            tree.scriptpubkey,
+            generator,
+            1, 0, 52,
+        )
+    )
+    tx = wally.tx_init(2, 0, 1, 2)
+    wally.tx_add_elements_raw_input(
+        tx, bytes(range(32)), 0, 0xFFFFFFFD,
+        None, None, None, None, None, None, None, None, None, 0,
+    )
+    wally.tx_add_elements_raw_output(
+        tx,
+        bytes.fromhex("0014" + "11" * 20),
+        b"\x01" + asset_internal,
+        wally.tx_confidential_value_from_satoshi(1),
+        None, None, None, 0,
+    )
+    wally.tx_add_elements_raw_output(
+        tx,
+        tree.scriptpubkey,
+        generator,
+        value_commitment,
+        bytes(wally.ec_public_key_from_private_key(LOCKUP_EPHEMERAL_SK)),
+        None,
+        rangeproof,
+        0,
+    )
+    return tx
+
+
+def _lockup_hex(network="mainnet", tree=None, asset_internal=None):
+    tree = tree or _local_tree()
+    if asset_internal is None:
+        asset_internal = bytes.fromhex(LBTC_DISPLAY_HEX[network])[::-1]
+    return wally.tx_to_hex(
+        _blinded_lockup(tree, asset_internal), wally.WALLY_TX_FLAG_USE_WITNESS
+    )
+
+
+def _destination(network="mainnet"):
+    bech32, blech32 = ADDRESS_HRPS[network]
+    unconfidential = wally.addr_segwit_from_bytes(
+        bytes.fromhex("0014" + "12" * 20), bech32, 0
+    )
+    return wally.confidential_addr_from_addr_segwit(
+        unconfidential, bech32, blech32,
+        bytes(wally.ec_public_key_from_private_key(DEST_BLINDING_SK)),
+    )
+
+
+def _parse(tx_hex):
+    return wally.tx_from_hex(
+        tx_hex, wally.WALLY_TX_FLAG_USE_ELEMENTS | wally.WALLY_TX_FLAG_USE_WITNESS
+    )
+
+
+def _lockup_prevout(lockup_hex):
+    """(scriptpubkey, asset commitment, value commitment) straight from the lockup tx."""
+    lockup = _parse(lockup_hex)
+    return (
+        bytes(wally.tx_get_output_script(lockup, LOCKUP_VOUT)),
+        bytes(wally.tx_get_output_asset(lockup, LOCKUP_VOUT)),
+        bytes(wally.tx_get_output_value(lockup, LOCKUP_VOUT)),
+    )
+
+
+def _witness(tx, index=0):
+    return [
+        bytes(wally.tx_get_input_witness(tx, index, i))
+        for i in range(wally.tx_get_input_witness_num_items(tx, index))
+    ]
+
+
+def _unblind_destination(tx):
+    """Unblind refund output 0 with the destination's blinding key."""
+    nonce_hash = wally.ecdh_nonce_hash(
+        bytes(wally.tx_get_output_nonce(tx, 0)), DEST_BLINDING_SK
+    )
+    value, asset, _abf, _vbf = wally.asset_unblind_with_nonce(
+        nonce_hash,
+        bytes(wally.tx_get_output_rangeproof(tx, 0)),
+        bytes(wally.tx_get_output_value(tx, 0)),
+        bytes(wally.tx_get_output_script(tx, 0)),
+        bytes(wally.tx_get_output_asset(tx, 0)),
+    )
+    return value, bytes(asset)
+
+
+def _discounted_vsize(tx):
+    weight = wally.tx_get_weight(tx) - wally.tx_get_elements_weight_discount(tx, 0)
+    return wally.tx_vsize_from_weight(weight)
+
+
+def _xonly_verify(xonly: bytes, signature: bytes, message: bytes) -> bool:
+    from coincurve import PublicKeyXOnly
+
+    return PublicKeyXOnly(xonly).verify(signature, message)
+
+
+class FakeBoltz:
+    """Plays the provider's half of the MuSig2 cooperative refund.
+
+    It signs with the claim key over the libwally key-path sighash of the tx
+    it was sent, so it agrees with the module only if the module's own
+    sighash is right.
+    """
+
+    def __init__(self, lockup_hex, *, refusal=None, fees=None, fees_error=None):
+        self.prevout = _lockup_prevout(lockup_hex)
+        self.refusal = refusal
+        self.fees = {"L-BTC": 0.1} if fees is None else fees
+        self.fees_error = fees_error
+        self.posted = []
+        self.fee_calls = 0
+
+    def get_chain_fees(self):
+        self.fee_calls += 1
+        if self.fees_error:
+            raise self.fees_error
+        return self.fees
+
+    def post_refund_signature(self, swap_id, *, pub_nonce, transaction_hex, index):
+        self.posted.append(transaction_hex)
+        if self.refusal:
+            raise self.refusal
+        tree = _local_tree()
+        spk, asset, value = self.prevout
+        message = keypath_sighash_wally(
+            _parse(transaction_hex), index, [spk], [asset], [value],
+            GENESIS_BLOCK_HASH["mainnet"],
+        )
+        pubkeys = [tree.claim_public_key, tree.refund_public_key]
+        secnonce, server_pubnonce = boltz_refund.nonce_gen(
+            CLAIM_SK, tree.claim_public_key, tree.output_key_xonly, message, None
+        )
+        aggnonce = boltz_refund.nonce_agg([server_pubnonce, bytes.fromhex(pub_nonce)])
+        session = boltz_refund.SessionContext(
+            aggnonce, pubkeys, [tree.tap_tweak], [True], message
+        )
+        psig = boltz_refund.musig_sign(secnonce, CLAIM_SK, session)
+        return {"pubNonce": server_pubnonce.hex(), "partialSignature": psig.hex()}
+
+
+class FakeBroadcast:
+    def __init__(self, error=None):
+        self.sent = []
+        self.error = error
+
+    def __call__(self, tx_hex):
+        self.sent.append(tx_hex)
+        if self.error:
+            raise self.error
+        return bytes(wally.tx_get_txid(_parse(tx_hex)))[::-1].hex()
+
+
+def _refund(client, broadcast, *, tip_height=TIMEOUT - 100, lockup_hex=None, **overrides):
+    kwargs = dict(
+        swap_id="swap123",
+        refund_private_key=REFUND_SK.hex(),
+        claim_public_key=_pub(CLAIM_SK).hex(),
+        blinding_key=LOCKUP_BLINDING_SK.hex(),
+        payment_hash=PAYMENT_HASH.hex(),
+        timeout_block_height=TIMEOUT,
+        lockup_tx_hex=lockup_hex or _lockup_hex(),
+        destination_address=_destination(),
+        network="mainnet",
+        client=client,
+        tip_height=tip_height,
+        broadcast=broadcast,
+        expected_amount=LOCKUP_VALUE,
+    )
+    kwargs.update(overrides)
+    return boltz_refund.refund_submarine_swap(**kwargs)
+
+
+class TestUnblindConfidentialLockup:
+    """Positive unblind of a lockup blinded with a known key."""
+
+    @pytest.mark.parametrize("network", ["mainnet", "testnet"])
+    def test_unblinds_the_swap_output(self, network):
+        tree = _local_tree()
+        lockup_hex = _lockup_hex(network, tree)
+        utxo = find_and_unblind_lockup(
+            lockup_hex, tree, LOCKUP_BLINDING_SK, network, expected_amount=LOCKUP_VALUE
+        )
+        assert utxo.vout == LOCKUP_VOUT
+        assert utxo.value == LOCKUP_VALUE
+        assert utxo.asset[::-1].hex() == LBTC_DISPLAY_HEX[network]
+        assert utxo.abf == LOCKUP_ABF
+        assert utxo.vbf == LOCKUP_VBF
+        assert utxo.scriptpubkey == tree.scriptpubkey
+        assert utxo.txid == bytes(wally.tx_get_txid(_parse(lockup_hex)))
+        assert (utxo.asset_commitment, utxo.value_commitment) == _lockup_prevout(
+            lockup_hex
+        )[1:]
+
+    def test_rejects_the_asset_in_display_byte_order(self):
+        """Pins the internal byte order of LBTC_ASSET_ID against the display hex."""
+        tree = _local_tree()
+        lockup_hex = _lockup_hex(
+            tree=tree, asset_internal=bytes.fromhex(LBTC_DISPLAY_HEX["mainnet"])
+        )
+        with pytest.raises(RefundError, match="not L-BTC"):
+            find_and_unblind_lockup(lockup_hex, tree, LOCKUP_BLINDING_SK, "mainnet")
+
+    def test_rejects_the_other_networks_asset(self):
+        tree = _local_tree()
+        with pytest.raises(RefundError, match="not L-BTC"):
+            find_and_unblind_lockup(
+                _lockup_hex("testnet", tree), tree, LOCKUP_BLINDING_SK, "mainnet"
+            )
+
+    def test_wrong_blinding_key_fails_loudly(self):
+        tree = _local_tree()
+        with pytest.raises(RefundError, match="Could not unblind"):
+            find_and_unblind_lockup(
+                _lockup_hex(tree=tree), tree, bytes.fromhex("45" * 32), "mainnet"
+            )
+
+    def test_amount_mismatch_is_refused(self):
+        tree = _local_tree()
+        with pytest.raises(RefundError, match="refusing to build a refund"):
+            find_and_unblind_lockup(
+                _lockup_hex(tree=tree), tree, LOCKUP_BLINDING_SK, "mainnet",
+                expected_amount=LOCKUP_VALUE + 1,
+            )
+
+
+class TestSighashOnConfidentialRefund:
+    """The TestSighash fixture has no proofs or nonces; a real blinded refund does."""
+
+    def test_keypath_matches_wally_with_rangeproofs_and_nonces(self):
+        tree = _local_tree()
+        lockup_hex = _lockup_hex(tree=tree)
+        utxo = find_and_unblind_lockup(lockup_hex, tree, LOCKUP_BLINDING_SK, "mainnet")
+        tx = build_refund_transaction(utxo, _destination(), 20, 0, "mainnet")
+        assert wally.tx_get_output_rangeproof_len(tx, 0) > 0
+        assert wally.tx_get_output_surjectionproof_len(tx, 0) > 0
+        args = (
+            tx, 0, [utxo.scriptpubkey], [utxo.asset_commitment],
+            [utxo.value_commitment], GENESIS_BLOCK_HASH["mainnet"],
+        )
+        assert elements_taproot_sighash(*args) == keypath_sighash_wally(*args)
+
+
+class TestRefundSubmarineSwap:
+    """refund_submarine_swap end to end, with a fake provider and broadcaster."""
+
+    def _assert_pays_destination(self, tx, result, lockup_hex):
+        lockup_txid = bytes(wally.tx_get_txid(_parse(lockup_hex)))
+        assert wally.tx_get_num_inputs(tx) == 1
+        assert bytes(wally.tx_get_input_txhash(tx, 0)) == lockup_txid
+        assert wally.tx_get_input_index(tx, 0) == LOCKUP_VOUT
+        assert wally.tx_get_num_outputs(tx) == 2
+        # Output 1 is Elements' explicit fee output: no script, unblinded value.
+        assert not wally.tx_get_output_script_len(tx, 1)
+        assert bytes(wally.tx_get_output_value(tx, 1)) == bytes(
+            wally.tx_confidential_value_from_satoshi(result["fee"])
+        )
+        value, asset = _unblind_destination(tx)
+        assert value == result["amount"] == LOCKUP_VALUE - result["fee"]
+        assert asset[::-1].hex() == LBTC_DISPLAY_HEX["mainnet"]
+        assert 1 <= result["fee"] <= MAX_REFUND_FEE_SATS
+
+    def test_cooperative_refund(self):
+        lockup_hex = _lockup_hex()
+        client, broadcast = FakeBoltz(lockup_hex), FakeBroadcast()
+        result = _refund(client, broadcast, lockup_hex=lockup_hex)
+
+        assert result["refund_type"] == "cooperative", result.get("cooperative_error")
+        assert "cooperative_error" not in result
+        assert len(client.posted) == 1 and len(broadcast.sent) == 1
+        tx = _parse(broadcast.sent[0])
+        assert result["refund_txid"] == bytes(wally.tx_get_txid(tx))[::-1].hex()
+        assert result["lockup_vout"] == LOCKUP_VOUT
+        self._assert_pays_destination(tx, result, lockup_hex)
+
+        # The provider co-signed exactly the tx that went out; only the witness differs.
+        posted = _parse(client.posted[0])
+        assert bytes(wally.tx_get_txid(posted)) == bytes(wally.tx_get_txid(tx))
+        assert wally.tx_get_locktime(tx) == 0
+
+        [signature] = _witness(tx)
+        spk, asset, value = _lockup_prevout(lockup_hex)
+        message = keypath_sighash_wally(
+            tx, 0, [spk], [asset], [value], GENESIS_BLOCK_HASH["mainnet"]
+        )
+        tree = _local_tree()
+        assert _xonly_verify(tree.output_key_xonly, signature, message)
+        # The verifier is not vacuous.
+        assert not _xonly_verify(tree.output_key_xonly, signature, bytes(32))
+
+    @pytest.mark.parametrize("tip_height", [TIMEOUT, TIMEOUT + 50])
+    def test_unilateral_after_cooperative_refusal(self, tip_height):
+        lockup_hex = _lockup_hex()
+        client = FakeBoltz(
+            lockup_hex, refusal=RefundError("400: cooperative refunds are disabled")
+        )
+        broadcast = FakeBroadcast()
+        result = _refund(
+            client, broadcast, tip_height=tip_height, lockup_hex=lockup_hex, fee_rate=1.0
+        )
+
+        assert result["refund_type"] == "unilateral"
+        assert "cooperative refunds are disabled" in result["cooperative_error"]
+        assert len(broadcast.sent) == 1
+        tx = _parse(broadcast.sent[0])
+        self._assert_pays_destination(tx, result, lockup_hex)
+        assert wally.tx_get_locktime(tx) == TIMEOUT
+        assert wally.tx_get_input_sequence(tx, 0) == 0xFFFFFFFD
+
+        tree = _local_tree()
+        signature, leaf, control = _witness(tx)
+        assert len(signature) == 64
+        assert leaf == tree.refund_leaf
+        assert control == tree.control_block()
+        spk, asset, value = _lockup_prevout(lockup_hex)
+        message = elements_taproot_sighash(
+            tx, 0, [spk], [asset], [value],
+            GENESIS_BLOCK_HASH["mainnet"], leaf_hash=tree.refund_leaf_hash,
+        )
+        assert _xonly_verify(_pub(REFUND_SK)[1:], signature, message)
+        # Sized with the full script-path witness, not just the signature.
+        assert result["fee"] >= -(-_discounted_vsize(tx) * 1.0 // 1)
+
+    @pytest.mark.parametrize("tip_height", [TIMEOUT - 100, TIMEOUT + 100])
+    def test_spent_lockup_is_reported_not_waited_on(self, tip_height):
+        lockup_hex = _lockup_hex()
+        client = FakeBoltz(
+            lockup_hex, refusal=RefundError("400: no unspent lockup transaction found")
+        )
+        broadcast = FakeBroadcast()
+        with pytest.raises(LockupSpentError, match="already spent"):
+            _refund(client, broadcast, tip_height=tip_height, lockup_hex=lockup_hex)
+        assert broadcast.sent == []
+
+    def test_before_timeout_says_which_block_to_wait_for(self):
+        lockup_hex = _lockup_hex()
+        client = FakeBoltz(lockup_hex, refusal=RefundError("400: nope"))
+        broadcast = FakeBroadcast()
+        with pytest.raises(RefundError) as exc_info:
+            _refund(client, broadcast, tip_height=TIMEOUT - 1, lockup_hex=lockup_hex)
+        assert type(exc_info.value) is RefundError
+        message = str(exc_info.value)
+        assert f"block {TIMEOUT}" in message
+        assert "1 blocks away" in message
+        assert broadcast.sent == []
+
+    @pytest.mark.parametrize(
+        "fees,fees_error,expected_rate",
+        [
+            (None, RuntimeError("provider down"), 0.1),
+            ({}, None, 0.1),
+            ({"L-BTC": 0.3}, None, 0.3),
+        ],
+    )
+    def test_fee_rate_source(self, monkeypatch, fees, fees_error, expected_rate):
+        rates = []
+        real_estimate = boltz_refund._estimate_fee
+
+        def spy(tx, fee_rate):
+            rates.append(fee_rate)
+            return real_estimate(tx, fee_rate)
+
+        monkeypatch.setattr(boltz_refund, "_estimate_fee", spy)
+        lockup_hex = _lockup_hex()
+        client = FakeBoltz(lockup_hex, fees=fees, fees_error=fees_error)
+        result = _refund(client, FakeBroadcast(), lockup_hex=lockup_hex)
+
+        assert client.fee_calls == 1
+        assert rates == [expected_rate]
+        assert result["refund_type"] == "cooperative", result.get("cooperative_error")
+        assert 1 <= result["fee"] <= MAX_REFUND_FEE_SATS
+
+    def test_explicit_fee_rate_skips_the_provider(self):
+        lockup_hex = _lockup_hex()
+        client = FakeBoltz(lockup_hex)
+        low = _refund(client, FakeBroadcast(), lockup_hex=lockup_hex, fee_rate=0.1)
+        high = _refund(client, FakeBroadcast(), lockup_hex=lockup_hex, fee_rate=1.0)
+        assert client.fee_calls == 0
+        assert high["fee"] > low["fee"]
+
+    def test_dry_run_builds_a_signed_tx_without_broadcasting(self):
+        lockup_hex = _lockup_hex()
+
+        def broadcast(tx_hex):
+            pytest.fail("dry_run must not broadcast")
+
+        result = _refund(FakeBoltz(lockup_hex), broadcast, lockup_hex=lockup_hex, dry_run=True)
+        assert result["dry_run"] is True
+        assert "refund_txid" not in result
+        tx = _parse(result["tx_hex"])
+        self._assert_pays_destination(tx, result, lockup_hex)
+        [signature] = _witness(tx)
+        spk, asset, value = _lockup_prevout(lockup_hex)
+        message = keypath_sighash_wally(
+            tx, 0, [spk], [asset], [value], GENESIS_BLOCK_HASH["mainnet"]
+        )
+        assert _xonly_verify(_local_tree().output_key_xonly, signature, message)
+
+    def test_broadcast_of_a_spent_lockup(self):
+        lockup_hex = _lockup_hex()
+        broadcast = FakeBroadcast(error=RuntimeError("bad-txns-inputs-missingorspent"))
+        with pytest.raises(LockupSpentError, match="spent before this refund"):
+            _refund(FakeBoltz(lockup_hex), broadcast, lockup_hex=lockup_hex)
+
+    def test_other_broadcast_errors_propagate_unchanged(self):
+        lockup_hex = _lockup_hex()
+        error = RuntimeError("min relay fee not met")
+        with pytest.raises(RuntimeError) as exc_info:
+            _refund(FakeBoltz(lockup_hex), FakeBroadcast(error=error), lockup_hex=lockup_hex)
+        assert exc_info.value is error
+
+    def test_rejects_an_unsupported_network(self):
+        with pytest.raises(RefundError, match="only supported"):
+            _refund(FakeBoltz(_lockup_hex()), FakeBroadcast(), network="regtest")
