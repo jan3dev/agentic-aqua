@@ -313,6 +313,11 @@ class LightningManager:
                 f"{provider.label} already knows it from a previous attempt."
             ) from e
         expected_amount = swap_resp["expectedAmount"]
+        if not swap_resp.get("blindingKey"):
+            raise ValueError(
+                f"{provider.label} returned no blindingKey for swap {swap_resp.get('id')}; "
+                "refusing to fund a lockup this wallet could not refund."
+            )
         logger.debug(
             "%s swap created id=%s expected_amount=%s timeout_block_height=%s",
             provider.label,
@@ -556,11 +561,6 @@ class LightningManager:
             )
         if swap.timeout_block_height is None:
             raise ValueError(f"Swap {swap_id} has no timeout block height stored")
-        if not swap.lockup_txid:
-            raise ValueError(
-                f"Swap {swap_id} was never funded (no lockup transaction); there is "
-                "nothing to refund."
-            )
 
         claim_pubkey = claim_public_key or swap.claim_public_key
         blinding = blinding_key or swap.blinding_key
@@ -601,13 +601,26 @@ class LightningManager:
         if provider_status == "transaction.refunded":
             raise ValueError(
                 f"The lockup of swap {swap_id} is already spent — it was refunded "
-                f"outside this wallet. Check transaction {swap.lockup_txid} on the explorer."
+                "outside this wallet. Check the lockup transaction "
+                f"{swap.lockup_txid or ''} on the explorer."
             )
 
-        lockup_tx_hex = (status_resp.get("transaction") or {}).get("hex")
-        if not lockup_tx_hex:
+        # The provider's copy comes first: the local lockup_txid is missing when
+        # the process died between the broadcast and the second save in pay_invoice.
+        provider_tx = status_resp.get("transaction") or {}
+        lockup_tx_hex = provider_tx.get("hex")
+        if lockup_tx_hex:
+            if not swap.lockup_txid and provider_tx.get("id"):
+                swap.lockup_txid = provider_tx["id"]
+                self.storage.save_lightning_swap(swap)
+        elif swap.lockup_txid:
             lockup_tx_hex = self.wallet_manager.get_transaction_hex(
                 swap.lockup_txid, network=swap.network
+            )
+        else:
+            raise ValueError(
+                f"Swap {swap_id} was never funded: no lockup transaction is stored "
+                f"locally and {provider.label} reports none; there is nothing to refund."
             )
 
         destination = destination_address or self.wallet_manager.get_address(
