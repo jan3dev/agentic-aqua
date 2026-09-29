@@ -1193,6 +1193,7 @@ class TestToolRegistry:
             "lightning_receive",
             "lightning_send",
             "lightning_transaction_status",
+            "lightning_refund",
             "lightning_decode",
             "qr_generate",
             "qr_decode",
