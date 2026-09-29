@@ -69,6 +69,7 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("lightning", "receive"): "lightning_receive",
     ("lightning", "send"): "lightning_send",
     ("lightning", "status"): "lightning_transaction_status",
+    ("lightning", "refund"): "lightning_refund",
     ("lightning", "decode"): "lightning_decode",
 
     # changelly group (cli/changelly.py)

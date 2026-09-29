@@ -200,6 +200,41 @@ class BoltzClient:
         """GET /v2/swap/submarine/{swap_id}/claim - get preimage after invoice paid."""
         return self._api_request("GET", f"/v2/swap/submarine/{swap_id}/claim")
 
+    def post_refund_signature(
+        self, swap_id: str, pub_nonce: str, transaction_hex: str, index: int
+    ) -> dict:
+        """POST /v2/swap/submarine/{id}/refund - cosign a cooperative refund.
+
+        Providers may answer 400 when cooperative refunds are switched off, in
+        which case only the unilateral (post-timeout) path remains.
+        """
+        return self._api_request(
+            "POST",
+            f"/v2/swap/submarine/{swap_id}/refund",
+            {
+                "pubNonce": pub_nonce,
+                "transaction": transaction_hex,
+                "index": index,
+            },
+        )
+
+    def get_chain_fees(self) -> dict:
+        """GET /v2/chain/fees - current fee rates per chain, in sat/vbyte."""
+        return self._api_request("GET", "/v2/chain/fees")
+
+    def broadcast_transaction(self, tx_hex: str, currency: str = "L-BTC") -> str:
+        """POST /v2/chain/{currency}/transaction - broadcast and return the txid."""
+        response = self._api_request(
+            "POST", f"/v2/chain/{currency}/transaction", {"hex": tx_hex}
+        )
+        txid = response.get("id")
+        if not txid:
+            raise RuntimeError(
+                f"{self.provider_label} accepted the transaction but returned no "
+                f"txid: {response}"
+            )
+        return txid
+
 
 def generate_keypair() -> tuple[str, str]:
     """Generate ephemeral secp256k1 keypair for refund.

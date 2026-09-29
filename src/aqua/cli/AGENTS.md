@@ -15,7 +15,7 @@ rendered to terminal/JSON instead of MCP responses.
 | `wallet.py` | `aqua wallet` | Generate, import, export, list, delete wallets. |
 | `liquid.py` | `aqua liquid` | Liquid balance, address, send, transactions. |
 | `btc.py` | `aqua btc` | Bitcoin equivalents. |
-| `lightning.py` | `aqua lightning` | Send (Indra/Boltz), status, decode. `receive` (Ankara) is gated off by default. |
+| `lightning.py` | `aqua lightning` | Send (Indra/Boltz), status, refund, decode. `receive` (Ankara) is gated off by default. |
 | `sideshift.py` | `aqua sideshift` | Cross-chain quote, send, receive, status. |
 | `changelly.py` | `aqua changelly` | USDt cross-chain quote, send, receive, status. |
 | `jan3.py` | `aqua jan3` | JAN3 account login + sessions (multi-account, one per email): `login`/`verify` (free email-OTP, default), `login-start`/`login-complete` (paid captchaless fallback), `session-info`/`list-sessions`/`logout`. Maps to the `jan3_*` tools; decoupled from WapuPay's API key. |
