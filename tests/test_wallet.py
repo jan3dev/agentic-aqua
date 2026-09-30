@@ -565,7 +565,7 @@ class TestChainAccess:
 
     @staticmethod
     def _stub_esplora(monkeypatch, responses):
-        """Answer urlopen per URL prefix: a str body, or an int HTTP error code."""
+        """Answer urlopen per URL prefix: a str/bytes body, or an int HTTP error code."""
         import io
         import urllib.error
 
@@ -578,7 +578,8 @@ class TestChainAccess:
                 if url.startswith(prefix):
                     if isinstance(answer, int):
                         raise urllib.error.HTTPError(url, answer, "err", {}, None)
-                    return io.BytesIO(answer.encode())
+                    body = answer if isinstance(answer, bytes) else answer.encode()
+                    return io.BytesIO(body)
             raise urllib.error.URLError("connection refused")
 
         monkeypatch.setattr("aqua.wallet.urllib.request.urlopen", fake_urlopen)
@@ -629,6 +630,35 @@ class TestChainAccess:
             wallet_manager.get_transaction_hex("ab" * 32, "testnet")
         assert "not found" not in str(exc_info.value)
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<html><body>Just a moment...</body></html>",
+            '{"error": "upstream unavailable"}',
+            "",
+            b"\xff\xfe\x00garbage",
+        ],
+        ids=["html", "json", "empty", "non-utf8"],
+    )
+    def test_get_transaction_hex_falls_back_past_non_hex_200(
+        self, wallet_manager, monkeypatch, body
+    ):
+        """A proxy page served as 200 is not the tx; the next backend has the real hex."""
+        first, second = wallet_manager._backend_urls("testnet")[:2]
+        self._stub_esplora(monkeypatch, {first: body, second: "0200"})
+
+        assert wallet_manager.get_transaction_hex("ab" * 32, "testnet") == "0200"
+
+    def test_get_transaction_hex_non_hex_everywhere_is_not_not_found(
+        self, wallet_manager, monkeypatch
+    ):
+        urls = wallet_manager._backend_urls("testnet")
+        self._stub_esplora(monkeypatch, {url: "<html>error</html>" for url in urls})
+
+        with pytest.raises(ValueError, match="not transaction hex") as exc_info:
+            wallet_manager.get_transaction_hex("ab" * 32, "testnet")
+        assert "not found" not in str(exc_info.value)
+
     def test_get_transaction_hex_client_error_is_raised(
         self, wallet_manager, monkeypatch
     ):
@@ -657,10 +687,28 @@ class TestChainAccess:
         config.electrum_url = "ssl://electrum.example:50002"
         wallet_manager.storage.save_config(config)
         client = MagicMock()
-        client.get_tx.return_value = None
+        # What lwk really raises (probed live against Blockstream's Liquid Electrum).
+        client.get_tx.side_effect = Exception(
+            'msg=\'ClientError(Protocol(Object {"code": Number(-32603), '
+            '"message": String("missing transaction")}))\''
+        )
         monkeypatch.setattr(wallet_manager, "_get_client", lambda network, url: client)
 
         with pytest.raises(ValueError, match="not found"):
+            wallet_manager.get_transaction_hex("ab" * 32, "testnet")
+
+    def test_get_transaction_hex_electrum_other_error_is_raised(
+        self, wallet_manager, monkeypatch
+    ):
+        """Only a miss becomes "not found"; any other Electrum error surfaces as-is."""
+        config = wallet_manager.storage.load_config()
+        config.electrum_url = "ssl://electrum.example:50002"
+        wallet_manager.storage.save_config(config)
+        client = MagicMock()
+        client.get_tx.side_effect = Exception("ClientError(Protocol(invalid params))")
+        monkeypatch.setattr(wallet_manager, "_get_client", lambda network, url: client)
+
+        with pytest.raises(Exception, match="invalid params"):
             wallet_manager.get_transaction_hex("ab" * 32, "testnet")
 
     def test_broadcast_raw_tx_uses_idempotent_broadcast(

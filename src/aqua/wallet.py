@@ -1,6 +1,7 @@
 """Wallet management using LWK."""
 
 import logging
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -66,6 +67,25 @@ _ALREADY_BROADCAST_MARKERS = (
     "txn-already-known",
     "transaction already in mempool",
 )
+
+
+# Electrum "no such tx" replies: electrs ("missing transaction"), bitcoind-backed servers.
+_MISSING_TX_MARKERS = (
+    "missing transaction",
+    "no such mempool or blockchain transaction",
+)
+
+_TX_HEX_RE = re.compile(r"(?:[0-9a-fA-F]{2})+")
+
+
+class _NotATransactionError(Exception):
+    """A backend answered 200, but the body is not transaction hex."""
+
+
+def _is_missing_tx_error(exc: Exception) -> bool:
+    """True when an Electrum backend says it does not have the tx (a miss, not an outage)."""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _MISSING_TX_MARKERS)
 
 
 def _is_transient_backend_error(exc: Exception) -> bool:
@@ -290,6 +310,10 @@ class WalletManager:
                     failures.append(f"{url}: HTTP {exc.code}")
                     continue
                 raise ValueError(f"Esplora API error at {url}: HTTP {exc.code}") from exc
+            except _NotATransactionError as exc:
+                # A proxy error page served as 200: another backend may have the real hex.
+                failures.append(f"{url}: {exc}")
+                continue
             except OSError as exc:
                 # URLError, socket timeouts and read-phase resets are all OSError.
                 failures.append(f"{url}: {getattr(exc, 'reason', None) or exc}")
@@ -299,7 +323,7 @@ class WalletManager:
                     raise
                 failures.append(f"{url}: {exc}")
                 continue
-            if tx_hex:
+            if tx_hex is not None:
                 return tx_hex
         if failures:
             raise ValueError(
@@ -308,15 +332,27 @@ class WalletManager:
         raise ValueError(f"Transaction {txid} not found on {network}")
 
     def _fetch_tx_hex(self, network: str, url: str, txid: str) -> Optional[str]:
-        """Raw tx hex from one backend; None when an Electrum backend lacks it."""
+        """Raw tx hex from one backend; None when an Electrum backend lacks it.
+
+        Esplora misses arrive as HTTP 404 (handled by the caller); lwk's Electrum
+        get_tx raises on a miss instead of returning None.
+        """
         if url.startswith(("http://", "https://")):
             req = urllib.request.Request(
                 f"{url.rstrip('/')}/tx/{txid}/hex", headers={"User-Agent": "agentic-aqua"}
             )
             with urllib.request.urlopen(req, timeout=ESPLORA_TIMEOUT_SECONDS) as resp:
-                return resp.read().decode().strip()
-        tx = self._get_client(network, url).get_tx(lwk.Txid(txid))
-        return None if tx is None else str(tx)
+                tx_hex = resp.read().decode("ascii", errors="replace").strip()
+            if not _TX_HEX_RE.fullmatch(tx_hex):
+                raise _NotATransactionError("response body is not transaction hex")
+            return tx_hex
+        try:
+            tx = self._get_client(network, url).get_tx(lwk.Txid(txid))
+        except Exception as exc:
+            if not _is_missing_tx_error(exc):
+                raise
+            return None
+        return str(tx)
 
     def broadcast_raw_tx(self, tx_hex: str, network: str = "mainnet") -> str:
         """Broadcast an already-signed raw transaction and return its txid."""
