@@ -1,6 +1,8 @@
 """Wallet management using LWK."""
 
 import logging
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Callable, Optional, TypeVar, Union
 from urllib.parse import urlparse
@@ -268,19 +270,57 @@ class WalletManager:
 
     def get_block_height(self, network: str = "mainnet") -> int:
         """Current Liquid chain tip height."""
-        return self._get_client(network).tip().height()
+        return self._with_client_fallback(network, lambda c: c.tip().height())
 
     def get_transaction_hex(self, txid: str, network: str = "mainnet") -> str:
-        """Fetch a confirmed transaction from the chain, as raw hex."""
-        tx = self._get_client(network).get_tx(lwk.Txid(txid))
-        if tx is None:
-            raise ValueError(f"Transaction {txid} not found on {network}")
-        return str(tx)
+        """Fetch a transaction from the chain, as raw hex.
+
+        lwk's EsploraClient has no get_tx, so Esplora backends are read over
+        HTTP; Electrum backends use get_tx. Same fallback rules as
+        tools._esplora_request: "not found" only when every backend says so.
+        """
+        failures: list[str] = []
+        for url in self._backend_urls(network):
+            try:
+                tx_hex = self._fetch_tx_hex(network, url, txid)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    continue
+                if exc.code >= 500 or exc.code == 429:
+                    failures.append(f"{url}: HTTP {exc.code}")
+                    continue
+                raise ValueError(f"Esplora API error at {url}: HTTP {exc.code}") from exc
+            except OSError as exc:
+                # URLError, socket timeouts and read-phase resets are all OSError.
+                failures.append(f"{url}: {getattr(exc, 'reason', None) or exc}")
+                continue
+            except Exception as exc:
+                if not _is_transient_backend_error(exc):
+                    raise
+                failures.append(f"{url}: {exc}")
+                continue
+            if tx_hex:
+                return tx_hex
+        if failures:
+            raise ValueError(
+                f"Could not reach any Liquid backend for {txid} ({'; '.join(failures)})"
+            )
+        raise ValueError(f"Transaction {txid} not found on {network}")
+
+    def _fetch_tx_hex(self, network: str, url: str, txid: str) -> Optional[str]:
+        """Raw tx hex from one backend; None when an Electrum backend lacks it."""
+        if url.startswith(("http://", "https://")):
+            req = urllib.request.Request(
+                f"{url.rstrip('/')}/tx/{txid}/hex", headers={"User-Agent": "agentic-aqua"}
+            )
+            with urllib.request.urlopen(req, timeout=ESPLORA_TIMEOUT_SECONDS) as resp:
+                return resp.read().decode().strip()
+        tx = self._get_client(network, url).get_tx(lwk.Txid(txid))
+        return None if tx is None else str(tx)
 
     def broadcast_raw_tx(self, tx_hex: str, network: str = "mainnet") -> str:
         """Broadcast an already-signed raw transaction and return its txid."""
-        txid = self._get_client(network).broadcast(lwk.Transaction(tx_hex))
-        return str(txid)
+        return self._broadcast(network, lwk.Transaction(tx_hex))
 
     # Mnemonic operations
 
