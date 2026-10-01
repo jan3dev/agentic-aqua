@@ -543,3 +543,187 @@ class TestBroadcastIdempotency:
 
         assert wallet_manager._broadcast("testnet", tx) == "ef" * 32
         tx.txid.assert_not_called()
+
+
+class TestChainAccess:
+    """Wallet-independent chain helpers used by lightning_refund (#137).
+
+    They must go through _get_client(network, url) via the backend fallback;
+    calling it with the pre-Airavata one-argument form raised TypeError.
+    """
+
+    def test_get_block_height_falls_back_on_transient_error(
+        self, wallet_manager, monkeypatch
+    ):
+        c1 = MagicMock()
+        c1.tip.side_effect = Exception("connection reset by peer")
+        c2 = MagicMock()
+        c2.tip.return_value.height.return_value = 4_200_000
+        TestBackendFallback._stub_clients(wallet_manager, monkeypatch, [c1, c2])
+
+        assert wallet_manager.get_block_height("testnet") == 4_200_000
+
+    @staticmethod
+    def _stub_esplora(monkeypatch, responses):
+        """Answer urlopen per URL prefix: a str/bytes body, or an int HTTP error code."""
+        import io
+        import urllib.error
+
+        requested = []
+
+        def fake_urlopen(req, timeout=None):
+            url = req.full_url
+            requested.append(url)
+            for prefix, answer in responses.items():
+                if url.startswith(prefix):
+                    if isinstance(answer, int):
+                        raise urllib.error.HTTPError(url, answer, "err", {}, None)
+                    body = answer if isinstance(answer, bytes) else answer.encode()
+                    return io.BytesIO(body)
+            raise urllib.error.URLError("connection refused")
+
+        monkeypatch.setattr("aqua.wallet.urllib.request.urlopen", fake_urlopen)
+        return requested
+
+    def test_get_transaction_hex_reads_esplora_over_http(
+        self, wallet_manager, monkeypatch
+    ):
+        """lwk's EsploraClient has no get_tx; the default backends are all Esplora."""
+        txid = "ab" * 32
+        first = wallet_manager._backend_urls("testnet")[0]
+        requested = self._stub_esplora(monkeypatch, {first: "0200000001deadbeef\n"})
+
+        assert wallet_manager.get_transaction_hex(txid, "testnet") == "0200000001deadbeef"
+        assert requested == [f"{first}/tx/{txid}/hex"]
+
+    def test_get_transaction_hex_falls_back_past_down_backend(
+        self, wallet_manager, monkeypatch
+    ):
+        first, second = wallet_manager._backend_urls("testnet")[:2]
+        self._stub_esplora(monkeypatch, {first: 503, second: "0200"})
+
+        assert wallet_manager.get_transaction_hex("ab" * 32, "testnet") == "0200"
+
+    def test_get_transaction_hex_falls_back_past_404(self, wallet_manager, monkeypatch):
+        """A lagging backend's 404 is not proof the tx doesn't exist."""
+        first, second = wallet_manager._backend_urls("testnet")[:2]
+        self._stub_esplora(monkeypatch, {first: 404, second: "0200"})
+
+        assert wallet_manager.get_transaction_hex("ab" * 32, "testnet") == "0200"
+
+    def test_get_transaction_hex_not_found_only_when_every_backend_404s(
+        self, wallet_manager, monkeypatch
+    ):
+        urls = wallet_manager._backend_urls("testnet")
+        self._stub_esplora(monkeypatch, {url: 404 for url in urls})
+
+        with pytest.raises(ValueError, match="not found"):
+            wallet_manager.get_transaction_hex("ab" * 32, "testnet")
+
+    def test_get_transaction_hex_404_plus_outage_is_not_not_found(
+        self, wallet_manager, monkeypatch
+    ):
+        first, second = wallet_manager._backend_urls("testnet")[:2]
+        self._stub_esplora(monkeypatch, {first: 404, second: 503})
+
+        with pytest.raises(ValueError, match="Could not reach") as exc_info:
+            wallet_manager.get_transaction_hex("ab" * 32, "testnet")
+        assert "not found" not in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<html><body>Just a moment...</body></html>",
+            '{"error": "upstream unavailable"}',
+            "",
+            b"\xff\xfe\x00garbage",
+        ],
+        ids=["html", "json", "empty", "non-utf8"],
+    )
+    def test_get_transaction_hex_falls_back_past_non_hex_200(
+        self, wallet_manager, monkeypatch, body
+    ):
+        """A proxy page served as 200 is not the tx; the next backend has the real hex."""
+        first, second = wallet_manager._backend_urls("testnet")[:2]
+        self._stub_esplora(monkeypatch, {first: body, second: "0200"})
+
+        assert wallet_manager.get_transaction_hex("ab" * 32, "testnet") == "0200"
+
+    def test_get_transaction_hex_non_hex_everywhere_is_not_not_found(
+        self, wallet_manager, monkeypatch
+    ):
+        urls = wallet_manager._backend_urls("testnet")
+        self._stub_esplora(monkeypatch, {url: "<html>error</html>" for url in urls})
+
+        with pytest.raises(ValueError, match="not transaction hex") as exc_info:
+            wallet_manager.get_transaction_hex("ab" * 32, "testnet")
+        assert "not found" not in str(exc_info.value)
+
+    def test_get_transaction_hex_client_error_is_raised(
+        self, wallet_manager, monkeypatch
+    ):
+        first = wallet_manager._backend_urls("testnet")[0]
+        requested = self._stub_esplora(monkeypatch, {first: 400})
+
+        with pytest.raises(ValueError, match="HTTP 400"):
+            wallet_manager.get_transaction_hex("ab" * 32, "testnet")
+        assert len(requested) == 1
+
+    def test_get_transaction_hex_uses_electrum_get_tx(self, wallet_manager, monkeypatch):
+        config = wallet_manager.storage.load_config()
+        config.electrum_url = "ssl://electrum.example:50002"
+        wallet_manager.storage.save_config(config)
+        client = MagicMock()
+        client.get_tx.return_value = "0200000001deadbeef"
+        monkeypatch.setattr(wallet_manager, "_get_client", lambda network, url: client)
+
+        assert wallet_manager.get_transaction_hex("ab" * 32, "testnet") == "0200000001deadbeef"
+        assert str(client.get_tx.call_args.args[0]) == "ab" * 32
+
+    def test_get_transaction_hex_electrum_missing_tx_raises(
+        self, wallet_manager, monkeypatch
+    ):
+        config = wallet_manager.storage.load_config()
+        config.electrum_url = "ssl://electrum.example:50002"
+        wallet_manager.storage.save_config(config)
+        client = MagicMock()
+        # What lwk really raises (probed live against Blockstream's Liquid Electrum).
+        client.get_tx.side_effect = Exception(
+            'msg=\'ClientError(Protocol(Object {"code": Number(-32603), '
+            '"message": String("missing transaction")}))\''
+        )
+        monkeypatch.setattr(wallet_manager, "_get_client", lambda network, url: client)
+
+        with pytest.raises(ValueError, match="not found"):
+            wallet_manager.get_transaction_hex("ab" * 32, "testnet")
+
+    def test_get_transaction_hex_electrum_other_error_is_raised(
+        self, wallet_manager, monkeypatch
+    ):
+        """Only a miss becomes "not found"; any other Electrum error surfaces as-is."""
+        config = wallet_manager.storage.load_config()
+        config.electrum_url = "ssl://electrum.example:50002"
+        wallet_manager.storage.save_config(config)
+        client = MagicMock()
+        client.get_tx.side_effect = Exception("ClientError(Protocol(invalid params))")
+        monkeypatch.setattr(wallet_manager, "_get_client", lambda network, url: client)
+
+        with pytest.raises(Exception, match="invalid params"):
+            wallet_manager.get_transaction_hex("ab" * 32, "testnet")
+
+    def test_broadcast_raw_tx_uses_idempotent_broadcast(
+        self, wallet_manager, monkeypatch
+    ):
+        """A refund retry can find its tx already relayed; that is success."""
+        tx = MagicMock()
+        tx.txid.return_value = "cd" * 32
+        monkeypatch.setattr("aqua.wallet.lwk.Transaction", lambda tx_hex: tx)
+        c1 = MagicMock()
+        c1.broadcast.side_effect = Exception("error sending request")
+        c2 = MagicMock()
+        c2.broadcast.side_effect = Exception(
+            "sendrawtransaction RPC error -26: txn-already-in-mempool"
+        )
+        TestBackendFallback._stub_clients(wallet_manager, monkeypatch, [c1, c2])
+
+        assert wallet_manager.broadcast_raw_tx("00", "testnet") == "cd" * 32
