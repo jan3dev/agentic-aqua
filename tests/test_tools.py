@@ -1516,8 +1516,8 @@ CONFIRMED_TX = json.dumps(
 class _FakeEsploraResponse:
     """Minimal stand-in for the object urlopen returns as a context manager."""
 
-    def __init__(self, body: str):
-        self._body = body.encode()
+    def __init__(self, body: str | bytes):
+        self._body = body if isinstance(body, bytes) else body.encode()
 
     def read(self):
         return self._body
@@ -1671,6 +1671,22 @@ class TestTxStatusBackendFallback:
         """An HTML error page from a proxy is not a valid answer."""
         routes = {
             FIRST_BACKEND: "<html>502 Bad Gateway</html>",
+            SECOND_BACKEND: UNCONFIRMED_TX,
+        }
+        with patch("urllib.request.urlopen", _routed_urlopen(routes)):
+            result = lw_tx_status(TX_ID)
+
+        assert result["status"] == "unconfirmed"
+
+    def test_non_utf8_body_falls_through(self, two_backends):
+        """A 200 whose body is not UTF-8 is a bad backend, not a reason to stop.
+
+        Decoding with utf-8 strict used to raise UnicodeDecodeError here and
+        skip the remaining bases. get_transaction_hex already fell through;
+        both callers now share esplora_http_get, so this must too.
+        """
+        routes = {
+            FIRST_BACKEND: b"\xff\xfe\x00garbage",
             SECOND_BACKEND: UNCONFIRMED_TX,
         }
         with patch("urllib.request.urlopen", _routed_urlopen(routes)):
