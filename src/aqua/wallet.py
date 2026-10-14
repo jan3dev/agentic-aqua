@@ -78,8 +78,77 @@ _MISSING_TX_MARKERS = (
 _TX_HEX_RE = re.compile(r"(?:[0-9a-fA-F]{2})+")
 
 
-class _NotATransactionError(Exception):
-    """A backend answered 200, but the body is not transaction hex."""
+class EsploraNotFound(Exception):
+    """Every backend that answered returned 404 for the requested path."""
+
+
+def _parse_tx_hex(body: str) -> str:
+    """Accept a raw transaction hex body; reject proxy pages and other 200s."""
+    tx_hex = body.strip()
+    if not _TX_HEX_RE.fullmatch(tx_hex):
+        raise ValueError("response body is not transaction hex")
+    return tx_hex
+
+
+def esplora_http_get(
+    bases: list[str],
+    path: str,
+    parse: Callable[[str], _T],
+    *,
+    timeout: int = ESPLORA_TIMEOUT_SECONDS,
+    failure_label: str = "Could not reach any Liquid Esplora backend",
+) -> _T:
+    """GET ``path`` from each Esplora base in order and return ``parse(body)``.
+
+    Shared by ``get_transaction_hex`` and ``tools._esplora_request``. Fallback
+    rules: docs/CONFIG.md "Liquid chain backends". A 404 is retried (one
+    backend lagging is not proof the resource is missing). HTTP 5xx, 429,
+    network errors, a non-UTF-8 body, and a body ``parse`` rejects are also
+    retried. Any other 4xx is the caller's request and is raised immediately.
+
+    Raises ``EsploraNotFound`` when every backend returned 404, or ``ValueError``
+    when at least one backend failed and none succeeded.
+    """
+    failures: list[str] = []
+    not_found: list[str] = []
+
+    for base in bases:
+        base = base.rstrip("/")
+        url = f"{base}/{path.lstrip('/')}"
+        req = urllib.request.Request(url, headers={"User-Agent": "agentic-aqua"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                not_found.append(base)
+                continue
+            if exc.code >= 500 or exc.code == 429:
+                failures.append(f"{base}: HTTP {exc.code}")
+                continue
+            raise ValueError(f"Esplora API error at {base}: HTTP {exc.code}") from exc
+        except OSError as exc:
+            # URLError, socket timeouts and read-phase resets are all OSError.
+            failures.append(f"{base}: {getattr(exc, 'reason', None) or exc}")
+            continue
+
+        try:
+            body = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            logger.warning("Unparseable Esplora response from %s", base)
+            failures.append(f"{base}: response body is not utf-8")
+            continue
+
+        try:
+            return parse(body)
+        except ValueError as exc:
+            logger.warning("Unparseable Esplora response from %s", base)
+            failures.append(f"{base}: {exc}")
+
+    if not failures:
+        raise EsploraNotFound()
+    detail = "; ".join(failures + [f"{base}: HTTP 404" for base in not_found])
+    raise ValueError(f"{failure_label} ({detail})")
 
 
 def _is_missing_tx_error(exc: Exception) -> bool:
@@ -295,63 +364,43 @@ class WalletManager:
     def get_transaction_hex(self, txid: str, network: str = "mainnet") -> str:
         """Fetch a transaction from the chain, as raw hex.
 
-        lwk's EsploraClient has no get_tx, so Esplora backends are read over
-        HTTP; Electrum backends use get_tx. Same fallback rules as
-        tools._esplora_request: "not found" only when every backend says so.
+        lwk's EsploraClient has no get_tx, so HTTP backends go through
+        ``esplora_http_get`` (the same fallback ``lw_tx_status`` uses).
+        ``electrum_url`` replaces that list with one endpoint; a non-HTTP
+        override is read with Electrum ``get_tx``.
         """
-        failures: list[str] = []
-        for url in self._backend_urls(network):
-            try:
-                tx_hex = self._fetch_tx_hex(network, url, txid)
-            except urllib.error.HTTPError as exc:
-                if exc.code == 404:
-                    continue
-                if exc.code >= 500 or exc.code == 429:
-                    failures.append(f"{url}: HTTP {exc.code}")
-                    continue
-                raise ValueError(f"Esplora API error at {url}: HTTP {exc.code}") from exc
-            except _NotATransactionError as exc:
-                # A proxy error page served as 200: another backend may have the real hex.
-                failures.append(f"{url}: {exc}")
-                continue
-            except OSError as exc:
-                # URLError, socket timeouts and read-phase resets are all OSError.
-                failures.append(f"{url}: {getattr(exc, 'reason', None) or exc}")
-                continue
-            except Exception as exc:
-                if not _is_transient_backend_error(exc):
-                    raise
-                failures.append(f"{url}: {exc}")
-                continue
-            if tx_hex is not None:
-                return tx_hex
-        if failures:
-            raise ValueError(
-                f"Could not reach any Liquid backend for {txid} ({'; '.join(failures)})"
+        urls = self._backend_urls(network)
+        if urls and not urls[0].startswith(("http://", "https://")):
+            return self._electrum_transaction_hex(network, urls[0], txid)
+        try:
+            return esplora_http_get(
+                urls,
+                f"tx/{txid}/hex",
+                _parse_tx_hex,
+                failure_label=f"Could not reach any Liquid backend for {txid}",
             )
-        raise ValueError(f"Transaction {txid} not found on {network}")
+        except EsploraNotFound:
+            raise ValueError(f"Transaction {txid} not found on {network}") from None
 
-    def _fetch_tx_hex(self, network: str, url: str, txid: str) -> Optional[str]:
-        """Raw tx hex from one backend; None when an Electrum backend lacks it.
+    def _electrum_transaction_hex(self, network: str, url: str, txid: str) -> str:
+        """Raw tx hex from one Electrum backend.
 
-        Esplora misses arrive as HTTP 404 (handled by the caller); lwk's Electrum
-        get_tx raises on a miss instead of returning None.
+        lwk's ``get_tx`` raises on a miss instead of returning None. A miss is
+        "not found"; a connection failure is "could not reach". Anything else
+        (a bad request) propagates unchanged.
         """
-        if url.startswith(("http://", "https://")):
-            req = urllib.request.Request(
-                f"{url.rstrip('/')}/tx/{txid}/hex", headers={"User-Agent": "agentic-aqua"}
-            )
-            with urllib.request.urlopen(req, timeout=ESPLORA_TIMEOUT_SECONDS) as resp:
-                tx_hex = resp.read().decode("ascii", errors="replace").strip()
-            if not _TX_HEX_RE.fullmatch(tx_hex):
-                raise _NotATransactionError("response body is not transaction hex")
-            return tx_hex
         try:
             tx = self._get_client(network, url).get_tx(lwk.Txid(txid))
         except Exception as exc:
-            if not _is_missing_tx_error(exc):
+            if _is_missing_tx_error(exc):
+                raise ValueError(f"Transaction {txid} not found on {network}") from None
+            if not _is_transient_backend_error(exc):
                 raise
-            return None
+            raise ValueError(
+                f"Could not reach any Liquid backend for {txid} ({url}: {exc})"
+            ) from exc
+        if tx is None:
+            raise ValueError(f"Transaction {txid} not found on {network}")
         return str(tx)
 
     def broadcast_raw_tx(self, tx_hex: str, network: str = "mainnet") -> str:

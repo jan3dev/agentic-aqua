@@ -3,8 +3,6 @@
 import json
 import logging
 import re
-import urllib.error
-import urllib.request
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
@@ -12,7 +10,7 @@ from .assets import MAINNET_ASSETS, TESTNET_ASSETS, resolve_asset_name, resolve_
 from .bitcoin import BitcoinWalletManager
 from .bolt11 import decode_bolt11_fields
 from .qr import decode_qr, generate_qr, render_qr_terminal
-from .wallet import LIQUID_BACKEND_URLS, WalletManager
+from .wallet import LIQUID_BACKEND_URLS, EsploraNotFound, WalletManager, esplora_http_get
 
 logger = logging.getLogger(__name__)
 
@@ -489,7 +487,7 @@ def _parse_tx_input(tx_input: str) -> tuple[str, str]:
     )
 
 
-class _EsploraNotFound(Exception):
+class _EsploraNotFound(EsploraNotFound):
     """Every backend that answered returned 404 for the requested path."""
 
 
@@ -506,42 +504,18 @@ def _esplora_bases(network: str) -> list[str]:
 def _esplora_request(network: str, path: str, parse: Callable[[str], Any]) -> Any:
     """GET ``path`` from each Esplora base in order; returns ``parse(body)``.
 
-    Fallback and 404-retry rules: see docs/CONFIG.md "Liquid chain backends".
+    Fallback and 404-retry rules live in ``esplora_http_get`` (the same helper
+    ``WalletManager.get_transaction_hex`` uses). See docs/CONFIG.md
+    "Liquid chain backends".
     Raises ``_EsploraNotFound`` (every backend 404) or ``ValueError`` (any backend
     failed without a result — a 404 elsewhere is not proof the tx doesn't exist).
     """
-    failures: list[str] = []
-    not_found: list[str] = []
-
-    for base in _esplora_bases(network):
-        url = f"{base}/{path.lstrip('/')}"
-        req = urllib.request.Request(url, headers={"User-Agent": "agentic-aqua"})
-        try:
-            with urllib.request.urlopen(req, timeout=ESPLORA_TIMEOUT) as resp:
-                body = resp.read().decode()
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                not_found.append(base)
-                continue
-            if e.code >= 500 or e.code == 429:
-                failures.append(f"{base}: HTTP {e.code}")
-                continue
-            raise ValueError(f"Esplora API error at {base}: HTTP {e.code}") from e
-        except OSError as e:
-            # URLError, socket timeouts and read-phase resets are all OSError.
-            failures.append(f"{base}: {getattr(e, 'reason', None) or e}")
-            continue
-
-        try:
-            return parse(body)
-        except ValueError:
-            logger.warning("Unparseable Esplora response from %s", base)
-            failures.append(f"{base}: unparseable response")
-
-    if not failures:
-        raise _EsploraNotFound()
-    detail = "; ".join(failures + [f"{base}: HTTP 404" for base in not_found])
-    raise ValueError(f"Could not reach any Liquid Esplora backend ({detail})")
+    try:
+        return esplora_http_get(
+            _esplora_bases(network), path, parse, timeout=ESPLORA_TIMEOUT
+        )
+    except EsploraNotFound:
+        raise _EsploraNotFound() from None
 
 
 def _parse_tx_json(body: str) -> dict[str, Any]:

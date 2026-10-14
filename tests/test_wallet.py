@@ -628,7 +628,10 @@ class TestChainAccess:
 
         with pytest.raises(ValueError, match="Could not reach") as exc_info:
             wallet_manager.get_transaction_hex("ab" * 32, "testnet")
-        assert "not found" not in str(exc_info.value)
+        message = str(exc_info.value)
+        assert "not found" not in message
+        # Same diagnostic as lw_tx_status: a 404 is part of the failure detail.
+        assert f"{first}: HTTP 404" in message
 
     @pytest.mark.parametrize(
         "body",
