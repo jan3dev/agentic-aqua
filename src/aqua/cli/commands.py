@@ -33,6 +33,7 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
     from .btc import btc
     from .changelly import changelly
     from .doctor import doctor
+    from .eulen import eulen
     from .jan3 import jan3
     from .lightning import lightning
     from .liquid import liquid
@@ -51,6 +52,7 @@ def register_commands(cli: click.Group, config: Config | None = None) -> None:
         ("liquid", liquid),
         ("btc", btc),
         ("lightning", lightning),
+        ("eulen", eulen),
         ("changelly", changelly),
         ("sideshift", sideshift),
         ("sideswap", sideswap),

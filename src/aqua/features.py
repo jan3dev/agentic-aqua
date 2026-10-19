@@ -72,6 +72,13 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("lightning", "refund"): "lightning_refund",
     ("lightning", "decode"): "lightning_decode",
 
+    # eulen group (Ankara-authenticated PIX → DePix)
+    ("eulen", "kyc-session"): "eulen_kyc_session",
+    ("eulen", "kyc-confirm"): "eulen_kyc_confirm",
+    ("eulen", "receive"): "pix_receive",
+    ("eulen", "list"): "pix_list",
+    ("eulen", "status"): "pix_status",
+
     # changelly group (cli/changelly.py)
     ("changelly", "currencies"): "changelly_list_currencies",
     ("changelly", "quote"): "changelly_quote",

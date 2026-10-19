@@ -741,6 +741,14 @@ class Jan3AccountsManager:
                     "then jan3_verify (or the captchaless flow) again."
                 ) from e
 
+    def with_auth_retry(self, email: str, call):
+        """Public authenticated-call seam for Ankara-backed integrations.
+
+        ``call`` receives a current access token. A rejected token is refreshed
+        and retried once using the same lifecycle as native JAN3 operations.
+        """
+        return self._with_auth_retry(email, call)
+
     def _refresh_token_or_reraise(self, session: Jan3Session) -> Jan3Session:
         """``_refresh_session`` but translate a dead-session signal to ValueError."""
         try:
