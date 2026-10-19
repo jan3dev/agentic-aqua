@@ -15,7 +15,7 @@ rendered to terminal/JSON instead of MCP responses.
 | `wallet.py` | `aqua wallet` | Generate, import, export, list, delete wallets. |
 | `liquid.py` | `aqua liquid` | Liquid balance, address, send, transactions. |
 | `btc.py` | `aqua btc` | Bitcoin equivalents. |
-| `lightning.py` | `aqua lightning` | Send (Indra/Boltz), status, decode. `receive` (Ankara) is gated off by default. |
+| `lightning.py` | `aqua lightning` | Send (Indra/Boltz), status, refund, decode. `receive` (Ankara) is gated off by default. |
 | `sideshift.py` | `aqua sideshift` | Cross-chain quote, send, receive, status. |
 | `changelly.py` | `aqua changelly` | USDt cross-chain quote, send, receive, status. |
 | `eulen.py` | `aqua eulen` | Ankara-backed hosted KYC session (`--method otp|pix`, `--amount-cents`, `--wallet-name`) / confirm (`--wait` polls every 15 s while `created`) and PIX→DePix receive/list/status commands. |

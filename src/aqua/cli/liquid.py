@@ -259,7 +259,7 @@ def assets(ctx, network):
 
 
 @liquid.command("tx-status")
-@click.option("--tx", required=True, help="Transaction ID (hex) or Blockstream URL.")
+@click.option("--tx", required=True, help="Transaction ID (hex) or Liquid explorer URL.")
 @click.pass_obj
 def tx_status(ctx, tx):
     """Get Liquid transaction status."""

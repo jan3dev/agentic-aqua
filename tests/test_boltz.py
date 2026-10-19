@@ -16,7 +16,7 @@ from aqua.boltz import (
     generate_keypair,
     verify_preimage,
 )
-from aqua.bolt11 import decode_bolt11_amount_sats
+from aqua.bolt11 import decode_bolt11_amount_sats, decode_bolt11_payment_hash
 import io
 import urllib.error
 
@@ -369,3 +369,104 @@ class TestDecodeBolt11AmountSats:
 
     def test_case_insensitive(self):
         assert decode_bolt11_amount_sats("LNBC500u1ptest") == 50_000
+
+
+class TestRefundEndpoints:
+    """The endpoints a refund needs; Indra inherits them from BoltzClient."""
+
+    @staticmethod
+    def _request(mock_urlopen):
+        call_args = mock_urlopen.call_args
+        return call_args[0][0] if call_args[0] else call_args[1].get("url")
+
+    @patch("aqua.boltz.urllib.request.urlopen")
+    def test_post_refund_signature_sends_musig_material(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response(
+            {"pubNonce": "02" + "aa" * 32 + "03" + "bb" * 32, "partialSignature": "cc" * 32}
+        )
+        client = BoltzClient(network="mainnet")
+
+        result = client.post_refund_signature(
+            "swap_1", pub_nonce="dd" * 66, transaction_hex="0200beef", index=0
+        )
+
+        request = self._request(mock_urlopen)
+        assert request.full_url.endswith("/v2/swap/submarine/swap_1/refund")
+        assert request.get_method() == "POST"
+        body = json.loads(request.data.decode())
+        assert body == {
+            "pubNonce": "dd" * 66,
+            "transaction": "0200beef",
+            "index": 0,
+        }
+        assert result["partialSignature"] == "cc" * 32
+
+    @patch("aqua.boltz.urllib.request.urlopen")
+    def test_get_chain_fees(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"BTC": 2.0, "L-BTC": 0.1})
+        client = BoltzClient(network="mainnet")
+
+        assert client.get_chain_fees()["L-BTC"] == 0.1
+        assert self._request(mock_urlopen).full_url.endswith("/v2/chain/fees")
+
+    @patch("aqua.boltz.urllib.request.urlopen")
+    def test_broadcast_transaction_returns_txid(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"id": "broadcast_txid"})
+        client = BoltzClient(network="mainnet")
+
+        assert client.broadcast_transaction("0200beef") == "broadcast_txid"
+        request = self._request(mock_urlopen)
+        assert request.full_url.endswith("/v2/chain/L-BTC/transaction")
+        assert json.loads(request.data.decode()) == {"hex": "0200beef"}
+
+    @patch("aqua.boltz.urllib.request.urlopen")
+    def test_broadcast_without_txid_is_an_error(self, mock_urlopen):
+        """Never report success for a broadcast the provider did not confirm."""
+        mock_urlopen.return_value = _mock_response({})
+        client = BoltzClient(network="mainnet")
+
+        with pytest.raises(RuntimeError, match="no txid"):
+            client.broadcast_transaction("0200beef")
+
+
+class TestDecodeBolt11PaymentHash:
+    """The payment hash drives the claim leaf, so a bad one breaks the refund."""
+
+    def test_extracts_hash_from_real_invoices(self):
+        cases = [
+            (
+                "lnbc10u1p42egntpp5yqh5zhr53syucv9akmnd5teq3fv9k9s0rr542v6y75sjw42zz2qssp5"
+                "tnmffnsyggjjkha9m8wdj4q58pgugkf67n84znr343clwa4qqmsqxq9z0rgqnp4qvyndeaqz"
+                "man7h898jxm98dzkm0mlrsx36s93smrur7h0azyyuxc5rzjqwghf7zxvfkxq5a6sr65g0gdk"
+                "v768p83mhsnt0msszapamzx2qvuxqqqqrt49lmtcqqqqqqqqqqq86qq9qrzjqdqk3f6qkpdx"
+                "8s74wngv95h3dkumkdyyh0g5mv6jetkskxkcsvf74apyqr6zgqqqq8hxk2qqae4jsqyugqcq"
+                "zpudz22pshjgr5dus9wctvd3jhggr0vcs9xct5daeks6fqw4ek2u36ypkk7er9wd6xxmmvda"
+                "h8jdenxs9qyyssqjhpzrzh9p2n7anyttev32ndq3c3vuyfrxvanh2qqjre2ag3mf4lhxce9z"
+                "5c8vylpvl3tnztpanlvsmmevjlya9cj3glz6k6qxr8ddqcq3m7vc9",
+                "202f415c748c09cc30bdb6e6da2f208a585b160f18e9553344f5212755421281",
+            ),
+        ]
+        for invoice, expected in cases:
+            assert decode_bolt11_payment_hash(invoice) == expected
+
+    def test_case_insensitive(self):
+        invoice = (
+            "lnbc10u1p42egntpp5yqh5zhr53syucv9akmnd5teq3fv9k9s0rr542v6y75sjw42zz2qssp5"
+            "tnmffnsyggjjkha9m8wdj4q58pgugkf67n84znr343clwa4qqmsqxq9z0rgqnp4qvyndeaqz"
+            "man7h898jxm98dzkm0mlrsx36s93smrur7h0azyyuxc5rzjqwghf7zxvfkxq5a6sr65g0gdk"
+            "v768p83mhsnt0msszapamzx2qvuxqqqqrt49lmtcqqqqqqqqqqq86qq9qrzjqdqk3f6qkpdx"
+            "8s74wngv95h3dkumkdyyh0g5mv6jetkskxkcsvf74apyqr6zgqqqq8hxk2qqae4jsqyugqcq"
+            "zpudz22pshjgr5dus9wctvd3jhggr0vcs9xct5daeks6fqw4ek2u36ypkk7er9wd6xxmmvda"
+            "h8jdenxs9qyyssqjhpzrzh9p2n7anyttev32ndq3c3vuyfrxvanh2qqjre2ag3mf4lhxce9z"
+            "5c8vylpvl3tnztpanlvsmmevjlya9cj3glz6k6qxr8ddqcq3m7vc9"
+        )
+        assert decode_bolt11_payment_hash(invoice.upper()) == decode_bolt11_payment_hash(
+            invoice
+        )
+
+    @pytest.mark.parametrize(
+        "invoice", ["", "not-an-invoice", "lnbc500u1ptest_valid_invoice"]
+    )
+    def test_rejects_invoices_without_a_payment_hash(self, invoice):
+        with pytest.raises(ValueError, match="payment hash"):
+            decode_bolt11_payment_hash(invoice)

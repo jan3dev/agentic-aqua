@@ -11,6 +11,7 @@ _BOLT11_MULTIPLIERS: dict[str, float] = {
 }
 
 _BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+_TAG_PAYMENT_HASH = 1  # 'p'
 _TAG_DESCRIPTION = 13  # 'd'
 _TAG_EXPIRY = 6        # 'x'
 
@@ -41,6 +42,46 @@ def decode_bolt11_amount_sats(invoice: str) -> int | None:
     return int(sats)
 
 
+def _iter_tagged_fields(invoice: str):
+    """Yield (field_type, 5-bit groups) for each BOLT11 tagged field."""
+    sep = invoice.rfind("1")
+    if sep < 0:
+        return
+    data_str = invoice[sep + 1:-6]  # strip 6-char checksum
+    try:
+        groups = [_BECH32_CHARSET.index(c) for c in data_str]
+    except ValueError:
+        return
+
+    if len(groups) < 7 + 104:  # 7 timestamp + 104 signature groups
+        return
+
+    pos = 7
+    end = len(groups) - 104
+    while pos + 3 <= end:
+        field_type = groups[pos]
+        field_len = (groups[pos + 1] << 5) | groups[pos + 2]
+        pos += 3
+        if pos + field_len > end:
+            return
+        yield field_type, groups[pos: pos + field_len]
+        pos += field_len
+
+
+def _groups_to_bytes(groups: list[int]) -> bytes:
+    """Convert 5-bit bech32 groups to bytes, dropping trailing padding bits."""
+    acc = 0
+    bits = 0
+    raw: list[int] = []
+    for g in groups:
+        acc = (acc << 5) | g
+        bits += 5
+        while bits >= 8:
+            bits -= 8
+            raw.append((acc >> bits) & 0xFF)
+    return bytes(raw)
+
+
 def decode_bolt11_fields(invoice: str) -> dict:
     """Decode key fields from a BOLT11 invoice without paying it.
 
@@ -48,45 +89,16 @@ def decode_bolt11_fields(invoice: str) -> dict:
     and expiry (default 3600 seconds per spec).
     """
     invoice = invoice.lower().strip()
-    amount_sats = decode_bolt11_amount_sats(invoice)
-    result: dict = {"amount_sats": amount_sats, "description": None, "expiry": 3600}
+    result: dict = {
+        "amount_sats": decode_bolt11_amount_sats(invoice),
+        "description": None,
+        "expiry": 3600,
+    }
 
-    sep = invoice.rfind("1")
-    if sep < 0:
-        return result
-    data_str = invoice[sep + 1:-6]  # strip 6-char checksum
-    try:
-        groups = [_BECH32_CHARSET.index(c) for c in data_str]
-    except ValueError:
-        return result
-
-    if len(groups) < 7 + 104:
-        return result
-
-    pos = 7
-    end = len(groups) - 104
-
-    while pos + 3 <= end:
-        field_type = groups[pos]
-        field_len = (groups[pos + 1] << 5) | groups[pos + 2]
-        pos += 3
-        if pos + field_len > end:
-            break
-        field_data = groups[pos: pos + field_len]
-        pos += field_len
-
+    for field_type, field_data in _iter_tagged_fields(invoice):
         if field_type == _TAG_DESCRIPTION:
-            acc = 0
-            bits = 0
-            raw: list[int] = []
-            for g in field_data:
-                acc = (acc << 5) | g
-                bits += 5
-                while bits >= 8:
-                    bits -= 8
-                    raw.append((acc >> bits) & 0xFF)
             try:
-                result["description"] = bytes(raw).decode("utf-8")
+                result["description"] = _groups_to_bytes(field_data).decode("utf-8")
             except UnicodeDecodeError:
                 pass
         elif field_type == _TAG_EXPIRY:
@@ -96,3 +108,15 @@ def decode_bolt11_fields(invoice: str) -> dict:
             result["expiry"] = expiry
 
     return result
+
+
+def decode_bolt11_payment_hash(invoice: str) -> str:
+    """Extract the 32-byte payment hash ('p' field) from a BOLT11 invoice, as hex.
+
+    Raises ValueError when the invoice carries no well-formed payment hash.
+    """
+    for field_type, field_data in _iter_tagged_fields(invoice.lower().strip()):
+        # The spec fixes 'p' at 52 groups (260 bits); readers MUST skip other lengths.
+        if field_type == _TAG_PAYMENT_HASH and len(field_data) == 52:
+            return _groups_to_bytes(field_data)[:32].hex()
+    raise ValueError("Invoice does not contain a valid payment hash")
