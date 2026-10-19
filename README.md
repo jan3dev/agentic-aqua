@@ -237,15 +237,16 @@ ships off; re-enable it with `"lightning_receive": true`. See
 
 | Tool | Description |
 |------|-------------|
-| `eulen_kyc_session` | Create/reuse a Noviuz Hosted KYC session via Ankara |
-| `eulen_kyc_confirm` | Reconcile the hosted KYC result via Ankara |
+| `eulen_kyc_session` | Create/reuse a Noviuz Hosted KYC session via Ankara (`otp` and/or `pix` verification); returns the `verification_url` to open in a browser |
+| `eulen_kyc_confirm` | Poll the hosted KYC result via Ankara (every 15-20 s while `created`) |
 | `pix_receive` | Create a PIX charge that pays DePix to the local Liquid wallet |
 | `pix_list` | List Ankara deposits with optional id, date-range, and status filters |
 | `pix_status` | Refresh the Ankara deposit status |
 
 This integration requires a JAN3 login and approved hosted KYC. Identity data is
 entered directly in Noviuz's hosted UI; agentic-aqua never asks for or stores CPF,
-name, or documents. All API calls from agentic-aqua go to `ANKARA_API_URL`—never
+e-mail, Pix data, name, or documents. With the `pix` method the user verifies by
+paying a small Pix that comes back as DePix to their own Liquid wallet. All API calls from agentic-aqua go to `ANKARA_API_URL`—never
 directly to Eulen.
 
 **Utilities**
@@ -324,8 +325,8 @@ aqua changelly send --external-network tron --settle-address T... --amount-from 
 # PIX -> DePix
 aqua jan3 login --email person@example.com
 aqua jan3 verify --email person@example.com --otp 123456
-aqua eulen kyc-session --email person@example.com
-aqua eulen kyc-confirm --email person@example.com --session-id <session_id>
+aqua eulen kyc-session --email person@example.com            # --method pix --amount-cents 1000 for Pix
+aqua eulen kyc-confirm --email person@example.com --session-id <session_id> --wait
 aqua eulen receive --email person@example.com --amount-cents 5000 --wallet-name default
 aqua eulen list --email person@example.com --date-from 2026-09-14 --date-to 2026-09-18
 aqua eulen status --swap-id <deposit_id> --email person@example.com

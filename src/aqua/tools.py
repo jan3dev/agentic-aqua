@@ -1025,12 +1025,30 @@ def _run_pix_tool(call) -> Any:
         }
         if e.details is not None:
             error["details"] = e.details
+        if e.retry_after is not None:
+            error["retry_after_seconds"] = e.retry_after
         return {"error": error}
 
 
-def eulen_kyc_session(email: str) -> dict[str, Any]:
-    """Create or reuse a Noviuz Hosted KYC session through Ankara."""
-    return _run_pix_tool(lambda: get_pix_manager().create_kyc_session(email))
+def eulen_kyc_session(
+    email: str,
+    verification_methods: list[str] | None = None,
+    amount_cents: int | None = None,
+    wallet_name: str = "default",
+) -> dict[str, Any]:
+    """Create or reuse a Noviuz Hosted KYC session through Ankara.
+
+    verification_methods is a subset of ``otp`` (default) and ``pix``. With
+    ``pix``, amount_cents is sent as DePix to a receive address of wallet_name.
+    """
+    return _run_pix_tool(
+        lambda: get_pix_manager().create_kyc_session(
+            email,
+            verification_methods=verification_methods or ["otp"],
+            amount_cents=amount_cents,
+            wallet_name=wallet_name,
+        )
+    )
 
 
 def eulen_kyc_confirm(email: str, session_id: str) -> dict[str, Any]:

@@ -560,7 +560,11 @@ TOOL_SCHEMAS = {
     "eulen_kyc_session": {
         "description": (
             "Create or reuse a Noviuz Hosted KYC session through Ankara for a logged-in "
-            "JAN3 account. Returns session_id and operator_id; no CPF, name, documents, "
+            "JAN3 account. Returns session_id and verification_url: give the URL to "
+            "the user unchanged to open in their default browser, and treat both as "
+            "credentials. Calling again within 30 minutes with the same parameters "
+            "returns the same session. Returns status='already_verified' when the "
+            "account already passed KYC. No CPF, name, e-mail, Pix data, documents, "
             "status assertion, or EUID is accepted from the client."
         ),
         "inputSchema": {
@@ -569,7 +573,34 @@ TOOL_SCHEMAS = {
                 "email": {
                     "type": "string",
                     "description": "JAN3 account email with a stored login session",
-                }
+                },
+                "verification_methods": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["otp", "pix"]},
+                    "minItems": 1,
+                    "default": ["otp"],
+                    "description": (
+                        "otp = CPF + e-mail code (free); pix = CPF + a Pix payment "
+                        "delivered as DePix to the user's wallet. With both, the user "
+                        "picks on the Noviuz page."
+                    ),
+                },
+                "amount_cents": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10000000,
+                    "description": (
+                        "Required with 'pix', rejected otherwise. Gross BRL cents "
+                        "(100 = R$1.00) paid by the user and sent back as DePix."
+                    ),
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "default": "default",
+                    "description": (
+                        "Liquid mainnet wallet that receives the DePix for 'pix'"
+                    ),
+                },
             },
             "required": ["email"],
         },
@@ -578,7 +609,9 @@ TOOL_SCHEMAS = {
         "description": (
             "Ask Ankara to reconcile a Noviuz Hosted KYC session. Pass only the opaque "
             "session_id returned by eulen_kyc_session. Ankara obtains the authoritative "
-            "status and EUID server-to-server."
+            "status and EUID server-to-server. Poll every 15-20 seconds while "
+            "session_status is 'created'; under_review is NOT verified. Returns "
+            "is_final, is_success, poll_after_seconds and next_step."
         ),
         "inputSchema": {
             "type": "object",
@@ -1868,9 +1901,20 @@ LIGHTNING (send only by default):
 
 PIX → DEPIX (Brazilian on-ramp via Ankara):
 - Requires a stored JAN3 login and completed Noviuz Hosted KYC.
-- Call eulen_kyc_session, give the consuming client its session_id/operator_id
-  to open the hosted UI, then call eulen_kyc_confirm. Never request CPF, name,
-  documents, status, or EUID in chat.
+- Call eulen_kyc_session with verification_methods ["otp"] (free, default) or
+  ["pix"] / ["pix", "otp"] plus amount_cents and wallet_name. Give the returned
+  verification_url to the user exactly as received to open in their default
+  browser (never a webview). Do not echo session_id or verification_url beyond
+  what the user needs. Never request CPF, e-mail, Pix data, name, documents,
+  status, or EUID in chat.
+- status='already_verified' means KYC is done: go straight to pix_receive.
+- Poll eulen_kyc_confirm every 15-20 seconds while session_status='created'.
+  under_review is pending, NOT verified (stop fast polling, check later).
+  rejected / expired / not_found: offer a new session. identity_conflict (or
+  errors EULEN_KYC_EUID_ALREADY_BOUND / EULEN_KYC_EUID_MISMATCH): contact
+  support. EULEN_KYC_MISSING_EUID, NOVIUZ_API_ERROR, EULEN_KYC_MINT_API_ERROR:
+  retry later. EULEN_KYC_PROVIDER_DISABLED: try later. On 429 wait
+  retry_after_seconds before retrying.
 - Only an Ankara result of session_status=approved and
   verification_status=VERIFIED permits pix_receive.
 - amount_cents is gross BRL cents (100 = R$1.00), never a float or reais.
@@ -2636,12 +2680,18 @@ Please:
 
 Please:
 1. Verify I have a stored JAN3 session; otherwise guide jan3_login → jan3_verify.
-2. Call eulen_kyc_session(email='{email}'). Do not ask for CPF, name, ID
-   documents, EUID, or a claimed KYC status.
-3. Show session_id and operator_id so the host client can open Noviuz Hosted
-   KYC. Do not invent a URL. Wait until I say I completed the hosted UI.
-4. Call eulen_kyc_confirm with only email and session_id. Continue only when
-   Ankara returns session_status='approved' and verification_status='VERIFIED'.
+2. Call eulen_kyc_session(email='{email}') with verification_methods ['otp']
+   unless I ask to verify with a Pix payment (then ['pix'] with amount_cents
+   and wallet_name='{wallet_name}'). Do not ask for CPF, e-mail, Pix data,
+   name, ID documents, EUID, or a claimed KYC status. If it returns
+   status='already_verified', skip to step 5.
+3. Give me verification_url exactly as returned to open in my default
+   browser. Do not invent or alter the URL.
+4. Call eulen_kyc_confirm with only email and session_id every 15-20 seconds
+   while session_status='created'. Treat under_review as not verified. Stop on
+   rejected, expired, not_found or identity_conflict and follow next_step.
+   Continue only when Ankara returns session_status='approved' and
+   verification_status='VERIFIED'.
 5. Ask how many reais I want to pay and convert exactly to integer BRL cents.
 6. Confirm the gross amount, then call pix_receive(email='{email}',
    amount_cents=..., wallet_name='{wallet_name}').

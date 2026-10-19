@@ -103,12 +103,12 @@ def test_client_targets_ankara_and_uses_jan3_bearer():
     client = EulenClient(base_url=ANKARA_API_URL, access_token="access")
     response = _response({"session_id": "s", "status": "created"})
     with patch("urllib.request.urlopen", return_value=response) as urlopen:
-        client.create_kyc_session()
+        client.create_kyc_session(["otp"])
 
     request = urlopen.call_args.args[0]
     assert request.full_url == f"{ANKARA_API_URL}/api/v1/eulen/kyc/session/"
     assert request.headers["Authorization"] == "Bearer access"
-    assert json.loads(request.data) == {}
+    assert json.loads(request.data) == {"verification_methods": ["otp"]}
     assert "depix.eulen.app" not in request.full_url
 
 
@@ -165,7 +165,14 @@ def test_tool_translates_eulen_error_to_local_envelope(monkeypatch):
 
 def test_manager_kyc_flow(manager):
     responses = [
-        _response({"session_id": "session-1", "status": "created", "operator_id": "op"}),
+        _response(
+            {
+                "session_id": "session-1",
+                "status": "created",
+                "verification_url": "https://verify.example/s1",
+                "verification_methods": ["otp"],
+            }
+        ),
         _response(
             {
                 "session_id": "session-1",
@@ -179,11 +186,14 @@ def test_manager_kyc_flow(manager):
         started = manager.create_kyc_session("person@example.com")
         confirmed = manager.confirm_kyc_session("person@example.com", "session-1")
 
-    assert started["operator_id"] == "op"
-    assert "Hosted KYC" in started["next_step"]
+    assert started["verification_url"] == "https://verify.example/s1"
+    assert started["verification_methods"] == ["otp"]
+    assert "default browser" in started["next_step"]
     assert "euid" not in started
     assert confirmed["session_status"] == "approved"
     assert confirmed["verification_status"] == "VERIFIED"
+    assert confirmed["is_final"] is True
+    assert confirmed["is_success"] is True
     assert "euid" not in confirmed
     assert "pix_receive" in confirmed["next_step"]
 
@@ -194,7 +204,8 @@ def test_kyc_responses_drop_fields_the_agent_must_not_see(manager):
             {
                 "session_id": "session-1",
                 "status": "created",
-                "operator_id": "op",
+                "verification_url": "https://verify.example/s1",
+                "verification_methods": ["otp"],
                 "euid": "opaque",
                 "cpf": "00000000000",
                 "customer_document": "rg",
@@ -219,11 +230,21 @@ def test_kyc_responses_drop_fields_the_agent_must_not_see(manager):
     leaked = {"euid", "cpf", "customer_document", "internal_provider_token"}
     assert leaked.isdisjoint(started)
     assert leaked.isdisjoint(confirmed)
-    assert set(started) == {"session_id", "status", "operator_id", "email", "next_step"}
+    assert set(started) == {
+        "session_id",
+        "status",
+        "verification_url",
+        "verification_methods",
+        "email",
+        "next_step",
+    }
     assert set(confirmed) == {
         "session_id",
         "session_status",
         "verification_status",
+        "is_final",
+        "is_success",
+        "poll_after_seconds",
         "email",
         "next_step",
     }
@@ -239,9 +260,188 @@ def test_approved_without_verified_profile_asks_to_retry(manager):
         confirmed = manager.confirm_kyc_session("person@example.com", "session-1")
 
     assert confirmed["verification_status"] == "PENDING"
+    assert confirmed["is_final"] is False
+    assert confirmed["is_success"] is False
     assert "Retry eulen_kyc_confirm" in confirmed["next_step"]
-    assert "pix_receive" not in confirmed["next_step"]
-    assert "do not create" not in confirmed["next_step"]
+    assert "call pix_receive" not in confirmed["next_step"]
+
+
+def _http_error(status, body, headers=None):
+    from email.message import Message
+
+    hdrs = Message()
+    for key, value in (headers or {}).items():
+        hdrs[key] = value
+    return urllib.error.HTTPError(
+        "url", status, "error", hdrs=hdrs, fp=io.BytesIO(json.dumps(body).encode())
+    )
+
+
+def test_pix_session_sends_amount_and_wallet_address(manager):
+    payload = {
+        "session_id": "session-1",
+        "status": "created",
+        "verification_url": "https://verify.example/s1",
+        "verification_methods": ["pix", "otp"],
+    }
+    with patch("urllib.request.urlopen", return_value=_response(payload)) as urlopen:
+        started = manager.create_kyc_session(
+            "person@example.com",
+            verification_methods=["pix", "otp"],
+            amount_cents=1000,
+        )
+
+    assert json.loads(urlopen.call_args.args[0].data) == {
+        "verification_methods": ["pix", "otp"],
+        "amount_brl_cents": 1000,
+        "destination_wallet": "lq1qqexampleconfidentialaddress",
+    }
+    assert started["destination_wallet"] == "lq1qqexampleconfidentialaddress"
+    assert started["amount_brl"] == "R$10,00"
+
+
+def test_pix_session_retry_reuses_destination_address(manager, storage):
+    payload = {
+        "session_id": "session-1",
+        "status": "created",
+        "verification_url": "https://verify.example/s1",
+    }
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=[_response(payload), _response(payload)],
+    ) as urlopen:
+        for _ in range(2):
+            manager.create_kyc_session(
+                "person@example.com", verification_methods=["pix"], amount_cents=1000
+            )
+
+    assert manager.wallet_manager.get_address.call_count == 1
+    bodies = [json.loads(call.args[0].data) for call in urlopen.call_args_list]
+    assert bodies[0] == bodies[1]
+    if os.name != "nt":
+        path = storage.base_dir / "pix_kyc_addresses.json"
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_pix_session_expired_reservation_mints_new_address(manager, storage):
+    storage.save_pix_kyc_addresses(
+        {
+            "person@example.com|default": {
+                "address": "lq1old",
+                "reserved_at": "2020-01-01T00:00:00+00:00",
+            }
+        }
+    )
+    payload = {
+        "session_id": "session-1",
+        "status": "created",
+        "verification_url": "https://verify.example/s1",
+    }
+    with patch("urllib.request.urlopen", return_value=_response(payload)) as urlopen:
+        manager.create_kyc_session(
+            "person@example.com", verification_methods=["pix"], amount_cents=1000
+        )
+
+    body = json.loads(urlopen.call_args.args[0].data)
+    assert body["destination_wallet"] == "lq1qqexampleconfidentialaddress"
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"verification_methods": []}, "non-empty"),
+        ({"verification_methods": ["sms"]}, "Unknown verification method"),
+        ({"verification_methods": ["pix"]}, "amount_cents is required"),
+        ({"verification_methods": ["pix"], "amount_cents": 0}, "amount_cents is required"),
+        (
+            {"verification_methods": ["pix"], "amount_cents": 10_000_001},
+            "at most",
+        ),
+        ({"verification_methods": ["otp"], "amount_cents": 1000}, "only accepted"),
+    ],
+)
+def test_kyc_session_rejects_invalid_parameters(manager, kwargs, match):
+    with patch("urllib.request.urlopen") as urlopen:
+        with pytest.raises(ValueError, match=match):
+            manager.create_kyc_session("person@example.com", **kwargs)
+    urlopen.assert_not_called()
+    manager.wallet_manager.get_address.assert_not_called()
+
+
+def test_kyc_session_already_verified_is_reported(manager):
+    error = _http_error(
+        409,
+        {"error_code": "EULEN_KYC_ALREADY_VERIFIED", "message": "Already verified."},
+    )
+    with patch("urllib.request.urlopen", side_effect=error):
+        result = manager.create_kyc_session("person@example.com")
+
+    assert result["status"] == "already_verified"
+    assert "pix_receive" in result["next_step"]
+
+
+def test_kyc_session_missing_verification_url_raises(manager):
+    payload = {"session_id": "session-1", "status": "created"}
+    with patch("urllib.request.urlopen", return_value=_response(payload)):
+        with pytest.raises(ValueError, match="missing required fields"):
+            manager.create_kyc_session("person@example.com")
+
+
+@pytest.mark.parametrize(
+    "status, is_final, is_success, poll_after, hint",
+    [
+        ("created", False, False, 15, "15-20 seconds"),
+        ("under_review", False, False, None, "NOT an approval"),
+        ("rejected", True, False, None, "new session"),
+        ("expired", True, False, None, "new eulen_kyc_session"),
+        ("not_found", True, False, None, "new eulen_kyc_session"),
+        ("identity_conflict", True, False, None, "support"),
+    ],
+)
+def test_confirm_maps_every_session_status(
+    manager, status, is_final, is_success, poll_after, hint
+):
+    payload = {
+        "session_id": "session-1",
+        "session_status": status,
+        "verification_status": None,
+        "euid": None,
+    }
+    with patch("urllib.request.urlopen", return_value=_response(payload)):
+        confirmed = manager.confirm_kyc_session("person@example.com", "session-1")
+
+    assert confirmed["is_final"] is is_final
+    assert confirmed["is_success"] is is_success
+    assert confirmed["poll_after_seconds"] == poll_after
+    assert hint in confirmed["next_step"]
+    assert "call pix_receive" not in confirmed["next_step"]
+    assert "verification_status" not in confirmed
+
+
+def test_confirm_unknown_status_raises(manager):
+    payload = {"session_id": "session-1", "session_status": "weird"}
+    with patch("urllib.request.urlopen", return_value=_response(payload)):
+        with pytest.raises(ValueError, match="unknown session_status"):
+            manager.confirm_kyc_session("person@example.com", "session-1")
+
+
+def test_retry_after_reaches_tool_envelope(manager, monkeypatch):
+    error = _http_error(
+        429,
+        {"error_code": "NOVIUZ_RATE_LIMITED", "message": "Slow down."},
+        headers={"Retry-After": "42"},
+    )
+    monkeypatch.setattr(aqua_tools, "get_pix_manager", lambda: manager)
+    with patch("urllib.request.urlopen", side_effect=error):
+        result = aqua_tools.eulen_kyc_confirm("person@example.com", "session-1")
+
+    assert result == {
+        "error": {
+            "code": "NOVIUZ_RATE_LIMITED",
+            "message": "Slow down.",
+            "retry_after_seconds": 42,
+        }
+    }
 
 
 def test_create_deposit_uses_dynamic_fee_and_persists(manager, storage):
@@ -586,10 +786,13 @@ def test_pix_storage_rejects_traversal_and_uses_private_permissions(storage):
 
 
 def test_cli_kyc_session_calls_tool(monkeypatch):
-    monkeypatch.setattr(
-        "aqua.cli.eulen.eulen_kyc_session",
-        lambda email: {"email": email, "status": "created"},
-    )
+    called = {}
+
+    def fake_session(**kwargs):
+        called.update(kwargs)
+        return {"email": kwargs["email"], "status": "created"}
+
+    monkeypatch.setattr("aqua.cli.eulen.eulen_kyc_session", fake_session)
     result = CliRunner().invoke(
         eulen,
         ["kyc-session", "--email", "person@example.com"],
@@ -597,12 +800,93 @@ def test_cli_kyc_session_calls_tool(monkeypatch):
     )
     assert result.exit_code == 0
     assert "created" in result.output.lower()
+    assert called == {
+        "email": "person@example.com",
+        "verification_methods": ["otp"],
+        "amount_cents": None,
+        "wallet_name": "default",
+    }
+
+
+def test_cli_kyc_session_passes_pix_options(monkeypatch):
+    called = {}
+
+    def fake_session(**kwargs):
+        called.update(kwargs)
+        return {"status": "created"}
+
+    monkeypatch.setattr("aqua.cli.eulen.eulen_kyc_session", fake_session)
+    result = CliRunner().invoke(
+        eulen,
+        [
+            "kyc-session",
+            "--email",
+            "person@example.com",
+            "--method",
+            "pix",
+            "--method",
+            "otp",
+            "--amount-cents",
+            "1000",
+            "--wallet-name",
+            "savings",
+        ],
+        obj=SimpleNamespace(fmt=None),
+    )
+    assert result.exit_code == 0
+    assert called == {
+        "email": "person@example.com",
+        "verification_methods": ["pix", "otp"],
+        "amount_cents": 1000,
+        "wallet_name": "savings",
+    }
+
+
+def test_cli_kyc_confirm_wait_polls_until_settled(monkeypatch):
+    responses = iter(
+        [
+            {"session_status": "created", "poll_after_seconds": 15},
+            {"error": {"code": "NOVIUZ_RATE_LIMITED", "message": "x", "retry_after_seconds": 7}},
+            {"session_status": "approved", "verification_status": "VERIFIED"},
+        ]
+    )
+    sleeps = []
+    monkeypatch.setattr(
+        "aqua.cli.eulen.eulen_kyc_confirm", lambda **kwargs: next(responses)
+    )
+    monkeypatch.setattr("aqua.cli.eulen.time.sleep", sleeps.append)
+    result = CliRunner().invoke(
+        eulen,
+        ["kyc-confirm", "--email", "person@example.com", "--session-id", "s", "--wait"],
+        obj=SimpleNamespace(fmt="json"),
+    )
+    assert result.exit_code == 0
+    assert sleeps == [15, 7]
+    assert '"approved"' in result.output
+
+
+def test_cli_kyc_confirm_wait_stops_on_non_retryable_error(monkeypatch):
+    calls = []
+
+    def fake_confirm(**kwargs):
+        calls.append(kwargs)
+        return {"error": {"code": "EULEN_KYC_SESSION_NOT_FOUND", "message": "x"}}
+
+    monkeypatch.setattr("aqua.cli.eulen.eulen_kyc_confirm", fake_confirm)
+    monkeypatch.setattr("aqua.cli.eulen.time.sleep", lambda s: pytest.fail("slept"))
+    result = CliRunner().invoke(
+        eulen,
+        ["kyc-confirm", "--email", "person@example.com", "--session-id", "s", "--wait"],
+        obj=SimpleNamespace(fmt="json"),
+    )
+    assert result.exit_code == 1
+    assert len(calls) == 1
 
 
 def test_cli_exits_nonzero_for_pix_error_envelope(monkeypatch):
     monkeypatch.setattr(
         "aqua.cli.eulen.eulen_kyc_session",
-        lambda email: {
+        lambda **kwargs: {
             "error": {
                 "code": "EULEN_KYC_UNAVAILABLE",
                 "message": "KYC is temporarily unavailable.",

@@ -586,6 +586,23 @@ class Storage:
         with open(path) as file:
             return PixSwap.from_dict(json.load(file))
 
+    @property
+    def _pix_kyc_addresses_path(self) -> Path:
+        return self.base_dir / "pix_kyc_addresses.json"
+
+    def load_pix_kyc_addresses(self) -> dict:
+        """Load the per-account Pix-KYC destination address reservations."""
+        path = self._pix_kyc_addresses_path
+        if not path.exists():
+            return {}
+        with open(path) as file:
+            data = json.load(file)
+        return data if isinstance(data, dict) else {}
+
+    def save_pix_kyc_addresses(self, data: dict) -> None:
+        """Persist Pix-KYC destination address reservations atomically (0o600)."""
+        self._atomic_write_json(self._pix_kyc_addresses_path, data)
+
     # Changelly swap operations
 
     def _changelly_swap_path(self, order_id: str) -> Path:

@@ -52,11 +52,28 @@ Start Eulen hosted KYC for PIX_TEST_EMAIL. Do not ask me for CPF, name, or docum
 ```
 
 **Expected behavior:**
-- `eulen_kyc_session(email=PIX_TEST_EMAIL)`
-- Returns `session_id`, `operator_id`, `status`
-- Agent shows those ids and waits; it must not invent a Noviuz URL
+- `eulen_kyc_session(email=PIX_TEST_EMAIL)` with `verification_methods=["otp"]`
+  (the default); the body sent to Ankara is only `{verification_methods}`
+- Returns `session_id`, `status`, `verification_url`, `verification_methods`
+- Agent hands over `verification_url` unchanged to open in the default browser
+  (never a webview) and does not invent or alter it
+- Calling it again within 30 minutes returns the same session and URL
+- `status="already_verified"` (Ankara 409 `EULEN_KYC_ALREADY_VERIFIED`) means
+  skip to Section C
 - If Ankara returns `EULEN_KYC_DISABLED`, stop this section and continue only
   if the account is already verified
+
+### Start hosted KYC with a Pix payment
+
+```
+Start Eulen KYC for PIX_TEST_EMAIL verifying with a R$10 Pix to wallet PIX_TEST_WALLET.
+```
+
+**Expected behavior:**
+- `eulen_kyc_session(email=PIX_TEST_EMAIL, verification_methods=["pix"],
+  amount_cents=1000, wallet_name=PIX_TEST_WALLET)`
+- Body includes `amount_brl_cents` and a `destination_wallet` from the local
+  mainnet wallet; retrying reuses the same address (and therefore session)
 
 ### Confirm hosted KYC
 
@@ -66,6 +83,11 @@ I finished the hosted KYC UI. Confirm it for PIX_TEST_EMAIL with session_id <SES
 
 **Expected behavior:**
 - `eulen_kyc_confirm(email=PIX_TEST_EMAIL, session_id="<SESSION_ID>")`
+- While `session_status="created"`, re-polls every 15-20 s (`poll_after_seconds`)
+- `under_review` is reported as pending, never as verified
+- `rejected` / `expired` / `not_found` stop and offer a new session;
+  `identity_conflict` stops and points to support
+- On 429 waits `retry_after_seconds` before retrying
 - Continue only when `session_status="approved"` and
   `verification_status="VERIFIED"`
 - Body sent to Ankara is only `{session_id}`; no PII
@@ -156,4 +178,6 @@ Show the Liquid balances for PIX_TEST_WALLET, especially DePix.
 - `pix_status` / `pix_list` overwrite local `~/.aqua/pix_swaps/{id}.json` with
   Ankara fields; `wallet_name` and fee cents are kept only if already local.
 - CLI equivalents: `aqua eulen kyc-session|kyc-confirm|receive|list|status`
-  (`status` and `list` always take `--email`).
+  (`status` and `list` always take `--email`; `kyc-session` takes
+  `--method otp|pix`, `--amount-cents`, `--wallet-name`; `kyc-confirm --wait`
+  polls until the session leaves `created`).

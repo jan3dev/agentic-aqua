@@ -12,7 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, fields
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Callable, Optional
 
 from .ankara import (
@@ -54,6 +54,71 @@ _STATUS_MESSAGES = {
 }
 
 
+KYC_VERIFICATION_METHODS = ("otp", "pix")
+KYC_MAX_AMOUNT_CENTS = 10_000_000
+KYC_SESSION_TTL = timedelta(minutes=30)
+KYC_POLL_SECONDS = 15
+
+# session_status -> (is_final, is_success, poll_after_seconds, next_step)
+_KYC_STATUS_OUTCOMES: dict[str, tuple[bool, bool, Optional[int], str]] = {
+    "created": (
+        False,
+        False,
+        KYC_POLL_SECONDS,
+        "The user has not finished the Noviuz verification yet. Call "
+        "eulen_kyc_confirm again in 15-20 seconds (the session lasts 30 minutes).",
+    ),
+    "under_review": (
+        False,
+        False,
+        None,
+        "Noviuz is reviewing the verification. This is NOT an approval: stop fast "
+        "polling, tell the user it is under review, and check again later.",
+    ),
+    "approved": (
+        True,
+        True,
+        None,
+        "KYC approved. You can now call pix_receive.",
+    ),
+    "rejected": (
+        True,
+        False,
+        None,
+        "Noviuz rejected the verification. Do not create a deposit; the user may "
+        "start a new session with eulen_kyc_session.",
+    ),
+    "expired": (
+        True,
+        False,
+        None,
+        "The session expired without a decision. Offer a new eulen_kyc_session. "
+        "A Pix paid late can still move it to under_review within 24 hours.",
+    ),
+    "not_found": (
+        True,
+        False,
+        None,
+        "Noviuz has no record of this session. Offer a new eulen_kyc_session.",
+    ),
+    "identity_conflict": (
+        True,
+        False,
+        None,
+        "The identity is already bound to another account or differs from this "
+        "account's. Do not retry; the user must contact AQUA support.",
+    ),
+}
+
+
+def _reservation_alive(entry: dict[str, Any], now: datetime) -> bool:
+    try:
+        reserved_at = datetime.fromisoformat(str(entry.get("reserved_at")))
+    except ValueError:
+        return False
+    return now - reserved_at < KYC_SESSION_TTL
+
+
 def format_brl(amount_cents: int) -> str:
     """Render integer BRL cents using Brazilian formatting."""
     integer, fraction = divmod(amount_cents, 100)
@@ -70,11 +135,22 @@ class EulenAPIError(ValueError):
         *,
         status: int,
         details: Any = None,
+        retry_after: Optional[int] = None,
     ) -> None:
         self.code = code
         self.status = status
         self.details = details
+        self.retry_after = retry_after
         super().__init__(message)
+
+
+def _parse_retry_after(value: Any) -> Optional[int]:
+    """Return a delta-seconds Retry-After header, or None when absent or not numeric."""
+    try:
+        seconds = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds >= 0 else None
 
 
 @dataclass
@@ -165,6 +241,9 @@ class EulenClient:
                 _scrub_text(str(message)),
                 status=exc.code,
                 details=_redact(error.get("details")),
+                retry_after=_parse_retry_after(
+                    exc.headers.get("Retry-After") if exc.headers else None
+                ),
             ) from exc
         except urllib.error.URLError as exc:
             raise ValueError(
@@ -178,8 +257,18 @@ class EulenClient:
             raise ValueError(f"AQUA Eulen API returned a non-object ({method} {path})")
         return parsed
 
-    def create_kyc_session(self) -> dict[str, Any]:
-        return self._api_request("POST", f"{EULEN_BASE_PATH}/kyc/session/", body={})
+    def create_kyc_session(
+        self,
+        verification_methods: list[str],
+        amount_brl_cents: Optional[int] = None,
+        destination_wallet: Optional[str] = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"verification_methods": list(verification_methods)}
+        if amount_brl_cents is not None:
+            body["amount_brl_cents"] = amount_brl_cents
+        if destination_wallet is not None:
+            body["destination_wallet"] = destination_wallet
+        return self._api_request("POST", f"{EULEN_BASE_PATH}/kyc/session/", body=body)
 
     def confirm_kyc_session(self, session_id: str) -> dict[str, Any]:
         return self._api_request(
@@ -258,24 +347,128 @@ class PixManager:
             lambda token: call(EulenClient(self.base_url, token)),
         )
 
-    def create_kyc_session(self, email: str) -> dict[str, Any]:
+    @staticmethod
+    def _normalize_methods(verification_methods: Any) -> list[str]:
+        if isinstance(verification_methods, str):
+            verification_methods = [verification_methods]
+        if not isinstance(verification_methods, (list, tuple)) or not verification_methods:
+            raise ValueError("verification_methods must be a non-empty list of 'otp'/'pix'")
+        methods: list[str] = []
+        for method in verification_methods:
+            if method not in KYC_VERIFICATION_METHODS:
+                raise ValueError(
+                    f"Unknown verification method {method!r}; use 'otp' and/or 'pix'"
+                )
+            if method not in methods:
+                methods.append(method)
+        return methods
+
+    def _kyc_destination_address(self, email: str, wallet_name: str) -> str:
+        """Reuse one receive address per account+wallet for the KYC session TTL.
+
+        Ankara returns the same Noviuz session only for identical parameters, and
+        Noviuz locks a session URL to the first CPF typed, so a retry must not
+        mint a fresh address.
+        """
+        key = f"{email}|{wallet_name}"
+        reservations = self.storage.load_pix_kyc_addresses()
+        now = datetime.now(UTC)
+        entry = reservations.get(key)
+        if (
+            isinstance(entry, dict)
+            and entry.get("address")
+            and _reservation_alive(entry, now)
+        ):
+            return str(entry["address"])
+        address = self.wallet_manager.get_address(wallet_name).address
+        reservations = {
+            k: v
+            for k, v in reservations.items()
+            if isinstance(v, dict) and k != key and _reservation_alive(v, now)
+        }
+        reservations[key] = {"address": address, "reserved_at": now.isoformat()}
+        self.storage.save_pix_kyc_addresses(reservations)
+        return address
+
+    def create_kyc_session(
+        self,
+        email: str,
+        verification_methods: Any = ("otp",),
+        amount_cents: Optional[int] = None,
+        wallet_name: str = "default",
+    ) -> dict[str, Any]:
         email = self._normalize_email(email)
-        result = self._with_auth(email, lambda client: client.create_kyc_session())
-        if not result.get("session_id") or not result.get("status"):
+        methods = self._normalize_methods(verification_methods)
+        destination: Optional[str] = None
+        if "pix" in methods:
+            if (
+                not isinstance(amount_cents, int)
+                or isinstance(amount_cents, bool)
+                or amount_cents <= 0
+            ):
+                raise ValueError(
+                    "amount_cents is required with the 'pix' method "
+                    "(positive integer BRL cents, 100 = R$1.00)"
+                )
+            if amount_cents > KYC_MAX_AMOUNT_CENTS:
+                raise ValueError(
+                    f"amount_cents must be at most {KYC_MAX_AMOUNT_CENTS} "
+                    f"({format_brl(KYC_MAX_AMOUNT_CENTS)})"
+                )
+            wallet = self.storage.load_wallet(wallet_name)
+            if wallet is None:
+                raise ValueError(f"Wallet {wallet_name!r} not found")
+            if wallet.network != "mainnet":
+                raise ValueError("PIX → DePix is only available on Liquid mainnet")
+            destination = self._kyc_destination_address(email, wallet_name)
+        elif amount_cents is not None:
+            raise ValueError("amount_cents is only accepted with the 'pix' method")
+
+        try:
+            result = self._with_auth(
+                email,
+                lambda client: client.create_kyc_session(
+                    methods,
+                    amount_brl_cents=amount_cents if destination else None,
+                    destination_wallet=destination,
+                ),
+            )
+        except EulenAPIError as exc:
+            if exc.code != "EULEN_KYC_ALREADY_VERIFIED":
+                raise
+            return {
+                "status": "already_verified",
+                "email": email,
+                "next_step": (
+                    "Ankara reports this account is already KYC-verified. "
+                    "Do not start KYC; call pix_receive."
+                ),
+            }
+        if (
+            not result.get("session_id")
+            or not result.get("status")
+            or not result.get("verification_url")
+        ):
             raise ValueError("AQUA KYC session response is missing required fields")
-        response = {
+        response: dict[str, Any] = {
             "session_id": result["session_id"],
             "status": result["status"],
+            "verification_url": result["verification_url"],
+            "verification_methods": result.get("verification_methods") or methods,
             "email": email,
             "next_step": (
-                "Open Noviuz Hosted KYC with session_id and operator_id. "
-                "After the user finishes, call eulen_kyc_confirm. "
-                "Only Ankara's confirm result is authoritative."
+                "Give verification_url to the user exactly as received and ask them "
+                "to open it in their default browser (not a webview or iframe). "
+                "Treat it and session_id as credentials. Then call "
+                "eulen_kyc_confirm every 15-20 seconds while session_status is "
+                "'created'. Only Ankara's confirm result is authoritative."
             ),
         }
-        for key in ("operator_id", "session_url", "expires_at"):
-            if result.get(key):
-                response[key] = result[key]
+        if destination:
+            response["amount_cents"] = amount_cents
+            response["amount_brl"] = format_brl(amount_cents)
+            response["destination_wallet"] = destination
+            response["wallet_name"] = wallet_name
         return response
 
     def confirm_kyc_session(self, email: str, session_id: str) -> dict[str, Any]:
@@ -290,22 +483,26 @@ class PixManager:
             raise ValueError("AQUA KYC confirm response is missing required fields")
         status = result["session_status"]
         verification_status = result.get("verification_status")
-        if status == "approved" and verification_status == "VERIFIED":
-            next_step = "KYC approved. You can now call pix_receive."
-        elif status in {"created", "under_review"} or (
-            status == "approved" and verification_status != "VERIFIED"
-        ):
-            next_step = "KYC is not final. Retry eulen_kyc_confirm later."
-        else:
-            next_step = f"KYC ended with status {status!r}; do not create a deposit."
-        response = {
+        if status not in _KYC_STATUS_OUTCOMES:
+            raise ValueError(f"AQUA KYC confirm returned unknown session_status {status!r}")
+        is_final, is_success, poll_after, next_step = _KYC_STATUS_OUTCOMES[status]
+        if status == "approved" and verification_status != "VERIFIED":
+            is_final, is_success, poll_after = False, False, KYC_POLL_SECONDS
+            next_step = (
+                "Ankara approved the session but the profile is not VERIFIED yet. "
+                "Retry eulen_kyc_confirm later; do not create a deposit."
+            )
+        response: dict[str, Any] = {
             "session_id": result["session_id"],
             "session_status": status,
+            "is_final": is_final,
+            "is_success": is_success,
+            "poll_after_seconds": poll_after,
             "email": email,
             "next_step": next_step,
         }
-        if result.get("verification_status"):
-            response["verification_status"] = result["verification_status"]
+        if verification_status:
+            response["verification_status"] = verification_status
         return response
 
     def create_deposit(
