@@ -251,10 +251,10 @@ def lw_backup_mnemonic(
 
     # wallet_name already passed _wallet_path validation in load_wallet, so it is
     # safe to use as a filename component.
-    backups_dir = storage.base_dir / "backups"
+    path = storage.backup_path(wallet_name)
+    backups_dir = path.parent
     backups_dir.mkdir(exist_ok=True, mode=0o700)
     restrict_permissions(backups_dir, 0o700)
-    path = backups_dir / f"{wallet_name}-mnemonic.txt"
     tmp_path = path.with_suffix(".txt.tmp")
     try:
         fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -950,20 +950,51 @@ def lw_list_assets(network: str = "mainnet") -> dict[str, Any]:
     }
 
 
-def delete_wallet(wallet_name: str) -> dict[str, Any]:
-    """Delete a wallet and all its cached data.
+def delete_wallet(wallet_name: str, confirm: bool = False) -> dict[str, Any]:
+    """Permanently delete a wallet, its seed and all its cached data (two-step).
+
+    Irreversible: this removes the only local copy of the seed. Without
+    ``confirm`` nothing is deleted and a preview with the current balances is
+    returned; show it to the user, get explicit confirmation, then call again
+    with ``confirm=True``.
 
     Args:
         wallet_name: Name of the wallet to delete.
+        confirm: Must be True to actually delete. Default False (preview only).
 
     Returns:
-        deleted: True if wallet was deleted.
-        wallet_name: Name of the deleted wallet.
+        Preview (confirm=False): deleted=False, confirm_required=True, wallet_name,
+            balance (unified_balance result) or balance_error, has_seed,
+            backup_file_exists, warning.
+        Deleted (confirm=True): deleted=True, wallet_name, sideswap_pegs_removed,
+            backup_file_removed.
     """
     manager = get_manager()
     wallet_data = manager.storage.load_wallet(wallet_name)
     if wallet_data is None:
         raise ValueError(f"Wallet '{wallet_name}' not found")
+
+    backup = manager.storage.backup_path(wallet_name)
+    if not confirm:
+        preview: dict[str, Any] = {
+            "deleted": False,
+            "confirm_required": True,
+            "wallet_name": wallet_name,
+            "has_seed": bool(wallet_data.encrypted_mnemonic) and not wallet_data.watch_only,
+            "backup_file_exists": backup.exists(),
+        }
+        try:
+            preview["balance"] = unified_balance(wallet_name)
+        except Exception as e:
+            preview["balance"] = None
+            preview["balance_error"] = f"Balance unknown, could not be fetched: {e}"
+        preview["warning"] = (
+            "Deleting this wallet permanently removes its seed from this computer. "
+            "If you have not backed up the seed, the funds in this wallet will be "
+            "lost forever. Show these balances to the user, ask for explicit "
+            "confirmation, then call delete_wallet again with confirm=true."
+        )
+        return preview
 
     # Clear Liquid (LWK) manager caches
     manager._signers.pop(wallet_name, None)
@@ -981,10 +1012,14 @@ def delete_wallet(wallet_name: str) -> dict[str, Any]:
     pegs_removed = manager.storage.delete_sideswap_pegs_for_wallet(wallet_name)
 
     manager.storage.delete_wallet(wallet_name)
+    # Plaintext seed backup from lw_backup_mnemonic: another copy of the seed.
+    backup_removed = backup.exists()
+    backup.unlink(missing_ok=True)
     return {
         "deleted": True,
         "wallet_name": wallet_name,
         "sideswap_pegs_removed": pegs_removed,
+        "backup_file_removed": backup_removed,
     }
 
 

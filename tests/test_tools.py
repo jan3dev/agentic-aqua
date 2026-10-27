@@ -1397,7 +1397,7 @@ class TestDeleteWallet:
         isolated_manager.storage.save_sideswap_peg(own_peg)
         isolated_manager.storage.save_sideswap_peg(other_peg)
 
-        result = delete_wallet(wallet_name="pegowner")
+        result = delete_wallet(wallet_name="pegowner", confirm=True)
         assert result["sideswap_pegs_removed"] == 1
         assert isolated_manager.storage.load_sideswap_peg("aaa111") is None
         # Other wallet's peg untouched.
@@ -1408,7 +1408,7 @@ class TestDeleteWallet:
         lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="todelete", network="testnet")
         assert "todelete" in lw_list_wallets()["wallets"]
 
-        result = delete_wallet(wallet_name="todelete")
+        result = delete_wallet(wallet_name="todelete", confirm=True)
         assert result["deleted"] is True
         assert result["wallet_name"] == "todelete"
         assert result["sideswap_pegs_removed"] == 0
@@ -1422,7 +1422,7 @@ class TestDeleteWallet:
         manager._signers["cached"] = "fake_signer"
         manager._wollets["cached"] = "fake_wollet"
 
-        delete_wallet(wallet_name="cached")
+        delete_wallet(wallet_name="cached", confirm=True)
         assert "cached" not in manager._signers
         assert "cached" not in manager._wollets
 
@@ -1437,7 +1437,7 @@ class TestDeleteWallet:
         btc._persisters["btccached"] = "fake_persister"
         btc._networks["btccached"] = "testnet"
 
-        delete_wallet(wallet_name="btccached")
+        delete_wallet(wallet_name="btccached", confirm=True)
         assert "btccached" not in btc._wallets
         assert "btccached" not in btc._persisters
         assert "btccached" not in btc._networks
@@ -1445,9 +1445,56 @@ class TestDeleteWallet:
     def test_delete_returns_success(self, isolated_manager):
         """Returns the expected success dict."""
         lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="success", network="testnet")
-        result = delete_wallet(wallet_name="success")
+        result = delete_wallet(wallet_name="success", confirm=True)
         assert result["deleted"] is True
         assert result["wallet_name"] == "success"
+
+    def test_without_confirm_deletes_nothing_and_previews(self, isolated_manager):
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="prev", network="testnet")
+        storage = isolated_manager.storage
+        storage.backup_path("prev").parent.mkdir(exist_ok=True)
+        storage.backup_path("prev").write_text("seed words\n")
+        fake = {"wallet_name": "prev", "bitcoin": None, "liquid": {"balances": []}}
+        with patch("aqua.tools.unified_balance", return_value=fake):
+            result = delete_wallet(wallet_name="prev")
+        assert result["deleted"] is False
+        assert result["confirm_required"] is True
+        assert result["balance"] == fake
+        assert result["has_seed"] is True
+        assert result["backup_file_exists"] is True
+        assert "confirm=true" in result["warning"]
+        assert storage.wallet_exists("prev")
+        assert storage.backup_path("prev").exists()
+
+    def test_preview_balance_failure_is_reported_not_hidden(self, isolated_manager):
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="nobal", network="testnet")
+        with patch("aqua.tools.unified_balance", side_effect=RuntimeError("offline")):
+            result = delete_wallet(wallet_name="nobal")
+        assert result["deleted"] is False
+        assert "offline" in result["balance_error"]
+        assert isolated_manager.storage.wallet_exists("nobal")
+
+    def test_confirm_removes_wallet_cache_backup_but_not_lightning_swaps(
+        self, isolated_manager
+    ):
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="gone", network="testnet")
+        storage = isolated_manager.storage
+        cache = storage.get_cache_path("gone")
+        (cache / "x.db").touch()
+        storage.backup_path("gone").parent.mkdir(exist_ok=True)
+        storage.backup_path("gone").write_text("seed words\n")
+        storage.lightning_swaps_dir.mkdir(exist_ok=True)
+        swap = storage.lightning_swaps_dir / "swap1.json"
+        swap.write_text("{}")
+
+        result = delete_wallet(wallet_name="gone", confirm=True)
+        assert result["deleted"] is True
+        assert result["backup_file_removed"] is True
+        assert not storage.wallet_exists("gone")
+        assert not cache.exists()
+        assert not storage.backup_path("gone").exists()
+        assert not (storage.wallets_dir / "gone.lock").exists()
+        assert swap.exists()
 
 
 # ---------------------------------------------------------------------------

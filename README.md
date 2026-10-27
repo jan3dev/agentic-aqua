@@ -101,7 +101,7 @@ Once connected, you can ask Claude to:
 - "Send 10,000 Sats to bc1..." / "Send 0.001 L-BTC to lq1..."
 - "Pay this Lightning invoice: lnbc..."
 - "Receive 50,000 Sats via Lightning"
-- "Delete my wallet"
+- "Delete my wallet" (the assistant shows your balances and asks for explicit confirmation first)
 
 ## Available Tools
 
@@ -117,7 +117,7 @@ Once connected, you can ask Claude to:
 | `btc_import_descriptor` | Import watch-only Bitcoin wallet from BIP84 descriptor |
 | `btc_export_descriptor` | Export Bitcoin BIP84 descriptors + xpub |
 | `lw_list_wallets` | List all wallets |
-| `delete_wallet` | Delete a wallet and all its cached data |
+| `delete_wallet` | Permanently delete a wallet, its seed and cached data. Two-step: without `confirm` it only previews balances; `confirm=true` deletes (irreversible) |
 
 > ⚠️ Bitcoin and Liquid descriptors cannot be derived from each other (different BIP84 paths + Liquid's SLIP-77 blinding key). To watch a unified wallet, import both descriptors separately.
 
@@ -271,7 +271,8 @@ aqua wallet create --wallet-name default --network mainnet --password-stdin   # 
 aqua wallet backup-mnemonic --wallet-name default   # writes <aqua dir>/backups/default-mnemonic.txt (plain text)
 aqua wallet import-mnemonic --mnemonic-stdin --wallet-name default --network mainnet --password-stdin
 aqua wallet list
-aqua wallet delete --wallet-name old
+aqua wallet delete --wallet-name old             # preview only: shows balances, deletes nothing, exits 1
+aqua wallet delete --wallet-name old --confirm   # permanently deletes the wallet, its seed and the seed backup file
 
 # Watch-only descriptors (Bitcoin and Liquid are separate)
 aqua btc export-descriptor    --wallet-name default

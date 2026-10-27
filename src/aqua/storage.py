@@ -465,12 +465,18 @@ class Storage:
         path = self._wallet_path(wallet.name)
         self._atomic_write_json(path, wallet.to_dict())
 
+    def backup_path(self, name: str) -> Path:
+        """Path of the plaintext seed backup written by ``lw_backup_mnemonic``."""
+        _validate_wallet_name(name)
+        return self.base_dir / "backups" / f"{name}-mnemonic.txt"
+
     def delete_wallet(self, name: str) -> bool:
-        """Delete wallet and its cache directory."""
+        """Delete wallet, its lock file and its cache directory."""
         path = self._wallet_path(name)
         if not path.exists():
             return False
         path.unlink()
+        (self.wallets_dir / f"{name}.lock").unlink(missing_ok=True)
         cache_path = self.cache_dir / name
         if cache_path.is_dir():
             shutil.rmtree(cache_path)

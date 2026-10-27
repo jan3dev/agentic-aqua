@@ -243,7 +243,7 @@ class TestSmokeDeleteWallet:
 
 		result = runner.invoke(
 			cli,
-			["--format", "json", "wallet", "delete", "--wallet-name", name, "--yes"],
+			["--format", "json", "wallet", "delete", "--wallet-name", name, "--confirm"],
 		)
 		assert result.exit_code == 0
 
@@ -277,7 +277,7 @@ class TestSmokeSeedRestore:
 		assert result.exit_code == 0
 		first_address = json.loads(result.stdout)["address"]
 
-		runner.invoke(cli, ["--format", "json", "wallet", "delete", "--wallet-name", name, "--yes"])
+		runner.invoke(cli, ["--format", "json", "wallet", "delete", "--wallet-name", name, "--confirm"])
 
 		result = runner.invoke(
 			cli,
@@ -295,7 +295,7 @@ class TestSmokeSeedRestore:
 		restored_address = json.loads(result.stdout)["address"]
 		assert restored_address == first_address
 
-		runner.invoke(cli, ["--format", "json", "wallet", "delete", "--wallet-name", name, "--yes"])
+		runner.invoke(cli, ["--format", "json", "wallet", "delete", "--wallet-name", name, "--confirm"])
 
 
 class TestSmokeImportLiquidDescriptor:
@@ -315,7 +315,7 @@ class TestSmokeImportLiquidDescriptor:
         assert data["wallet_name"] == name
         assert data["watch_only"] is True
 
-        runner.invoke(cli, ["--format", "json", "wallet", "delete", "--wallet-name", name, "--yes"])
+        runner.invoke(cli, ["--format", "json", "wallet", "delete", "--wallet-name", name, "--confirm"])
 
 
 class TestSmokeImportBtcDescriptor:
@@ -335,7 +335,7 @@ class TestSmokeImportBtcDescriptor:
         assert data["wallet_name"] == name
         assert data["watch_only"] is True
 
-        runner.invoke(cli, ["--format", "json", "wallet", "delete", "--wallet-name", name, "--yes"])
+        runner.invoke(cli, ["--format", "json", "wallet", "delete", "--wallet-name", name, "--confirm"])
 
 
 class TestSmokeCleanup:
@@ -344,6 +344,6 @@ class TestSmokeCleanup:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["--format", "json", "wallet", "delete", "--wallet-name", wallet_name, "--yes"],
+            ["--format", "json", "wallet", "delete", "--wallet-name", wallet_name, "--confirm"],
         )
         assert result.exit_code == 0

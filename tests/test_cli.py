@@ -13,6 +13,7 @@ from aqua.bitcoin import BitcoinWalletManager
 from aqua.cli import password as password_mod
 from aqua.cli.main import cli
 from aqua.storage import Storage
+from aqua.tools import get_manager
 from aqua.wallet import WalletManager
 
 from tests.conftest import TEST_MNEMONIC
@@ -411,29 +412,33 @@ class TestWalletCommands:
         data = json.loads(result.output)
         assert data["count"] >= 1
 
-    def test_delete_wallet_with_yes(self, runner):
+    def test_delete_wallet_with_confirm(self, runner):
         _import_wallet(runner)
         result = runner.invoke(
             cli,
-            ["--format", "json", "wallet", "delete", "--wallet-name", "default", "--yes"],
+            ["--format", "json", "wallet", "delete", "--wallet-name", "default", "--confirm"],
         )
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["deleted"] is True
+        assert not get_manager().storage.wallet_exists("default")
 
-    def test_delete_wallet_cancelled(self, runner):
+    def test_delete_wallet_without_confirm_previews_and_exits_1(self, runner):
         _import_wallet(runner)
-        result = runner.invoke(
-            cli,
-            ["wallet", "delete", "--wallet-name", "default"],
-            input="wrong_name\n",
-        )
+        fake = {"wallet_name": "default", "bitcoin": None, "liquid": {"balances": []}}
+        with patch("aqua.tools.unified_balance", return_value=fake):
+            result = runner.invoke(
+                cli, ["--format", "json", "wallet", "delete", "--wallet-name", "default"]
+            )
         assert result.exit_code == 1
+        assert "balance" in result.output
+        assert "--confirm" in result.output
+        assert get_manager().storage.wallet_exists("default")
 
     def test_delete_nonexistent_wallet(self, runner):
         result = runner.invoke(
             cli,
-            ["--format", "json", "wallet", "delete", "--wallet-name", "nope", "--yes"],
+            ["--format", "json", "wallet", "delete", "--wallet-name", "nope", "--confirm"],
         )
         assert result.exit_code == 1
         # Error goes to output (stderr captured in output by CliRunner)
@@ -2067,7 +2072,7 @@ class TestErrorHandling:
         """Errors in JSON mode match the MCP error shape."""
         result = runner.invoke(
             cli,
-            ["--format", "json", "wallet", "delete", "--wallet-name", "nonexistent", "--yes"],
+            ["--format", "json", "wallet", "delete", "--wallet-name", "nonexistent", "--confirm"],
         )
         assert result.exit_code == 1
         # In Click 8.2+, stderr output is captured in result.output
@@ -2081,7 +2086,7 @@ class TestErrorHandling:
         """Errors in pretty mode show human-readable message."""
         result = runner.invoke(
             cli,
-            ["--format", "pretty", "wallet", "delete", "--wallet-name", "nonexistent", "--yes"],
+            ["--format", "pretty", "wallet", "delete", "--wallet-name", "nonexistent", "--confirm"],
         )
         assert result.exit_code == 1
         assert "Error" in result.output

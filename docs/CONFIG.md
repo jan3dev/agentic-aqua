@@ -144,7 +144,7 @@ All tool names accepted in `enabled_tools`:
 | (CLI only) | `aqua wallet generate-mnemonic` | No MCP twin: the seed must never reach an LLM |
 | `lw_import_mnemonic` | `aqua wallet import-mnemonic` | |
 | `lw_list_wallets` | `aqua wallet list` | |
-| `delete_wallet` | `aqua wallet delete` | |
+| `delete_wallet` | `aqua wallet delete` | Two-step: `--confirm` required to delete |
 | `lw_balance` | `aqua liquid balance` | |
 | `lw_address` | `aqua liquid address` | |
 | `lw_transactions` | `aqua liquid transactions` | |

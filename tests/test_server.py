@@ -178,3 +178,23 @@ def test_call_tool_missing_password_file_returns_error_envelope(tmp_path):
     assert out["error"]["code"] == "ValueError"
     assert "nope" in out["error"]["message"]
     fake.assert_not_called()
+
+
+def test_call_tool_delete_wallet_without_confirm_deletes_nothing(tmp_path):
+    from unittest.mock import patch
+
+    import aqua.tools as tools_module
+    from aqua.storage import Storage, WalletData
+    from aqua.wallet import WalletManager
+
+    storage = Storage(tmp_path)
+    storage.save_wallet(WalletData(name="keep", network="mainnet", descriptor="ct"))
+    manager = WalletManager(storage=storage)
+    tools_module._manager = manager
+    try:
+        with patch("aqua.tools.unified_balance", return_value={"liquid": {"balances": []}}):
+            out = _call_tool("delete_wallet", {"wallet_name": "keep"})
+    finally:
+        tools_module._manager = None
+    assert out["deleted"] is False and out["confirm_required"] is True
+    assert storage.wallet_exists("keep")

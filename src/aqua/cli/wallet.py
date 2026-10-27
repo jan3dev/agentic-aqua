@@ -10,12 +10,11 @@ from ..tools import (
 from ..tools import (
     get_manager,
     lw_backup_mnemonic,
-    lw_balance,
     lw_create_wallet,
     lw_import_mnemonic,
     lw_list_wallets,
 )
-from .output import render, run_tool
+from .output import run_tool
 from .password import handle_password_retry, password_file_option, resolve_secret
 
 
@@ -178,33 +177,24 @@ def list_wallets(ctx):
 
 @wallet.command("delete")
 @click.option("--wallet-name", required=True, help="Name of the wallet to delete.")
-@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+@click.option(
+    "--confirm",
+    is_flag=True,
+    help="Delete the wallet and its seed (irreversible). Without it, only a preview is shown.",
+)
 @click.pass_obj
-def delete(ctx, wallet_name, yes):
-    """Delete a wallet and all its cached data."""
-    if not yes:
-        try:
-            balance = lw_balance(wallet_name)
-            click.echo("Current Liquid wallet balance:", err=True)
-            click.echo(render(balance, "pretty"), err=True)
-        except Exception:
-            pass  # Wallet may not exist yet
+def delete(ctx, wallet_name, confirm):
+    """Permanently delete a wallet, its seed and all its cached data.
 
+    Without --confirm nothing is deleted: the current balances are shown and the
+    command exits with status 1.
+    """
+    result = run_tool(ctx, lambda: _delete_wallet(wallet_name, confirm=confirm))
+    if not result.get("deleted"):
         click.echo(
-            "\nMake sure you have backed up your seed phrase (mnemonic) before proceeding.",
+            "\nNothing was deleted. Deleting permanently removes the seed from this "
+            "computer: without a backup of the seed, the funds will be lost forever. "
+            "Re-run with --confirm to delete.",
             err=True,
         )
-        click.echo(
-            "Without it, you will permanently lose access to any funds.",
-            err=True,
-        )
-        confirm = click.prompt(
-            f"Type '{wallet_name}' to confirm deletion",
-            default="",
-            show_default=False,
-        )
-        if confirm != wallet_name:
-            click.echo("Deletion cancelled.", err=True)
-            sys.exit(1)
-
-    run_tool(ctx, lambda: _delete_wallet(wallet_name))
+        sys.exit(1)
