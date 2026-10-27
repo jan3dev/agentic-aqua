@@ -11,9 +11,44 @@ _BOLT11_MULTIPLIERS: dict[str, float] = {
 }
 
 _BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+_BECH32_GEN = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
 _TAG_PAYMENT_HASH = 1  # 'p'
 _TAG_DESCRIPTION = 13  # 'd'
 _TAG_EXPIRY = 6        # 'x'
+
+
+def _polymod(values: list[int]) -> int:
+    chk = 1
+    for v in values:
+        top = chk >> 25
+        chk = ((chk & 0x1FFFFFF) << 5) ^ v
+        for i in range(5):
+            if (top >> i) & 1:
+                chk ^= _BECH32_GEN[i]
+    return chk
+
+
+def _verify_bolt11(invoice: str) -> str:
+    """Return the lowercase invoice after verifying its bech32 checksum (BIP-173).
+
+    BOLT11 uses plain bech32 (not bech32m) and is exempt from the 90-char limit.
+    Raises ValueError on mixed case, bad charset, malformed layout or bad checksum.
+    """
+    invoice = invoice.strip()
+    if invoice != invoice.lower() and invoice != invoice.upper():
+        raise ValueError("Invalid BOLT11 invoice: mixed-case")
+    invoice = invoice.lower()
+    sep = invoice.rfind("1")
+    hrp, data_str = invoice[:sep], invoice[sep + 1:]
+    if sep < 2 or not hrp.startswith("ln") or len(data_str) < 6:
+        raise ValueError("Invalid BOLT11 invoice: malformed")
+    if any(c not in _BECH32_CHARSET for c in data_str) or any(not 33 <= ord(c) <= 126 for c in hrp):
+        raise ValueError("Invalid BOLT11 invoice: invalid characters")
+    data = [_BECH32_CHARSET.index(c) for c in data_str]
+    expanded = [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
+    if _polymod(expanded + data) != 1:
+        raise ValueError("Invalid BOLT11 invoice: bad checksum")
+    return invoice
 
 
 def decode_bolt11_amount_sats(invoice: str) -> int | None:
@@ -21,7 +56,7 @@ def decode_bolt11_amount_sats(invoice: str) -> int | None:
 
     Returns None for zero-amount invoices or if the amount cannot be parsed.
     """
-    invoice = invoice.lower().strip()
+    invoice = _verify_bolt11(invoice)
     for prefix in ("lnbcrt", "lnbc", "lntb", "lntbs"):
         if invoice.startswith(prefix):
             hrp_rest = invoice[len(prefix):]
@@ -43,7 +78,7 @@ def decode_bolt11_amount_sats(invoice: str) -> int | None:
 
 
 def _iter_tagged_fields(invoice: str):
-    """Yield (field_type, 5-bit groups) for each BOLT11 tagged field."""
+    """Yield (field_type, 5-bit groups) for each tagged field of a verified invoice."""
     sep = invoice.rfind("1")
     if sep < 0:
         return
@@ -88,7 +123,7 @@ def decode_bolt11_fields(invoice: str) -> dict:
     Returns amount_sats (None for zero-amount), description (None if absent),
     and expiry (default 3600 seconds per spec).
     """
-    invoice = invoice.lower().strip()
+    invoice = _verify_bolt11(invoice)
     result: dict = {
         "amount_sats": decode_bolt11_amount_sats(invoice),
         "description": None,
@@ -115,7 +150,7 @@ def decode_bolt11_payment_hash(invoice: str) -> str:
 
     Raises ValueError when the invoice carries no well-formed payment hash.
     """
-    for field_type, field_data in _iter_tagged_fields(invoice.lower().strip()):
+    for field_type, field_data in _iter_tagged_fields(_verify_bolt11(invoice)):
         # The spec fixes 'p' at 52 groups (260 bits); readers MUST skip other lengths.
         if field_type == _TAG_PAYMENT_HASH and len(field_data) == 52:
             return _groups_to_bytes(field_data)[:32].hex()

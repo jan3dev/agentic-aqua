@@ -16,7 +16,12 @@ from aqua.boltz import (
     generate_keypair,
     verify_preimage,
 )
-from aqua.bolt11 import decode_bolt11_amount_sats, decode_bolt11_payment_hash
+from aqua.bolt11 import (
+    _BECH32_CHARSET,
+    _polymod,
+    decode_bolt11_amount_sats,
+    decode_bolt11_payment_hash,
+)
 import io
 import urllib.error
 
@@ -343,32 +348,40 @@ class TestSwapInfo:
 # ===========================================================================
 
 
+def _with_checksum(hrp: str, data: str = "pqpqpq") -> str:
+    """Build a bech32 string with a valid checksum (no BOLT11 tagged fields)."""
+    expanded = [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
+    values = [_BECH32_CHARSET.index(c) for c in data]
+    mod = _polymod(expanded + values + [0] * 6) ^ 1
+    check = "".join(_BECH32_CHARSET[(mod >> 5 * (5 - i)) & 31] for i in range(6))
+    return f"{hrp}1{data}{check}"
+
+
 class TestDecodeBolt11AmountSats:
     """Tests for decode_bolt11_amount_sats."""
 
     @pytest.mark.parametrize("invoice, expected_sats", [
-        ("lnbc500u1ptest0000", 50_000),           # 500 micro-BTC
-        ("lnbc1m1ptest0000", 100_000),             # 1 milli-BTC
-        ("lnbc10m1ptest0000", 1_000_000),          # 10 milli-BTC
-        ("lnbc2500u1ptest0000", 250_000),          # 2500 micro-BTC
-        ("lnbc1500n1ptest0000", 150),              # 1500 nano-BTC
-        ("lnbc21ptest0000", 200_000_000),          # 2 BTC (no multiplier)
-        ("lntb500u1ptest0000", 50_000),            # testnet
+        (_with_checksum("lnbc500u"), 50_000),           # 500 micro-BTC
+        (_with_checksum("lnbc1m"), 100_000),             # 1 milli-BTC
+        (_with_checksum("lnbc10m"), 1_000_000),          # 10 milli-BTC
+        (_with_checksum("lnbc2500u"), 250_000),          # 2500 micro-BTC
+        (_with_checksum("lnbc1500n"), 150),              # 1500 nano-BTC
+        (_with_checksum("lnbc2"), 200_000_000),          # 2 BTC (no multiplier)
+        (_with_checksum("lntb500u"), 50_000),            # testnet
     ])
     def test_known_amounts(self, invoice, expected_sats):
         assert decode_bolt11_amount_sats(invoice) == expected_sats
 
     def test_zero_amount_invoice_returns_none(self):
-        assert decode_bolt11_amount_sats("lnbc1ptest0000") is None
+        assert decode_bolt11_amount_sats(_with_checksum("lnbc")) is None
 
-    def test_invalid_prefix_returns_none(self):
-        assert decode_bolt11_amount_sats("xxinvalid") is None
-
-    def test_empty_string_returns_none(self):
-        assert decode_bolt11_amount_sats("") is None
+    @pytest.mark.parametrize("invoice", ["xxinvalid", "", _with_checksum("btc500u")])
+    def test_invalid_invoice_is_rejected(self, invoice):
+        with pytest.raises(ValueError, match="Invalid BOLT11"):
+            decode_bolt11_amount_sats(invoice)
 
     def test_case_insensitive(self):
-        assert decode_bolt11_amount_sats("LNBC500u1ptest") == 50_000
+        assert decode_bolt11_amount_sats(_with_checksum("lnbc500u").upper()) == 50_000
 
 
 class TestRefundEndpoints:
@@ -464,9 +477,13 @@ class TestDecodeBolt11PaymentHash:
             invoice
         )
 
+    def test_rejects_valid_invoice_without_a_payment_hash(self):
+        with pytest.raises(ValueError, match="payment hash"):
+            decode_bolt11_payment_hash(_with_checksum("lnbc500u"))
+
     @pytest.mark.parametrize(
         "invoice", ["", "not-an-invoice", "lnbc500u1ptest_valid_invoice"]
     )
-    def test_rejects_invoices_without_a_payment_hash(self, invoice):
-        with pytest.raises(ValueError, match="payment hash"):
+    def test_rejects_malformed_invoices(self, invoice):
+        with pytest.raises(ValueError, match="Invalid BOLT11"):
             decode_bolt11_payment_hash(invoice)
