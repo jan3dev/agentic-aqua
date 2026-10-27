@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
@@ -10,6 +11,7 @@ from .assets import MAINNET_ASSETS, TESTNET_ASSETS, resolve_asset_name, resolve_
 from .bitcoin import BitcoinWalletManager
 from .bolt11 import decode_bolt11_fields
 from .qr import decode_qr, generate_qr, render_qr_terminal
+from .storage import restrict_permissions
 from .wallet import LIQUID_BACKEND_URLS, EsploraNotFound, WalletManager, esplora_http_get
 
 logger = logging.getLogger(__name__)
@@ -187,19 +189,91 @@ def _attach_deposit_qr(
     return result
 
 
-def lw_generate_mnemonic() -> dict[str, Any]:
+def lw_create_wallet(
+    wallet_name: str = "default",
+    network: str = "mainnet",
+    password: str | None = None,
+) -> dict[str, Any]:
     """
-    Generate a new BIP39 mnemonic phrase (12 words).
+    Create a new wallet from a freshly generated 12-word BIP39 mnemonic.
+
+    The mnemonic is generated and imported in one step and is NEVER returned, so
+    it never enters the MCP/LLM context. Creates both Liquid (LWK) and Bitcoin
+    (BDK) wallets, exactly like lw_import_mnemonic.
+
+    Args:
+        wallet_name: Name for the wallet. Default: "default"
+        network: "mainnet" or "testnet". Default: "mainnet"
+        password: Optional password to encrypt the mnemonic at rest (NOT a BIP39
+            passphrase).
 
     Returns:
-        mnemonic: The generated mnemonic phrase
+        Same fields as lw_import_mnemonic (no mnemonic), plus backup_recommendation.
     """
-    manager = get_manager()
-    mnemonic = manager.generate_mnemonic()
+    mnemonic = get_manager().generate_mnemonic()
+    result = lw_import_mnemonic(mnemonic, wallet_name, network, password)
+    result["backup_recommendation"] = (
+        "Recommend that the user back up the seed phrase offline: without it, "
+        "lost funds cannot be recovered. If the user asks for a local backup, "
+        "call lw_backup_mnemonic (or run `aqua wallet backup-mnemonic`); it writes "
+        "the seed to a local text file and never shows it in the conversation."
+    )
+    return result
+
+
+def lw_backup_mnemonic(
+    wallet_name: str = "default",
+    password: str | None = None,
+) -> dict[str, Any]:
+    """
+    Write the wallet's mnemonic to a local backup file. Call ONLY when the user
+    explicitly asks to back up the seed. The seed is never returned, and the
+    file must never be read back into the conversation.
+
+    Args:
+        wallet_name: Wallet to back up. Default: "default"
+        password: Password to decrypt the mnemonic (if encrypted at rest)
+
+    Returns:
+        wallet_name: Name of the wallet
+        backup_path: Path of the plaintext backup file
+        warning: Handling instructions for the file
+    """
+    storage = get_manager().storage
+    wallet = storage.load_wallet(wallet_name)
+    if not wallet:
+        raise ValueError(f"Wallet '{wallet_name}' not found")
+    if wallet.watch_only or not wallet.encrypted_mnemonic:
+        raise ValueError(f"Wallet '{wallet_name}' is watch-only: no mnemonic to back up")
+    if storage.requires_user_password(wallet.encrypted_mnemonic) and not password:
+        raise ValueError("Password required to decrypt mnemonic")
+    mnemonic = storage.read_and_migrate_mnemonic(wallet, password)
+
+    # wallet_name already passed _wallet_path validation in load_wallet, so it is
+    # safe to use as a filename component.
+    backups_dir = storage.base_dir / "backups"
+    backups_dir.mkdir(exist_ok=True, mode=0o700)
+    restrict_permissions(backups_dir, 0o700)
+    path = backups_dir / f"{wallet_name}-mnemonic.txt"
+    tmp_path = path.with_suffix(".txt.tmp")
+    try:
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(mnemonic + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        restrict_permissions(tmp_path, 0o600)
+        os.replace(tmp_path, path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
     return {
-        "mnemonic": mnemonic,
-        "words": len(mnemonic.split()),
-        "warning": "Store this mnemonic securely. Anyone with access can control your funds.",
+        "wallet_name": wallet_name,
+        "backup_path": str(path),
+        "warning": (
+            "This file holds the seed phrase in plain text. Copy it to offline "
+            "storage, then delete the file."
+        ),
     }
 
 
@@ -2357,7 +2431,8 @@ def jan3_purchase_ln_username(
 
 # Tool registry for MCP
 TOOLS = {
-    "lw_generate_mnemonic": lw_generate_mnemonic,
+    "lw_create_wallet": lw_create_wallet,
+    "lw_backup_mnemonic": lw_backup_mnemonic,
     "lw_import_mnemonic": lw_import_mnemonic,
     "lw_import_descriptor": lw_import_descriptor,
     "lw_export_descriptor": lw_export_descriptor,

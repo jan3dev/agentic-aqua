@@ -33,11 +33,52 @@ logger = logging.getLogger(__name__)
 
 
 TOOL_SCHEMAS = {
-    "lw_generate_mnemonic": {
-        "description": "Generate a new BIP39 seed phrase for creating a Liquid wallet",
+    "lw_create_wallet": {
+        "description": (
+            "Create a new wallet (both Liquid and Bitcoin) from a freshly generated "
+            "12-word seed. The seed is NEVER shown or returned. After creating, "
+            "recommend that the user back up the seed."
+        ),
         "inputSchema": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Name for the wallet",
+                    "default": "default",
+                },
+                "network": {
+                    "type": "string",
+                    "description": "Network to use",
+                    "enum": ["mainnet", "testnet"],
+                    "default": "mainnet",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Optional password to encrypt the mnemonic at rest (NOT a BIP39 passphrase)",
+                },
+            },
+        },
+    },
+    "lw_backup_mnemonic": {
+        "description": (
+            "Write the wallet's seed to a local plain-text backup file. Call ONLY when "
+            "the user explicitly asks to back up the seed. The seed is never returned; "
+            "never read the file back into the conversation."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Wallet to back up",
+                    "default": "default",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Password to decrypt the mnemonic (if encrypted at rest)",
+                },
+            },
         },
     },
     "lw_import_mnemonic": {
@@ -1712,17 +1753,19 @@ WORKFLOW:
 3. Confirm amount with user
 4. Broadcast and provide txid
 
-WHEN GENERATING NEW SEEDS:
-1. Generate seed with lw_generate_mnemonic
-2. ASK user if they want to encrypt the seed on disk with a password (STRONGLY RECOMMENDED)
-3. If yes: ASK user for their password
+WHEN CREATING NEW WALLETS:
+1. ASK user if they want to encrypt the seed on disk with a password (STRONGLY RECOMMENDED)
+2. If yes: ASK user for their password
    - Give example: "Wild-red-dolphin-386" (Word1-word2-word3-###)
    - Wait for user to provide their chosen password
-4. Import wallet with seed + user's password (or no password if declined)
-5. Show user the seed (and remind them of their password if used)
-6. Emphasize importance of backing up the seed securely. The password only
+3. Create the wallet with lw_create_wallet (+ user's password, or no password if declined).
+   The seed is generated server-side and is NEVER shown to you or in the chat.
+4. Recommend that the user back up the seed offline. The password only
    protects the local file — it is NOT a BIP39 passphrase, so the seed alone
    is enough to restore the wallet in any other software.
+5. Only if the user explicitly asks for a backup, call lw_backup_mnemonic: it writes
+   the seed to a local file (never read that file back) and tells them to move it
+   to offline storage and delete it.
 
 PASSWORD HANDLING (encryption at rest):
 - Wallets with encrypted seeds require the password to decrypt for signing
@@ -2064,23 +2107,24 @@ WALLET DELETION:
                             text=f"""I want to create a new wallet named '{wallet_name}' on {network}.
 
 Please:
-1. Generate a new 12-word seed with lw_generate_mnemonic
-2. Show me the seed
-3. Ask me: "Do you want to encrypt the seed on disk with a password? (STRONGLY RECOMMENDED)"
+1. Ask me: "Do you want to encrypt the seed on disk with a password? (STRONGLY RECOMMENDED)"
    - Clarify: this password protects the local file only. It is NOT a BIP39
      passphrase, so the seed phrase alone restores the same addresses elsewhere.
-4. If I say yes:
+2. If I say yes:
    - Ask me: "Please provide your password. Example format: 'Wild-red-dolphin-386' (Word1-word2-word3-###)"
    - Wait for me to give you my chosen password
-   - Import wallet with my password
-5. If I say no:
+   - Create the wallet with lw_create_wallet using my password
+3. If I say no:
    - Warn me that the seed will only be base64-encoded (less secure at rest)
    - Ask for confirmation
-   - Import wallet without password
-6. Confirm wallet creation for both Bitcoin and Liquid
-7. Remind me to backup the seed phrase securely (losing the password only blocks
-   this local file — the mnemonic alone still restores my funds elsewhere)
-8. Generate a receive address for Bitcoin and another for Liquid""",
+   - Create the wallet with lw_create_wallet without a password
+4. Do NOT try to show me the seed: lw_create_wallet never returns it, by design
+5. Confirm wallet creation for both Bitcoin and Liquid
+6. Recommend that I back up the seed phrase offline (losing the password only blocks
+   this local file; the mnemonic alone still restores my funds elsewhere).
+   Only if I explicitly ask for a backup, call lw_backup_mnemonic and never read
+   the resulting file back into this conversation
+7. Generate a receive address for Bitcoin and another for Liquid""",
                         ),
                     )
                 ]
@@ -2694,18 +2738,19 @@ Please:
 
 ## Creating a New Wallet (Recommended Method)
 
-1. Generate a mnemonic: `lw_generate_mnemonic()`
-2. Choose a strong password to encrypt the seed on disk
-3. Import it: `lw_import_mnemonic(mnemonic="your 12 words", network="mainnet", password="your-password")`
-4. This creates BOTH a Liquid and Bitcoin wallet from the same seed
-5. **BACKUP THE MNEMONIC**: Save it securely offline. The password only protects
-   the local file — it is NOT a BIP39 passphrase, so the seed alone is
+1. Choose a strong password to encrypt the seed on disk
+2. Create it: `lw_create_wallet(network="mainnet", password="your-password")`
+3. This creates BOTH a Liquid and Bitcoin wallet from a new seed. The seed is
+   never shown in the chat or returned by any tool.
+4. **BACK UP THE SEED**: only if you explicitly ask, `lw_backup_mnemonic()` writes it to a
+   local file; copy it to offline storage, then delete the file. The password only
+   protects the local file — it is NOT a BIP39 passphrase, so the seed alone is
    enough to restore the same addresses in any BIP39-compliant wallet.
 
 ## Creating Without a Password (Not Recommended)
 
 If you need convenience over security:
-- `lw_import_mnemonic(mnemonic="your words", network="mainnet")`
+- `lw_create_wallet(network="mainnet")`
 - ⚠️ **WARNING**: Seed stored with only base64 encoding (not encrypted)
 - Only use for testing/small amounts
 
