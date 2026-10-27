@@ -3,7 +3,10 @@
 import logging
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from decimal import ROUND_CEILING, Decimal
 from typing import Optional
+
+from coincurve import PrivateKey
 
 from .ankara import AnkaraClient
 from .bolt11 import decode_bolt11_amount_sats, decode_bolt11_payment_hash
@@ -11,7 +14,11 @@ from .boltz import (
     BoltzSwapAlreadyExistsError,
     generate_keypair,
 )
-from .boltz_refund import refund_submarine_swap
+from .boltz_refund import (
+    build_swap_tree,
+    decode_confidential_address,
+    refund_submarine_swap,
+)
 from .lightning_providers import PROVIDERS, resolve_send_provider
 from .lnurl import is_lightning_address, resolve_lightning_address
 
@@ -94,6 +101,83 @@ class LightningSwap:
         ]:
             data.setdefault(field_name, None)
         return cls(**data)
+
+
+def _verify_send_swap(
+    label: str,
+    invoice: str,
+    invoice_amount: int,
+    pair: dict,
+    refund_pubkey: str,
+    swap_resp: dict,
+    network: str,
+) -> None:
+    """Refuse a send swap whose lockup address, blinding key or amount is not ours.
+
+    The address must be the taproot output of the swap tree rebuilt from the
+    invoice hash, the provider's claim key and OUR refund key, so a provider
+    cannot redirect the funds. Raises ValueError; nothing has been funded.
+    """
+    swap_id = swap_resp.get("id")
+    refusal = f"{label} swap {swap_id} failed verification, so it was not funded: "
+    try:
+        timeout = swap_resp["timeoutBlockHeight"]
+        if isinstance(timeout, bool) or not isinstance(timeout, int):
+            raise TypeError("timeoutBlockHeight is not an integer")
+        tree = build_swap_tree(
+            bytes.fromhex(decode_bolt11_payment_hash(invoice)),
+            bytes.fromhex(swap_resp["claimPublicKey"]),
+            bytes.fromhex(refund_pubkey),
+            timeout,
+        )
+        blinding_pubkey, spk = decode_confidential_address(
+            swap_resp["address"], network
+        )
+        blinding_key = PrivateKey(bytes.fromhex(swap_resp["blindingKey"]))
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"{refusal}malformed swap response ({e})") from e
+    if spk != tree.scriptpubkey:
+        raise ValueError(
+            f"{refusal}lockup address does not match the swap script rebuilt "
+            "from this wallet's refund key"
+        )
+    if blinding_key.public_key.format(compressed=True) != blinding_pubkey:
+        raise ValueError(
+            f"{refusal}blindingKey does not match the lockup address blinding key"
+        )
+
+    expected = swap_resp.get("expectedAmount")
+    fees = pair.get("fees")
+    try:
+        percentage = Decimal(str(fees["percentage"]))
+        miner_fees = fees["minerFees"]
+        if isinstance(miner_fees, bool) or not isinstance(miner_fees, int):
+            raise TypeError("minerFees is not an integer")
+        if percentage < 0 or miner_fees < 0:
+            raise ValueError("negative fee")
+    except (KeyError, TypeError, ValueError, ArithmeticError) as e:
+        raise ValueError(
+            f"{refusal}cannot bound expectedAmount, the pair fees are unusable ({e})"
+        ) from e
+    percentage_fee = int(
+        (Decimal(invoice_amount) * percentage / 100).to_integral_value(ROUND_CEILING)
+    )
+    max_amount = invoice_amount + percentage_fee + miner_fees
+    if isinstance(expected, bool) or not isinstance(expected, int):
+        raise ValueError(f"{refusal}expectedAmount is not an integer")
+    if expected > max_amount:
+        raise ValueError(
+            f"{refusal}expectedAmount {expected} sats exceeds the quoted maximum "
+            f"{max_amount} sats (invoice {invoice_amount} + fees)"
+        )
+    logger.debug(
+        "%s swap %s verified: address matches rebuilt swap tree, blinding key "
+        "matches, expected_amount=%s <= cap=%s",
+        label,
+        swap_id,
+        expected,
+        max_amount,
+    )
 
 
 class LightningManager:
@@ -312,12 +396,16 @@ class LightningManager:
                 "trying to pay it twice in this same execution; the issue is that "
                 f"{provider.label} already knows it from a previous attempt."
             ) from e
-        expected_amount = swap_resp["expectedAmount"]
         if not swap_resp.get("blindingKey"):
             raise ValueError(
                 f"{provider.label} returned no blindingKey for swap {swap_resp.get('id')}; "
                 "refusing to fund a lockup this wallet could not refund."
             )
+        # The provider is untrusted: check the lockup before any funds move.
+        _verify_send_swap(
+            provider.label, invoice, invoice_amount, pair, refund_pubkey, swap_resp, network
+        )
+        expected_amount = swap_resp["expectedAmount"]
         logger.debug(
             "%s swap created id=%s expected_amount=%s timeout_block_height=%s",
             provider.label,

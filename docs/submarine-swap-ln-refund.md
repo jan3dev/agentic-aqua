@@ -54,6 +54,11 @@ server-side recovery. `~/.aqua/lightning_swaps/<id>.json` needs:
 `swap_tree` the provider returns is stored verbatim for auditing, but the tree
 is always rebuilt from those primitives rather than trusted as given — that is
 what makes swaps created before these fields were persisted recoverable at all.
+The same rebuild runs **before funding**: `pay_invoice` refuses (`ValueError`,
+nothing sent) unless the provider's lockup address is the output of the tree
+built from the invoice hash, its claim key and our own refund key, its
+`blindingKey` matches the address's blinding key, and `expectedAmount` is at
+most `invoice + ceil(invoice * percentage / 100) + minerFees` from the live pair.
 
 **Legacy swaps.** Records written before this feature landed hold only the
 refund key and the timeout. Ask the provider for the swap's `claimPublicKey` and

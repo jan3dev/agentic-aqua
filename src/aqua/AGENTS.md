@@ -15,7 +15,7 @@ Python package implementing the MCP server, wallet engines, and third-party swap
 | `bitcoin.py` | Bitcoin wallet engine (BDK). Esplora full_scan, PSBT build/sign/broadcast. Multi-URL fallback + retry on transient errors. | `BitcoinManager`, `BitcoinAddress`, `BitcoinTransaction` |
 | `storage.py` | At-rest persistence. PBKDF2+Fernet mnemonic encryption, atomic writes, wallet-name validation against path traversal. | `Storage`, `WalletData`, `Config` |
 | `assets.py` | Liquid asset registry (ticker, precision, logo). Resolves asset ids ↔ names. | `lookup_asset`, `resolve_asset_name` |
-| `lightning.py` | Unified Lightning send (Indra/Boltz) + receive (Ankara) manager. Maps provider statuses → `pending`/`processing`/`completed`/`failed`/`refunded`. | `LightningManager`, `LightningSwap` |
+| `lightning.py` | Unified Lightning send (Indra/Boltz) + receive (Ankara) manager. `pay_invoice` verifies the swap address/blinding key/amount cap before funding. Maps provider statuses → `pending`/`processing`/`completed`/`failed`/`refunded`. | `LightningManager`, `LightningSwap` |
 | `lightning_providers.py` | Registry of send-swap backends and the config/env resolution between them. | `SwapProvider`, `PROVIDERS`, `resolve_send_provider` |
 | `boltz.py` | Boltz v2 protocol client, parameterised by base URL + provider label. Submarine swap construction, keypair gen. | `BoltzClient`, `generate_keypair` |
 | `indra.py` | AQUA's Boltz-compatible swap service (default provider, mainnet only). | `IndraClient`, `INDRA_API` |
