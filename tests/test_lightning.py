@@ -13,6 +13,7 @@ from coincurve import PrivateKey
 from aqua.boltz_refund import build_swap_tree
 from aqua.bolt11 import decode_bolt11_payment_hash
 from aqua.lightning import (
+    MAX_SWAP_TIMEOUT_DELTA_BLOCKS,
     LightningSwap,
     LightningManager,
 )
@@ -127,6 +128,15 @@ def isolated_managers():
         tools_module._manager = None
         tools_module._btc_manager = None
         tools_module._lightning_manager = None
+
+
+@pytest.fixture(autouse=True)
+def chain_tip():
+    """Liquid tip inside the honest swap's timeout window."""
+    with patch(
+        "aqua.wallet.WalletManager.get_block_height", return_value=TIMEOUT_HEIGHT - 1_000
+    ) as m:
+        yield m
 
 
 @pytest.fixture
@@ -1478,6 +1488,57 @@ class TestSendSwapVerification:
         with pytest.raises(ValueError, match="cannot bound expectedAmount"):
             self._pay(test_wallet, MOCK_BOLTZ_SWAP_RESPONSE, pairs)
         self.send.assert_not_called()
+
+
+    @pytest.mark.parametrize(
+        "timeout",
+        [
+            TIMEOUT_HEIGHT - 1_000 + MAX_SWAP_TIMEOUT_DELTA_BLOCKS + 1,
+            TIMEOUT_HEIGHT - 1_000,
+            TIMEOUT_HEIGHT - 1_001,
+            500_000_000,
+            2**32,
+        ],
+    )
+    def test_timeout_outside_window_is_refused(self, test_wallet, timeout):
+        with pytest.raises(ValueError, match="outside the accepted window"):
+            self._pay(test_wallet, {**MOCK_BOLTZ_SWAP_RESPONSE, "timeoutBlockHeight": timeout})
+        self.send.assert_not_called()
+
+    def test_timeout_at_window_edge_passes(self, test_wallet, chain_tip):
+        chain_tip.return_value = TIMEOUT_HEIGHT - MAX_SWAP_TIMEOUT_DELTA_BLOCKS
+        self._pay(test_wallet, MOCK_BOLTZ_SWAP_RESPONSE)
+        self.send.assert_called_once()
+
+    def test_tip_fetch_failure_is_refused(self, test_wallet, chain_tip):
+        chain_tip.side_effect = RuntimeError("esplora down")
+        with pytest.raises(ValueError, match="Cannot fetch the Liquid chain tip"):
+            self._pay(test_wallet, MOCK_BOLTZ_SWAP_RESPONSE)
+        self.send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "fees,match",
+        [
+            ({"percentage": 0.51, "minerFees": 19}, "0.5% ceiling"),
+            ({"percentage": 0.1, "minerFees": 1_001}, "1000 sats ceiling"),
+        ],
+    )
+    def test_fees_above_fixed_ceiling_are_refused(self, test_wallet, fees, match):
+        base = MOCK_BOLTZ_SUBMARINE_PAIRS["L-BTC"]["BTC"]
+        pairs = {"L-BTC": {"BTC": {**base, "fees": fees}}}
+        resp = {**MOCK_BOLTZ_SWAP_RESPONSE, "expectedAmount": 50_000}
+        with pytest.raises(ValueError, match=match):
+            self._pay(test_wallet, resp, pairs)
+        self.send.assert_not_called()
+
+    def test_fees_exactly_at_ceilings_pass(self, test_wallet):
+        base = MOCK_BOLTZ_SUBMARINE_PAIRS["L-BTC"]["BTC"]
+        fees = {"percentage": 0.5, "minerFees": 1_000}
+        pairs = {"L-BTC": {"BTC": {**base, "fees": fees}}}
+        # cap = 50000 + ceil(50000 * 0.5 / 100) + 1000
+        resp = {**MOCK_BOLTZ_SWAP_RESPONSE, "expectedAmount": 51_250}
+        self._pay(test_wallet, resp, pairs)
+        self.send.assert_called_once()
 
 
 class TestSwapStatusMapping:

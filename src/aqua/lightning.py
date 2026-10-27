@@ -52,6 +52,13 @@ _CLAIM_DETAIL_STATUSES = frozenset(
 ANKARA_MIN_SATS = 100
 ANKARA_MAX_SATS = 25_000_000
 
+# Provider-independent ceilings on a send swap, so a hostile provider cannot
+# inflate both its quote and the amount we fund (current quotes: 0.1%, ~20 sats).
+MAX_SWAP_FEE_PERCENTAGE = Decimal("0.5")
+MAX_SWAP_MINER_FEES_SATS = 1_000
+# Latest accepted refund timeout past the tip: ~14 days of 1-minute Liquid blocks.
+MAX_SWAP_TIMEOUT_DELTA_BLOCKS = 20_160
+
 
 @dataclass
 class LightningSwap:
@@ -111,8 +118,9 @@ def _verify_send_swap(
     refund_pubkey: str,
     swap_resp: dict,
     network: str,
+    chain_tip: int,
 ) -> None:
-    """Refuse a send swap whose lockup address, blinding key or amount is not ours.
+    """Refuse a send swap whose lockup address, blinding key, timeout or amount is not ours.
 
     The address must be the taproot output of the swap tree rebuilt from the
     invoice hash, the provider's claim key and OUR refund key, so a provider
@@ -124,6 +132,11 @@ def _verify_send_swap(
         timeout = swap_resp["timeoutBlockHeight"]
         if isinstance(timeout, bool) or not isinstance(timeout, int):
             raise TypeError("timeoutBlockHeight is not an integer")
+        if not chain_tip < timeout <= chain_tip + MAX_SWAP_TIMEOUT_DELTA_BLOCKS:
+            raise ValueError(
+                f"timeoutBlockHeight {timeout} is outside the accepted window "
+                f"({chain_tip} < timeout <= {chain_tip + MAX_SWAP_TIMEOUT_DELTA_BLOCKS})"
+            )
         tree = build_swap_tree(
             bytes.fromhex(decode_bolt11_payment_hash(invoice)),
             bytes.fromhex(swap_resp["claimPublicKey"]),
@@ -155,6 +168,14 @@ def _verify_send_swap(
             raise TypeError("minerFees is not an integer")
         if percentage < 0 or miner_fees < 0:
             raise ValueError("negative fee")
+        if percentage > MAX_SWAP_FEE_PERCENTAGE:
+            raise ValueError(
+                f"fee percentage {percentage} exceeds the {MAX_SWAP_FEE_PERCENTAGE}% ceiling"
+            )
+        if miner_fees > MAX_SWAP_MINER_FEES_SATS:
+            raise ValueError(
+                f"minerFees {miner_fees} exceeds the {MAX_SWAP_MINER_FEES_SATS} sats ceiling"
+            )
     except (KeyError, TypeError, ValueError, ArithmeticError) as e:
         raise ValueError(
             f"{refusal}cannot bound expectedAmount, the pair fees are unusable ({e})"
@@ -402,8 +423,22 @@ class LightningManager:
                 "refusing to fund a lockup this wallet could not refund."
             )
         # The provider is untrusted: check the lockup before any funds move.
+        try:
+            chain_tip = self.wallet_manager.get_block_height(network)
+        except Exception as e:
+            raise ValueError(
+                f"Cannot fetch the Liquid chain tip to bound swap {swap_resp.get('id')}'s "
+                f"timeout, so it was not funded: {e}"
+            ) from e
         _verify_send_swap(
-            provider.label, invoice, invoice_amount, pair, refund_pubkey, swap_resp, network
+            provider.label,
+            invoice,
+            invoice_amount,
+            pair,
+            refund_pubkey,
+            swap_resp,
+            network,
+            chain_tip,
         )
         expected_amount = swap_resp["expectedAmount"]
         logger.debug(
