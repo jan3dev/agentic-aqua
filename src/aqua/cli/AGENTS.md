@@ -29,9 +29,13 @@ rendered to terminal/JSON instead of MCP responses.
 `password.resolve_secret(label, use_stdin, env_var, required)` — order of precedence:
 
 1. `--password-stdin` flag set ⇒ `read_secret()` (piped stdin or TTY prompt).
-2. `env_var` set in the environment and non-empty (whitespace stripped).
-3. `required=True` ⇒ interactive `click.prompt(hide_input=True)`.
-4. Else `None`.
+2. `--password-file PATH` (shared `password.password_file_option`, add it to every command
+   with `--password-stdin` and pass `password_file=` to `resolve_secret`) ⇒
+   `storage.read_password_file()`. Combined with `--password-stdin` ⇒ `click.UsageError`.
+   Wallet password only: mnemonic resolution never takes a file.
+3. `env_var` set in the environment and non-empty (whitespace stripped).
+4. `required=True` ⇒ interactive `click.prompt(hide_input=True)`.
+5. Else `None`.
 
 Standard env vars: `AQUA_PASSWORD` for wallet at-rest, `AQUA_MNEMONIC` /
 `SIGNER_MNEMONIC` for imports in tests/CI.

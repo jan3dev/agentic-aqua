@@ -31,7 +31,7 @@ from ..tools import (
     jan3_verify,
 )
 from .output import run_tool
-from .password import handle_password_retry, read_secret, resolve_secret
+from .password import handle_password_retry, password_file_option, read_secret, resolve_secret
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +89,16 @@ def verify(ctx, email, otp_code, otp_stdin, fingerprint):
 @click.option(
     "--password-stdin", "password_stdin", is_flag=True, default=False, help=_PASSWORD_HELP
 )
+@password_file_option
 @click.pass_obj
-def login_start(ctx, email, wallet_name, language, password_stdin):
+def login_start(ctx, email, wallet_name, language, password_stdin, password_file):
     """Pay the captchaless-login fee and trigger the OTP email."""
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,
@@ -254,8 +259,11 @@ def ln_check_username(ctx, email, ln_username):
 @click.option(
     "--password-stdin", "password_stdin", is_flag=True, default=False, help=_PASSWORD_HELP
 )
+@password_file_option
 @click.pass_obj
-def purchase_ln_username(ctx, email, ln_username, wallet_name, asset, assume_yes, password_stdin):
+def purchase_ln_username(
+    ctx, email, ln_username, wallet_name, asset, assume_yes, password_stdin, password_file
+):
     """Buy / update the Lightning username with an on-chain payment (L-BTC or USDt).
 
     Quotes the price and asks for confirmation; the payment then funds that
@@ -286,7 +294,11 @@ def purchase_ln_username(ctx, email, ln_username, wallet_name, asset, assume_yes
 
     # 2) Confirmed — resolve the password and fund the purchase.
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,

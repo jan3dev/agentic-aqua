@@ -10,7 +10,7 @@ from ..tools import (
     lightning_transaction_status,
 )
 from .output import run_tool
-from .password import handle_password_retry, resolve_secret
+from .password import handle_password_retry, password_file_option, resolve_secret
 
 
 @click.group()
@@ -35,14 +35,19 @@ def lightning():
         "then to no password."
     ),
 )
+@password_file_option
 @click.pass_obj
-def receive(ctx, amount, wallet_name, password_stdin):
+def receive(ctx, amount, wallet_name, password_stdin, password_file):
     """Generate a Lightning invoice to receive L-BTC into a Liquid wallet.
 
     Disabled by default; set `"lightning_receive": true` in ~/.aqua/config.json.
     """
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,
@@ -81,8 +86,9 @@ def receive(ctx, amount, wallet_name, password_stdin):
         "then to no password."
     ),
 )
+@password_file_option
 @click.pass_obj
-def send(ctx, invoice, ln_address, amount_sats, wallet_name, password_stdin):
+def send(ctx, invoice, ln_address, amount_sats, wallet_name, password_stdin, password_file):
     """Pay a Lightning invoice or Lightning Address using L-BTC.
 
     Provider from `lightning_provider` (default "indra"); see docs/CONFIG.md.
@@ -96,7 +102,11 @@ def send(ctx, invoice, ln_address, amount_sats, wallet_name, password_stdin):
     payment_target = ln_address or invoice
 
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,

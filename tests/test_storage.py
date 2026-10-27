@@ -20,6 +20,7 @@ from aqua.storage import (
     _DEFAULT_MNEMONIC_PASSWORD,
     _DEFAULT_PWD_VERSION,
     _validate_wallet_name,
+    read_password_file,
 )
 from tests.conftest import TEST_MNEMONIC
 
@@ -833,3 +834,28 @@ class TestWapuPayApiKeyStorage:
         temp_storage.save_wapupay_api_key(self._make_key())
         mode = stat.S_IMODE(os.stat(temp_storage.wapupay_api_key_path).st_mode)
         assert mode == 0o600, f"Expected 0600, got {oct(mode)}"
+
+
+class TestReadPasswordFile:
+    def test_strips_only_trailing_newlines(self, tmp_path):
+        f = tmp_path / "pw"
+        f.write_text("my pass phrase \r\n\n")
+        assert read_password_file(f) == "my pass phrase "
+
+    def test_missing_file_raises_with_path(self, tmp_path):
+        with pytest.raises(ValueError, match="pw-missing"):
+            read_password_file(tmp_path / "pw-missing")
+
+    def test_empty_file_raises_without_contents(self, tmp_path):
+        f = tmp_path / "pw"
+        f.write_text("\n")
+        with pytest.raises(ValueError, match="empty") as exc:
+            read_password_file(f)
+        assert str(f) in str(exc.value)
+
+    def test_unreadable_content_not_leaked(self, tmp_path):
+        f = tmp_path / "pw"
+        f.write_bytes(b"s3cret\xff")  # invalid UTF-8
+        with pytest.raises(ValueError) as exc:
+            read_password_file(f)
+        assert "s3cret" not in str(exc.value)

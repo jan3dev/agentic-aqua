@@ -23,7 +23,7 @@ from ..tools import (
     sideswap_swap_status,
 )
 from .output import run_tool
-from .password import handle_password_retry, resolve_secret
+from .password import handle_password_retry, password_file_option, resolve_secret
 
 
 _NETWORK_OPTION = click.Choice(["mainnet", "testnet"])
@@ -114,8 +114,9 @@ def peg_quote(ctx, amount, peg_out, network):
     "--password-stdin", "password_stdin", is_flag=True, default=False,
     help=_PASSWORD_HELP,
 )
+@password_file_option
 @click.pass_obj
-def peg_in(ctx, wallet_name, password_stdin):
+def peg_in(ctx, wallet_name, password_stdin, password_file):
     """Initiate a peg-in (BTC → L-BTC). Prints the BTC deposit address.
 
     After this command, send BTC to the printed `peg_addr` from any Bitcoin
@@ -128,7 +129,11 @@ def peg_in(ctx, wallet_name, password_stdin):
     to see which path applies.
     """
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,
@@ -156,8 +161,9 @@ def peg_in(ctx, wallet_name, password_stdin):
     "--password-stdin", "password_stdin", is_flag=True, default=False,
     help=_PASSWORD_HELP,
 )
+@password_file_option
 @click.pass_obj
-def peg_out(ctx, amount, btc_address, wallet_name, password_stdin):
+def peg_out(ctx, amount, btc_address, wallet_name, password_stdin, password_file):
     """Initiate a peg-out (L-BTC → BTC) and broadcast the L-BTC send.
 
     After 2 Liquid confirmations (~2 min) and the federation BTC sweep
@@ -165,7 +171,11 @@ def peg_out(ctx, amount, btc_address, wallet_name, password_stdin):
     Track progress with `aqua sideswap peg-status --order-id <id>`.
     """
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,
@@ -287,9 +297,10 @@ def quote(ctx, asset_id, asset_ticker, send_amount, recv_amount, reverse, networ
     help="Accept dealer-rounded send_amount adjustments up to ±3000 sats. "
          "Required for small swaps (<25k sats) since SideSwap's dealer rounds amounts.",
 )
+@password_file_option
 @click.pass_obj
 def swap(ctx, asset_id, asset_ticker, amount, reverse, wallet_name, skip_confirm, password_stdin,
-         flexible):
+         password_file, flexible):
     """Execute an atomic Liquid asset swap on SideSwap.
 
     Both directions are supported via --reverse. The PSET returned by SideSwap
@@ -360,7 +371,11 @@ def swap(ctx, asset_id, asset_ticker, amount, reverse, wallet_name, skip_confirm
         min_recv_amount = recv
 
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,

@@ -101,3 +101,80 @@ def test_lightning_send_schema_includes_amount_sats():
     assert "Lightning Address" in props["invoice"]["description"]
     # amount_sats must remain optional (only invoice is required)
     assert schema["inputSchema"]["required"] == ["invoice"]
+
+
+_SEND = {"wallet_name": "default", "address": "bc1q", "amount": 1000}
+
+
+def _call_tool(name: str, arguments: dict) -> dict:
+    """Invoke the registered call_tool handler and return the decoded JSON payload."""
+    import json
+
+    from mcp.types import CallToolRequest, CallToolRequestParams
+
+    handler = create_server().request_handlers[CallToolRequest]
+    req = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name=name, arguments=arguments),
+    )
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(handler(req))
+    finally:
+        loop.close()
+    return json.loads(result.root.content[0].text)
+
+
+def test_every_password_schema_also_has_password_file():
+    from aqua.server import TOOL_SCHEMAS
+
+    with_password = [
+        n for n, s in TOOL_SCHEMAS.items() if "password" in s["inputSchema"].get("properties", {})
+    ]
+    assert with_password
+    for name in with_password:
+        assert "password_file" in TOOL_SCHEMAS[name]["inputSchema"]["properties"], name
+
+
+def test_call_tool_password_file_passes_password(tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    from aqua.server import TOOLS
+
+    pw = tmp_path / "pw"
+    pw.write_text("file-pass\n")
+    fake = MagicMock(return_value={"ok": True})
+    with patch.dict(TOOLS, {"btc_send": fake}):
+        out = _call_tool("btc_send", {**_SEND, "password_file": str(pw)})
+    assert out == {"ok": True}
+    assert fake.call_args.kwargs == {**_SEND, "password": "file-pass"}
+
+
+def test_call_tool_password_and_password_file_conflict(tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    from aqua.server import TOOLS
+
+    pw = tmp_path / "pw"
+    pw.write_text("file-pass\n")
+    fake = MagicMock()
+    with patch.dict(TOOLS, {"btc_send": fake}):
+        out = _call_tool(
+            "btc_send", {**_SEND, "password": "inline-secret", "password_file": str(pw)}
+        )
+    assert "error" in out
+    assert "inline-secret" not in str(out) and "file-pass" not in str(out)
+    fake.assert_not_called()
+
+
+def test_call_tool_missing_password_file_returns_error_envelope(tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    from aqua.server import TOOLS
+
+    fake = MagicMock()
+    with patch.dict(TOOLS, {"btc_send": fake}):
+        out = _call_tool("btc_send", {**_SEND, "password_file": str(tmp_path / "nope")})
+    assert out["error"]["code"] == "ValueError"
+    assert "nope" in out["error"]["message"]
+    fake.assert_not_called()

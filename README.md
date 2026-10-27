@@ -347,6 +347,8 @@ The CLI honors these variables out of the box:
 | `INDRA_API_URL` | Base URL of the Indra swap service (default `https://indra.aquabtc.com`) |
 | `AQUA_<OPTION>` | Any CLI option (Click `auto_envvar_prefix="AQUA"`) — e.g. `AQUA_WALLET_NAME=default` |
 
+For cron/automation without stdin or env vars, every command with `--password-stdin` also accepts `--password-file PATH` (a file holding the wallet password; cannot be combined with `--password-stdin`), e.g. `aqua btc send --wallet-name default --address bc1... --amount 10000 --password-file ~/.aqua-pass`. Keep that file at `chmod 600`.
+
 If you would rather pipe secrets from a password manager, every secret-bearing command also accepts `--mnemonic-stdin` / `--password-stdin`:
 
 ```bash
@@ -401,7 +403,7 @@ Default config location: `~/.aqua/config.json`
 
 ## Security
 
-Seeds are encrypted at rest using a password (PBKDF2 + Fernet). Without a password, the seed is stored base64-encoded only — use a password for real funds. **Note:** this password is NOT a BIP39 passphrase; the derived Liquid/Bitcoin keys depend solely on the seed, so the same seed restores identical descriptors in any BIP39-compliant wallet (AQUA, Blockstream App, Jade, etc.).
+Seeds are encrypted at rest using a password (PBKDF2 + Fernet). Without a password, the seed is still Fernet-encrypted, but with a built-in default key that ships with the source code: this only hides it from plaintext scanners, and anyone who gets the wallet file can decrypt it. Use a password for real funds. MCP tools that take a wallet `password` also accept `password_file` (a local path to a file holding it) so the password never enters the conversation. **Note:** this password is NOT a BIP39 passphrase; the derived Liquid/Bitcoin keys depend solely on the seed, so the same seed restores identical descriptors in any BIP39-compliant wallet (AQUA, Blockstream App, Jade, etc.).
 
 For maximum security you can:
 1. Generate wallet on an air-gapped device
