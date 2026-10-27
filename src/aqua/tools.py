@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import re
+import secrets
+import time
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
@@ -950,22 +952,31 @@ def lw_list_assets(network: str = "mainnet") -> dict[str, Any]:
     }
 
 
-def delete_wallet(wallet_name: str, confirm: bool = False) -> dict[str, Any]:
+# ponytail: tokens live in memory only; a server restart means previewing again.
+_DELETE_TOKEN_TTL_SECONDS = 300
+_delete_tokens: dict[str, tuple[str, float]] = {}
+
+
+def delete_wallet(
+    wallet_name: str, confirm: bool = False, confirm_token: str | None = None
+) -> dict[str, Any]:
     """Permanently delete a wallet, its seed and all its cached data (two-step).
 
     Irreversible: this removes the only local copy of the seed. Without
-    ``confirm`` nothing is deleted and a preview with the current balances is
-    returned; show it to the user, get explicit confirmation, then call again
-    with ``confirm=True``.
+    ``confirm`` nothing is deleted and a preview with the current balances and a
+    single-use ``confirm_token`` is returned; show it to the user, get explicit
+    confirmation, then call again with ``confirm=True`` and that token.
 
     Args:
         wallet_name: Name of the wallet to delete.
         confirm: Must be True to actually delete. Default False (preview only).
+        confirm_token: Token returned by the preview (required with confirm=True).
 
     Returns:
         Preview (confirm=False): deleted=False, confirm_required=True, wallet_name,
             balance (unified_balance result) or balance_error, has_seed,
-            backup_file_exists, warning.
+            backup_file_exists, confirm_token, confirm_token_expires_in_seconds,
+            warning.
         Deleted (confirm=True): deleted=True, wallet_name, sideswap_pegs_removed,
             backup_file_removed.
     """
@@ -975,26 +986,51 @@ def delete_wallet(wallet_name: str, confirm: bool = False) -> dict[str, Any]:
         raise ValueError(f"Wallet '{wallet_name}' not found")
 
     backup = manager.storage.backup_path(wallet_name)
-    if not confirm:
-        preview: dict[str, Any] = {
-            "deleted": False,
-            "confirm_required": True,
-            "wallet_name": wallet_name,
-            "has_seed": bool(wallet_data.encrypted_mnemonic) and not wallet_data.watch_only,
-            "backup_file_exists": backup.exists(),
-        }
-        try:
-            preview["balance"] = unified_balance(wallet_name)
-        except Exception as e:
-            preview["balance"] = None
-            preview["balance_error"] = f"Balance unknown, could not be fetched: {e}"
-        preview["warning"] = (
-            "Deleting this wallet permanently removes its seed from this computer. "
-            "If you have not backed up the seed, the funds in this wallet will be "
-            "lost forever. Show these balances to the user, ask for explicit "
-            "confirmation, then call delete_wallet again with confirm=true."
-        )
-        return preview
+    if confirm:
+        stored = _delete_tokens.pop(wallet_name, None)  # any attempt consumes it
+        if (
+            stored is None
+            or time.monotonic() > stored[1]
+            or not confirm_token
+            or not secrets.compare_digest(stored[0], confirm_token)
+        ):
+            raise ValueError(
+                "delete_wallet needs a fresh preview first: call it without confirm to "
+                "get the balances and a confirm_token, show them to the user, then call "
+                "with confirm=true and that confirm_token. Nothing was deleted."
+            )
+        return _delete_wallet_now(wallet_name)
+    preview: dict[str, Any] = {
+        "deleted": False,
+        "confirm_required": True,
+        "wallet_name": wallet_name,
+        "has_seed": bool(wallet_data.encrypted_mnemonic) and not wallet_data.watch_only,
+        "backup_file_exists": backup.exists(),
+    }
+    token = secrets.token_urlsafe(16)
+    _delete_tokens[wallet_name] = (token, time.monotonic() + _DELETE_TOKEN_TTL_SECONDS)
+    preview["confirm_token"] = token
+    preview["confirm_token_expires_in_seconds"] = _DELETE_TOKEN_TTL_SECONDS
+    try:
+        preview["balance"] = unified_balance(wallet_name)
+    except Exception as e:
+        preview["balance"] = None
+        preview["balance_error"] = f"Balance unknown, could not be fetched: {e}"
+    preview["warning"] = (
+        "Deleting this wallet permanently removes its seed from this computer. "
+        "If you have not backed up the seed, the funds in this wallet will be "
+        "lost forever. Show these balances to the user, ask for explicit "
+        "confirmation, then call delete_wallet again with confirm=true and the confirm_token."
+    )
+    return preview
+
+
+def _delete_wallet_now(wallet_name: str) -> dict[str, Any]:
+    """Delete the wallet unconditionally (callers own the confirmation)."""
+    manager = get_manager()
+    if manager.storage.load_wallet(wallet_name) is None:
+        raise ValueError(f"Wallet '{wallet_name}' not found")
+    backup = manager.storage.backup_path(wallet_name)
 
     # Clear Liquid (LWK) manager caches
     manager._signers.pop(wallet_name, None)

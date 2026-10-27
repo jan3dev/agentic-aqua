@@ -330,9 +330,10 @@ TOOL_SCHEMAS = {
     "delete_wallet": {
         "description": (
             "Permanently delete a wallet, its seed and all its cached data (irreversible). "
-            "Two-step: call WITHOUT confirm first to get a preview (balances, warning) and "
-            "delete nothing; show it to the user, ask for explicit confirmation, then call "
-            "again with confirm=true. Use the 'delete_wallet' prompt for the safe workflow."
+            "Two-step: call WITHOUT confirm first to get a preview (balances, warning, "
+            "confirm_token) and delete nothing; show it to the user, ask for explicit "
+            "confirmation, then call again with confirm=true and that confirm_token. "
+            "Use the 'delete_wallet' prompt for the safe workflow."
         ),
         "inputSchema": {
             "type": "object",
@@ -349,6 +350,10 @@ TOOL_SCHEMAS = {
                         "Only set true after the user explicitly confirmed."
                     ),
                     "default": False,
+                },
+                "confirm_token": {
+                    "type": "string",
+                    "description": "Single-use token from the preview; required with confirm=true.",
                 },
             },
             "required": ["wallet_name"],
@@ -1933,7 +1938,8 @@ WATCH-ONLY WALLETS:
 WALLET DELETION:
 - ALWAYS use the delete_wallet prompt workflow (preview, balances, seed backup reminder, confirm)
 - delete_wallet is two-step: call it WITHOUT confirm first (deletes nothing, returns balances +
-  warning), show them to the user, get explicit confirmation, then call again with confirm=true
+  warning + a single-use confirm_token), show them to the user, get explicit confirmation, then
+  call again with confirm=true and that confirm_token
 - NEVER set confirm=true before the user has explicitly confirmed; deletion is irreversible
 - Remind user to backup their seed before deletion""",
     )
@@ -2413,14 +2419,15 @@ Use lw_export_descriptor and explain:
 Please follow this safety workflow:
 1. Check if the wallet exists with lw_list_wallets
 2. Call delete_wallet with wallet_name='{wallet_name}' WITHOUT confirm. It deletes nothing and
-   returns the balances on BOTH networks, whether a seed backup file exists, and a warning
+   returns the balances on BOTH networks, whether a seed backup file exists, a warning and a
+   single-use confirm_token
    (if balance_error is set, the balance is unknown: say so)
 3. If there are any funds (BTC or L-BTC > 0):
    - WARN me clearly about the remaining funds
    - Show me exactly how much is in each network
 4. REMIND me: "Make sure you have backed up your seed phrase (mnemonic) before proceeding. Without it, you will permanently lose access to any funds associated with this wallet. The at-rest encryption password, if any, protects only this local file — the seed alone is enough to restore funds elsewhere."
 5. Ask me for EXPLICIT confirmation: "Are you sure you want to delete wallet '{wallet_name}'? This cannot be undone."
-6. Only after I explicitly confirm, call delete_wallet again with wallet_name='{wallet_name}' and confirm=true
+6. Only after I explicitly confirm, call delete_wallet again with wallet_name='{wallet_name}' and confirm=true plus the confirm_token from step 2
 7. Confirm deletion was successful""",
                         ),
                     )

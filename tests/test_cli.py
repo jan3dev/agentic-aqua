@@ -433,6 +433,7 @@ class TestWalletCommands:
         assert result.exit_code == 1
         assert "balance" in result.output
         assert "--confirm" in result.output
+        assert "confirm_token" not in result.output
         assert get_manager().storage.wallet_exists("default")
 
     def test_delete_nonexistent_wallet(self, runner):
