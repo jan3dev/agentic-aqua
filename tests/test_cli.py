@@ -240,6 +240,31 @@ class TestWalletCommands:
         assert "mnemonic" in data
         assert data["words"] == 12
 
+    def test_create_wallet_hides_seed(self, runner, isolated_manager):
+        manager, _ = isolated_manager
+        result = runner.invoke(
+            cli, ["--format", "json", "wallet", "create", "--wallet-name", "fresh"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["wallet_name"] == "fresh"
+        assert "mnemonic" not in data
+        assert "backup_recommendation" in data
+        assert manager.storage.wallet_exists("fresh")
+
+    def test_backup_mnemonic_writes_file(self, runner, isolated_manager):
+        manager, _ = isolated_manager
+        runner.invoke(
+            cli,
+            ["--format", "json", "wallet", "import-mnemonic", "--mnemonic-stdin"],
+            input=TEST_MNEMONIC + "\n",
+        )
+        result = runner.invoke(cli, ["--format", "json", "wallet", "backup-mnemonic"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert TEST_MNEMONIC not in result.output
+        assert Path(data["backup_path"]).read_text() == TEST_MNEMONIC + "\n"
+
     def test_import_mnemonic(self, runner):
         result = runner.invoke(
             cli,

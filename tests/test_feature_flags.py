@@ -263,3 +263,10 @@ def test_enabled_tools_non_dict_value_resets_to_empty(caplog):
         config = Config.from_dict({"enabled_tools": ["lw_send"]})
     assert config.enabled_tools == {}
     assert any("must be an object" in r.message for r in caplog.records)
+
+
+def test_removed_generate_mnemonic_in_user_config_does_not_crash(temp_storage):
+    """A config still listing the removed `lw_generate_mnemonic` loads (warning only)."""
+    temp_storage.config_path.write_text('{"enabled_tools": {"lw_generate_mnemonic": true}}')
+    config = load_config_with_merge(temp_storage)
+    assert "lw_create_wallet" in config.enabled_tools

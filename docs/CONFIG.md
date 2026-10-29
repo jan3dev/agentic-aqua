@@ -139,7 +139,9 @@ All tool names accepted in `enabled_tools`:
 | MCP tool name | CLI equivalent | Notes |
 |---|---|---|
 | `unified_balance` | `aqua balance` | |
-| `lw_generate_mnemonic` | `aqua wallet generate-mnemonic` | |
+| `lw_create_wallet` | `aqua wallet create` | |
+| `lw_backup_mnemonic` | `aqua wallet backup-mnemonic` | |
+| (CLI only) | `aqua wallet generate-mnemonic` | No MCP twin: the seed must never reach an LLM |
 | `lw_import_mnemonic` | `aqua wallet import-mnemonic` | |
 | `lw_list_wallets` | `aqua wallet list` | |
 | `delete_wallet` | `aqua wallet delete` | |

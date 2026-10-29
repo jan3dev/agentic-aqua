@@ -26,10 +26,11 @@ from aqua.tools import (
     get_btc_manager,
     get_manager,
     lw_address,
+    lw_backup_mnemonic,
     lw_balance,
+    lw_create_wallet,
     lw_sweep,
     lw_export_descriptor,
-    lw_generate_mnemonic,
     lw_import_descriptor,
     lw_import_mnemonic,
     lw_list_wallets,
@@ -63,31 +64,121 @@ def isolated_manager():
 
 
 # ---------------------------------------------------------------------------
-# lw_generate_mnemonic  # Significance: 5 (Essential)
+# lw_create_wallet / lw_backup_mnemonic: the seed never leaves the process
 # ---------------------------------------------------------------------------
 
 
-class TestGenerateMnemonic:
-    def test_generates_12_word_mnemonic(self):
-        """Default generation returns a 12-word mnemonic."""
-        result = lw_generate_mnemonic()
+@pytest.fixture
+def known_seed():
+    """Make seed generation deterministic so leaks can be detected."""
+    with patch.object(WalletManager, "generate_mnemonic", return_value=TEST_MNEMONIC):
+        yield TEST_MNEMONIC
 
-        assert "mnemonic" in result
-        assert result["words"] == 12
-        words = result["mnemonic"].split()
-        assert len(words) == 12
 
-    def test_response_contains_warning(self):
-        """Result includes a security warning about the mnemonic."""
-        result = lw_generate_mnemonic()
-        assert "warning" in result
-        assert "securely" in result["warning"].lower()
+class TestCreateWallet:
+    def test_generate_mnemonic_not_an_mcp_tool(self):
+        from aqua.server import TOOL_SCHEMAS
+        from aqua.tools import TOOLS
 
-    def test_generates_unique_mnemonics(self):
-        """Two consecutive generations produce different mnemonics."""
-        r1 = lw_generate_mnemonic()
-        r2 = lw_generate_mnemonic()
-        assert r1["mnemonic"] != r2["mnemonic"]
+        assert "lw_generate_mnemonic" not in TOOLS
+        assert "lw_generate_mnemonic" not in TOOL_SCHEMAS
+        assert "lw_create_wallet" in TOOLS and "lw_create_wallet" in TOOL_SCHEMAS
+        assert "lw_backup_mnemonic" in TOOLS and "lw_backup_mnemonic" in TOOL_SCHEMAS
+
+    def test_creates_wallet_without_returning_seed(self, isolated_manager, known_seed):
+        result = lw_create_wallet(wallet_name="fresh")
+
+        assert "mnemonic" not in result
+        dumped = json.dumps(result)
+        assert not any(w in dumped for w in set(known_seed.split()) - {"tuna"})
+        assert known_seed not in dumped
+        assert result["wallet_name"] == "fresh"
+        assert result["watch_only"] is False
+        assert result["btc_descriptor"]
+        assert "backup" in result["backup_recommendation"].lower()
+        assert "lw_backup_mnemonic" in result["backup_recommendation"]
+        assert isolated_manager.storage.wallet_exists("fresh")
+
+    def test_writes_no_backup_file(self, isolated_manager, known_seed):
+        lw_create_wallet(wallet_name="fresh")
+        assert not (isolated_manager.storage.base_dir / "backups").exists()
+
+    def test_password_encrypts_at_rest(self, isolated_manager, known_seed):
+        lw_create_wallet(wallet_name="enc", password="pw")
+        stored = isolated_manager.storage.load_wallet("enc").encrypted_mnemonic
+        assert stored.startswith("user:")
+
+    def test_duplicate_name_rejected(self, known_seed):
+        lw_create_wallet(wallet_name="dup")
+        with pytest.raises(ValueError, match="already exists"):
+            lw_create_wallet(wallet_name="dup")
+
+    @pytest.mark.asyncio
+    async def test_mcp_dispatch_does_not_leak_seed(self, known_seed):
+        import mcp.types as types
+        from mcp.server import Server
+
+        from aqua.server import _make_handlers
+        from aqua.storage import Config
+
+        server = Server("test")
+        _make_handlers(server, Config())
+        handler = server.request_handlers[types.CallToolRequest]
+        res = await handler(
+            types.CallToolRequest(
+                method="tools/call",
+                params=types.CallToolRequestParams(
+                    name="lw_create_wallet", arguments={"wallet_name": "mcp"}
+                ),
+            )
+        )
+        text = res.root.content[0].text
+        assert "wallet_name" in text and "mcp" in text
+        assert known_seed not in text and "twelve" not in text
+
+
+class TestBackupMnemonic:
+    def test_writes_private_file_without_returning_seed(self, isolated_manager, known_seed):
+        lw_create_wallet(wallet_name="bk")
+        result = lw_backup_mnemonic(wallet_name="bk")
+
+        path = Path(result["backup_path"])
+        assert path == isolated_manager.storage.base_dir / "backups" / "bk-mnemonic.txt"
+        assert path.read_text() == known_seed + "\n"
+        assert "twelve" not in json.dumps(result)
+        assert "plain text" in result["warning"]
+        assert result["wallet_name"] == "bk"
+        assert (path.stat().st_mode & 0o777) == 0o600
+        assert (path.parent.stat().st_mode & 0o777) == 0o700
+        assert not list(path.parent.glob("*.tmp"))
+
+    def test_overwrites_existing_backup(self, isolated_manager, known_seed):
+        lw_create_wallet(wallet_name="bk")
+        first = lw_backup_mnemonic(wallet_name="bk")
+        Path(first["backup_path"]).write_text("stale")
+        second = lw_backup_mnemonic(wallet_name="bk")
+        assert Path(second["backup_path"]).read_text() == known_seed + "\n"
+
+    def test_encrypted_wallet_requires_password(self, known_seed):
+        lw_create_wallet(wallet_name="enc", password="pw")
+        with pytest.raises(ValueError, match="(?i)password required"):
+            lw_backup_mnemonic(wallet_name="enc")
+        result = lw_backup_mnemonic(wallet_name="enc", password="pw")
+        assert Path(result["backup_path"]).read_text() == known_seed + "\n"
+
+    def test_watch_only_wallet_raises(self, isolated_manager):
+        descriptor = isolated_manager.import_mnemonic(TEST_MNEMONIC, "src").descriptor
+        lw_import_descriptor(descriptor=descriptor, wallet_name="wo")
+        with pytest.raises(ValueError, match="watch-only"):
+            lw_backup_mnemonic(wallet_name="wo")
+
+    def test_missing_wallet_raises(self):
+        with pytest.raises(ValueError, match="not found"):
+            lw_backup_mnemonic(wallet_name="nope")
+
+    def test_rejects_path_traversal_name(self):
+        with pytest.raises(ValueError):
+            lw_backup_mnemonic(wallet_name="../evil")
 
 
 # ---------------------------------------------------------------------------
@@ -1171,7 +1262,8 @@ class TestToolRegistry:
         from aqua.tools import TOOLS
 
         expected = {
-            "lw_generate_mnemonic",
+            "lw_create_wallet",
+            "lw_backup_mnemonic",
             "lw_import_mnemonic",
             "lw_import_descriptor",
             "lw_export_descriptor",

@@ -8,8 +8,10 @@ from ..tools import (
     delete_wallet as _delete_wallet,
 )
 from ..tools import (
+    get_manager,
+    lw_backup_mnemonic,
     lw_balance,
-    lw_generate_mnemonic,
+    lw_create_wallet,
     lw_import_mnemonic,
     lw_list_wallets,
 )
@@ -25,8 +27,76 @@ def wallet():
 @wallet.command("generate-mnemonic")
 @click.pass_obj
 def generate_mnemonic(ctx):
-    """Generate a new BIP39 mnemonic phrase (12 words)."""
-    run_tool(ctx, lw_generate_mnemonic)
+    """Generate a new BIP39 mnemonic phrase (12 words).
+
+    CLI-only: prints the seed to the local terminal. There is deliberately no MCP
+    twin, so the seed never reaches an LLM context.
+    """
+
+    def _generate():
+        mnemonic = get_manager().generate_mnemonic()
+        return {
+            "mnemonic": mnemonic,
+            "words": len(mnemonic.split()),
+            "warning": "Store this mnemonic securely. Anyone with access can control your funds.",
+        }
+
+    run_tool(ctx, _generate)
+
+
+_NETWORK_OPT = click.option(
+    "--network",
+    type=click.Choice(["mainnet", "testnet"]),
+    default="mainnet",
+    show_default=True,
+    help="Network to use.",
+)
+_PASSWORD_STDIN_OPT = click.option(
+    "--password-stdin",
+    "password_stdin",
+    is_flag=True,
+    default=False,
+    help=(
+        "Read wallet password from stdin (piped) or prompt interactively. "
+        "When absent, falls back to the AQUA_PASSWORD environment variable, "
+        "then to no password."
+    ),
+)
+
+
+@wallet.command("create")
+@click.option("--wallet-name", default="default", show_default=True, help="Name for the wallet.")
+@_NETWORK_OPT
+@_PASSWORD_STDIN_OPT
+@click.pass_obj
+def create(ctx, wallet_name, network, password_stdin):
+    """Create a wallet from a new mnemonic, without displaying it."""
+    password = resolve_secret(
+        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+    )
+    run_tool(
+        ctx,
+        lambda: lw_create_wallet(
+            wallet_name=wallet_name, network=network, password=password
+        ),
+    )
+
+
+@wallet.command("backup-mnemonic")
+@click.option("--wallet-name", default="default", show_default=True, help="Wallet to back up.")
+@_PASSWORD_STDIN_OPT
+@click.pass_obj
+def backup_mnemonic(ctx, wallet_name, password_stdin):
+    """Write the mnemonic to <aqua dir>/backups/<wallet>-mnemonic.txt (plain text)."""
+    password = resolve_secret(
+        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+    )
+    run_tool(
+        ctx,
+        lambda: handle_password_retry(
+            lw_backup_mnemonic, {"wallet_name": wallet_name, "password": password}
+        ),
+    )
 
 
 @wallet.command("import-mnemonic")

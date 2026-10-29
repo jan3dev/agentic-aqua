@@ -39,7 +39,8 @@ CLI_COMMAND_TO_MCP_TOOL: dict[tuple[str, str], str] = {
     ("", "balance"): "unified_balance",
 
     # wallet group (cli/wallet.py)
-    ("wallet", "generate-mnemonic"): "lw_generate_mnemonic",
+    ("wallet", "create"): "lw_create_wallet",
+    ("wallet", "backup-mnemonic"): "lw_backup_mnemonic",
     ("wallet", "import-mnemonic"): "lw_import_mnemonic",
     ("wallet", "list"): "lw_list_wallets",
     ("wallet", "delete"): "delete_wallet",

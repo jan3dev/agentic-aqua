@@ -95,7 +95,7 @@ Configure Claude Desktop using the full path to `uv` (find with `which uv`):
 
 Once connected, you can ask Claude to:
 
-- "Create a new wallet" (creates both Bitcoin and Liquid wallets from one seed)
+- "Create a new wallet" (creates both Bitcoin and Liquid wallets from one seed; the seed is never shown in the chat. Ask for a backup afterwards if you want one)
 - "Show my balance" / "What's my Bitcoin balance?"
 - "Generate a receive address" (Liquid or Bitcoin)
 - "Send 10,000 Sats to bc1..." / "Send 0.001 L-BTC to lq1..."
@@ -109,7 +109,8 @@ Once connected, you can ask Claude to:
 
 | Tool | Description |
 |------|-------------|
-| `lw_generate_mnemonic` | Generate new BIP39 seed |
+| `lw_create_wallet` | Create a wallet from a newly generated seed (the seed is never shown or returned) |
+| `lw_backup_mnemonic` | Write the seed to a local backup file, only when you explicitly ask (never returned) |
 | `lw_import_mnemonic` | Import wallet from seed (also creates Bitcoin wallet) |
 | `lw_import_descriptor` | Import watch-only Liquid wallet from CT descriptor |
 | `lw_export_descriptor` | Export Liquid CT descriptor for watch-only use |
@@ -265,7 +266,9 @@ aqua jan3 --help
 aqua qr --help
 
 # Wallet management
-aqua wallet generate-mnemonic
+aqua wallet generate-mnemonic          # prints a seed in your local terminal only
+aqua wallet create --wallet-name default --network mainnet --password-stdin   # seed never displayed
+aqua wallet backup-mnemonic --wallet-name default   # writes <aqua dir>/backups/default-mnemonic.txt (plain text)
 aqua wallet import-mnemonic --mnemonic-stdin --wallet-name default --network mainnet --password-stdin
 aqua wallet list
 aqua wallet delete --wallet-name old
