@@ -710,6 +710,50 @@ class TestBtcCommands:
         assert mock_send.call_args.kwargs["password"] == "s3cret"
 
 
+    def test_send_reads_password_from_file(self, runner, tmp_path):
+        pw = tmp_path / "pw"
+        pw.write_text("from-file\n")
+        _import_wallet(runner)
+        with patch("aqua.cli.btc.btc_send", return_value={"txid": "fake"}) as mock_send:
+            result = runner.invoke(
+                cli,
+                ["--format", "json", "btc", "send", "--wallet-name", "default",
+                 "--address", "bc1qxy", "--amount", "1000", "--password-file", str(pw)],
+                env=_cli_env(AQUA_PASSWORD="ignored"),
+            )
+        assert result.exit_code == 0, result.output
+        assert mock_send.call_args.kwargs["password"] == "from-file"
+
+    def test_send_stdin_and_file_are_mutually_exclusive(self, runner, tmp_path):
+        pw = tmp_path / "pw"
+        pw.write_text("from-file\n")
+        with patch("aqua.cli.btc.btc_send") as mock_send:
+            result = runner.invoke(
+                cli,
+                ["btc", "send", "--wallet-name", "default", "--address", "bc1qxy",
+                 "--amount", "1000",
+                 "--password-stdin", "--password-file", str(pw)],
+                input="x\n",
+                env=_cli_env(),
+            )
+        assert result.exit_code == 2
+        assert "mutually exclusive" in result.output
+        mock_send.assert_not_called()
+
+    def test_send_missing_password_file_is_usage_error(self, runner, tmp_path):
+        with patch("aqua.cli.btc.btc_send") as mock_send:
+            result = runner.invoke(
+                cli,
+                ["btc", "send", "--wallet-name", "default", "--address", "bc1qxy",
+                 "--amount", "1000",
+                 "--password-file", str(tmp_path / "nope")],
+                env=_cli_env(),
+            )
+        assert result.exit_code == 2
+        assert "nope" in result.output
+        mock_send.assert_not_called()
+
+
 # BTC descriptor commands
 
 

@@ -16,7 +16,7 @@ from ..tools import (
     changelly_status,
 )
 from .output import run_tool
-from .password import handle_password_retry, resolve_secret
+from .password import handle_password_retry, password_file_option, resolve_secret
 
 
 _EXTERNAL_NETWORK = click.Choice([
@@ -103,9 +103,10 @@ def quote(ctx, external_network, direction, amount_from, amount_to):
     "--password-stdin", "password_stdin", is_flag=True, default=False,
     help=_PASSWORD_HELP,
 )
+@password_file_option
 @click.pass_obj
 def send(ctx, external_network, settle_address, amount_from, amount_to, wallet_name,
-         skip_confirm, password_stdin):
+         skip_confirm, password_stdin, password_file):
     """Send USDt-Liquid out to USDt on another chain (fixed-rate).
 
     Gets a quote, creates the order, and broadcasts the USDt-Liquid deposit
@@ -143,7 +144,11 @@ def send(ctx, external_network, settle_address, amount_from, amount_to, wallet_n
         click.confirm("Proceed with this swap?", abort=True, err=True)
 
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,

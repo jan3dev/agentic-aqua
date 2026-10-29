@@ -25,7 +25,7 @@ from mcp.types import (
 
 from . import __version__
 from .features import is_tool_enabled, load_config_with_merge  # noqa: E402
-from .storage import Config, Storage  # noqa: E402
+from .storage import Config, Storage, read_password_file  # noqa: E402
 from .tools import TOOLS
 
 logging.basicConfig(level=logging.INFO)
@@ -1708,6 +1708,19 @@ TOOL_SCHEMAS = {
     },
 }
 
+# Every tool that takes the wallet at-rest `password` also accepts `password_file`
+# (resolved in call_tool), so the password never has to enter the conversation.
+for _schema in TOOL_SCHEMAS.values():
+    _props = _schema["inputSchema"].get("properties", {})
+    if "password" in _props:
+        _props["password_file"] = {
+            "type": "string",
+            "description": (
+                "Path to a local file containing the wallet password; keeps the password "
+                "out of the conversation. Do not combine with password."
+            ),
+        }
+
 
 def create_server(config: Config | None = None) -> Server:
     """Create and configure the MCP server.
@@ -2115,7 +2128,8 @@ Please:
    - Wait for me to give you my chosen password
    - Create the wallet with lw_create_wallet using my password
 3. If I say no:
-   - Warn me that the seed will only be base64-encoded (less secure at rest)
+   - Warn me that without a password the seed is encrypted with a public built-in key
+     (anyone with the wallet file can decrypt it)
    - Ask for confirmation
    - Create the wallet with lw_create_wallet without a password
 4. Do NOT try to show me the seed: lw_create_wallet never returns it, by design
@@ -2143,7 +2157,7 @@ Please ask me:
 1. The seed (12 or 24 words)
 2. If I want to encrypt the seed on disk with a password (STRONGLY RECOMMENDED)
    - If yes: ask for the password
-   - If no: warn me it will be less secure at rest (base64 only)
+   - If no: warn me anyone with the wallet file can decrypt it (public built-in key)
    - Note: the password only protects the local file. It is NOT a BIP39
      passphrase — derived addresses depend solely on the seed.
 3. Network: mainnet or testnet (default: mainnet)
@@ -2751,7 +2765,8 @@ Please:
 
 If you need convenience over security:
 - `lw_create_wallet(network="mainnet")`
-- ⚠️ **WARNING**: Seed stored with only base64 encoding (not encrypted)
+- ⚠️ **WARNING**: Seed encrypted with a built-in default key that ships with the source code;
+  anyone with the wallet file can decrypt it
 - Only use for testing/small amounts
 
 ## Checking Balance
@@ -2853,7 +2868,7 @@ depend solely on the seed, so the same seed restores the same
 descriptors in any BIP39-compliant wallet (AQUA, Blockstream Green, Jade, etc.).
 
 ```python
-# ⚠️ NOT RECOMMENDED - stores seed with base64 only (not encrypted)
+# ⚠️ NOT RECOMMENDED - seed encrypted with a public built-in key (file holders can decrypt it)
 # Use only for testing or small amounts
 lw_import_mnemonic(mnemonic="abandon abandon...")
 
@@ -2868,7 +2883,8 @@ lw_import_mnemonic(
 - **With password**: Local file is secure against casual filesystem access, but
   you must remember the password to sign transactions.
 - **Without password**: Convenient but only protected by filesystem permissions
-  (base64 encoding).
+  (encrypted with a built-in default key that ships with the source code, so
+  anyone with the wallet file can decrypt it).
 
 ## Password Requirements (encryption at rest)
 
@@ -2963,6 +2979,12 @@ def _make_handlers(server: Server, config: Config) -> None:
 
         try:
             tool_fn = TOOLS[name]
+            arguments = dict(arguments)
+            password_file = arguments.pop("password_file", None)
+            if password_file is not None:
+                if arguments.get("password") is not None:
+                    raise ValueError("Provide either password or password_file, not both.")
+                arguments["password"] = read_password_file(password_file)
             result = tool_fn(**arguments)
             return [
                 TextContent(

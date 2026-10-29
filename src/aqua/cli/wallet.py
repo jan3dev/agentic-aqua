@@ -16,7 +16,7 @@ from ..tools import (
     lw_list_wallets,
 )
 from .output import render, run_tool
-from .password import handle_password_retry, resolve_secret
+from .password import handle_password_retry, password_file_option, resolve_secret
 
 
 @click.group()
@@ -68,11 +68,16 @@ _PASSWORD_STDIN_OPT = click.option(
 @click.option("--wallet-name", default="default", show_default=True, help="Name for the wallet.")
 @_NETWORK_OPT
 @_PASSWORD_STDIN_OPT
+@password_file_option
 @click.pass_obj
-def create(ctx, wallet_name, network, password_stdin):
+def create(ctx, wallet_name, network, password_stdin, password_file):
     """Create a wallet from a new mnemonic, without displaying it."""
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,
@@ -85,11 +90,16 @@ def create(ctx, wallet_name, network, password_stdin):
 @wallet.command("backup-mnemonic")
 @click.option("--wallet-name", default="default", show_default=True, help="Wallet to back up.")
 @_PASSWORD_STDIN_OPT
+@password_file_option
 @click.pass_obj
-def backup_mnemonic(ctx, wallet_name, password_stdin):
+def backup_mnemonic(ctx, wallet_name, password_stdin, password_file):
     """Write the mnemonic to <aqua dir>/backups/<wallet>-mnemonic.txt (plain text)."""
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,
@@ -127,17 +137,23 @@ def backup_mnemonic(ctx, wallet_name, password_stdin):
     help=(
         "Read wallet password from stdin (piped) or prompt interactively. "
         "When absent, falls back to the AQUA_PASSWORD environment variable, "
-        "then to no password (wallet stored in plaintext)."
+        "then to no password (seed encrypted with a public built-in key: "
+        "use a password for real funds)."
     ),
 )
+@password_file_option
 @click.pass_obj
-def import_mnemonic(ctx, mnemonic_stdin, wallet_name, network, password_stdin):
+def import_mnemonic(ctx, mnemonic_stdin, wallet_name, network, password_stdin, password_file):
     """Import a wallet from a BIP39 mnemonic (creates Liquid + Bitcoin wallets)."""
     mnemonic = resolve_secret(
         "Mnemonic", mnemonic_stdin, env_var="AQUA_MNEMONIC", required=True
     )
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,

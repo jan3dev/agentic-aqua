@@ -14,7 +14,7 @@ from ..tools import (
     sideshift_status,
 )
 from .output import run_tool
-from .password import handle_password_retry, resolve_secret
+from .password import handle_password_retry, password_file_option, resolve_secret
 
 
 _NATIVE_NETWORK = click.Choice(["bitcoin", "liquid"])
@@ -153,10 +153,11 @@ def recommend(ctx, from_coin, from_network, to_coin, to_network):
     "--password-stdin", "password_stdin", is_flag=True, default=False,
     help=_PASSWORD_HELP,
 )
+@password_file_option
 @click.pass_obj
 def send(ctx, deposit_coin, deposit_network, settle_coin, settle_network,
          settle_address, deposit_amount, settle_amount, wallet_name,
-         liquid_asset_id, settle_memo, refund_memo, skip_confirm, password_stdin):
+         liquid_asset_id, settle_memo, refund_memo, skip_confirm, password_stdin, password_file):
     """Send funds via a SideShift fixed-rate shift.
 
     Gets a quote, creates the shift, and broadcasts the deposit from the
@@ -191,7 +192,11 @@ def send(ctx, deposit_coin, deposit_network, settle_coin, settle_network,
         quote_id = preview.get("id")
 
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,

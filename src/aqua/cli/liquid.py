@@ -16,7 +16,7 @@ from ..tools import (
     lw_tx_status,
 )
 from .output import run_tool
-from .password import handle_password_retry, resolve_secret
+from .password import handle_password_retry, password_file_option, resolve_secret
 
 
 def _index_non_negative(ctx, param, value):
@@ -89,11 +89,16 @@ def transactions(ctx, wallet_name, limit):
         "then to no password."
     ),
 )
+@password_file_option
 @click.pass_obj
-def send(ctx, wallet_name, address, amount, password_stdin):
+def send(ctx, wallet_name, address, amount, password_stdin, password_file):
     """Send L-BTC to an address."""
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,
@@ -130,8 +135,11 @@ def send(ctx, wallet_name, address, amount, password_stdin):
         "then to no password."
     ),
 )
+@password_file_option
 @click.pass_obj
-def send_asset(ctx, wallet_name, address, amount, asset_id, asset_ticker, password_stdin):
+def send_asset(
+    ctx, wallet_name, address, amount, asset_id, asset_ticker, password_stdin, password_file
+):
     """Send a Liquid asset to an address."""
     if amount <= 0:
         raise click.UsageError("Amount must be a positive integer.")
@@ -149,7 +157,11 @@ def send_asset(ctx, wallet_name, address, amount, asset_id, asset_ticker, passwo
             )
         asset_id = info.asset_id
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,
@@ -190,8 +202,9 @@ def send_asset(ctx, wallet_name, address, amount, asset_id, asset_ticker, passwo
         "then to no password."
     ),
 )
+@password_file_option
 @click.pass_obj
-def sweep(ctx, wallet_name, address, asset_id, asset_ticker, password_stdin):
+def sweep(ctx, wallet_name, address, asset_id, asset_ticker, password_stdin, password_file):
     """Sweep the entire L-BTC balance (or full asset balance) to one address.
 
     Fee is deducted from the inputs — 0 sats of the targeted balance remain
@@ -212,7 +225,11 @@ def sweep(ctx, wallet_name, address, asset_id, asset_ticker, password_stdin):
             )
         asset_id = info.asset_id
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,

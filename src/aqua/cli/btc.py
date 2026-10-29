@@ -12,7 +12,7 @@ from ..tools import (
     btc_transactions,
 )
 from .output import run_tool
-from .password import handle_password_retry, resolve_secret
+from .password import handle_password_retry, password_file_option, resolve_secret
 
 
 @click.group()
@@ -63,11 +63,16 @@ def transactions(ctx, wallet_name, limit):
         "then to no password."
     ),
 )
+@password_file_option
 @click.pass_obj
-def send(ctx, wallet_name, address, amount, fee_rate, password_stdin):
+def send(ctx, wallet_name, address, amount, fee_rate, password_stdin, password_file):
     """Send BTC to an address. If the wallet mnemonic is encrypted, a password is required."""
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,
@@ -99,14 +104,19 @@ def send(ctx, wallet_name, address, amount, fee_rate, password_stdin):
         "then to no password."
     ),
 )
+@password_file_option
 @click.pass_obj
-def sweep(ctx, wallet_name, address, fee_rate, password_stdin):
+def sweep(ctx, wallet_name, address, fee_rate, password_stdin, password_file):
     """Sweep the entire Bitcoin balance to one address.
 
     Fee is deducted from the inputs — 0 sats remain after broadcast.
     """
     password = resolve_secret(
-        "Password", password_stdin, env_var="AQUA_PASSWORD", required=False
+        "Password",
+        password_stdin,
+        password_file=password_file,
+        env_var="AQUA_PASSWORD",
+        required=False,
     )
     run_tool(
         ctx,

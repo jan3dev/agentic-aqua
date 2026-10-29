@@ -41,6 +41,22 @@ def restrict_permissions(path: Path | str, mode: int) -> None:
 DEFAULT_DIR = Path.home() / ".aqua"
 SWAP_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 
+def read_password_file(path: str | Path) -> str:
+    """Read a wallet password from a local file (trailing CR/LF stripped).
+
+    Raises ValueError naming the path (never the contents) if the file is
+    unreadable or the password is empty.
+    """
+    p = Path(path).expanduser()
+    try:
+        password = p.read_text(encoding="utf-8").rstrip("\r\n")
+    except (OSError, UnicodeDecodeError) as e:
+        raise ValueError(f"Cannot read password file {p}: {type(e).__name__}") from e
+    if not password:
+        raise ValueError(f"Password file {p} is empty")
+    return password
+
+
 # Hardcoded default password used to encrypt mnemonics at rest when the user
 # does not supply one. This is *obfuscation, not security* — it defeats
 # plaintext-seed scanners.
