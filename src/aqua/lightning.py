@@ -110,11 +110,43 @@ class LightningSwap:
         return cls(**data)
 
 
+def _send_swap_amount_cap(label: str, invoice_amount: int, pair: dict) -> int:
+    """Highest expectedAmount the live pair allows; checked before any swap is created.
+
+    The pair is untrusted, so fixed ceilings apply on top. Raises ValueError.
+    """
+    fees = pair.get("fees")
+    try:
+        percentage = Decimal(str(fees["percentage"]))
+        miner_fees = fees["minerFees"]
+        if isinstance(miner_fees, bool) or not isinstance(miner_fees, int):
+            raise TypeError("minerFees is not an integer")
+        if percentage < 0 or miner_fees < 0:
+            raise ValueError("negative fee")
+        if percentage > MAX_SWAP_FEE_PERCENTAGE:
+            raise ValueError(
+                f"fee percentage {percentage} exceeds the {MAX_SWAP_FEE_PERCENTAGE}% ceiling"
+            )
+        if miner_fees > MAX_SWAP_MINER_FEES_SATS:
+            raise ValueError(
+                f"minerFees {miner_fees} exceeds the {MAX_SWAP_MINER_FEES_SATS} sats ceiling"
+            )
+    except (KeyError, TypeError, ValueError, ArithmeticError) as e:
+        raise ValueError(
+            f"No {label} swap was created: cannot bound expectedAmount, "
+            f"the pair fees are unusable ({e})"
+        ) from e
+    percentage_fee = int(
+        (Decimal(invoice_amount) * percentage / 100).to_integral_value(ROUND_CEILING)
+    )
+    return invoice_amount + percentage_fee + miner_fees
+
+
 def _verify_send_swap(
     label: str,
     invoice: str,
     invoice_amount: int,
-    pair: dict,
+    max_amount: int,
     refund_pubkey: str,
     swap_resp: dict,
     network: str,
@@ -124,7 +156,9 @@ def _verify_send_swap(
 
     The address must be the taproot output of the swap tree rebuilt from the
     invoice hash, the provider's claim key and OUR refund key, so a provider
-    cannot redirect the funds. Raises ValueError; nothing has been funded.
+    cannot redirect the funds. expectedAmount must cover the invoice (an
+    underfunded lockup is never claimed and stays locked until the timeout) and
+    stay within ``max_amount``. Raises ValueError; nothing has been funded.
     """
     swap_id = swap_resp.get("id")
     refusal = f"{label} swap {swap_id} failed verification, so it was not funded: "
@@ -160,32 +194,13 @@ def _verify_send_swap(
         )
 
     expected = swap_resp.get("expectedAmount")
-    fees = pair.get("fees")
-    try:
-        percentage = Decimal(str(fees["percentage"]))
-        miner_fees = fees["minerFees"]
-        if isinstance(miner_fees, bool) or not isinstance(miner_fees, int):
-            raise TypeError("minerFees is not an integer")
-        if percentage < 0 or miner_fees < 0:
-            raise ValueError("negative fee")
-        if percentage > MAX_SWAP_FEE_PERCENTAGE:
-            raise ValueError(
-                f"fee percentage {percentage} exceeds the {MAX_SWAP_FEE_PERCENTAGE}% ceiling"
-            )
-        if miner_fees > MAX_SWAP_MINER_FEES_SATS:
-            raise ValueError(
-                f"minerFees {miner_fees} exceeds the {MAX_SWAP_MINER_FEES_SATS} sats ceiling"
-            )
-    except (KeyError, TypeError, ValueError, ArithmeticError) as e:
-        raise ValueError(
-            f"{refusal}cannot bound expectedAmount, the pair fees are unusable ({e})"
-        ) from e
-    percentage_fee = int(
-        (Decimal(invoice_amount) * percentage / 100).to_integral_value(ROUND_CEILING)
-    )
-    max_amount = invoice_amount + percentage_fee + miner_fees
     if isinstance(expected, bool) or not isinstance(expected, int):
         raise ValueError(f"{refusal}expectedAmount is not an integer")
+    if expected < invoice_amount:
+        raise ValueError(
+            f"{refusal}expectedAmount {expected} sats is below the invoice amount "
+            f"{invoice_amount} sats"
+        )
     if expected > max_amount:
         raise ValueError(
             f"{refusal}expectedAmount {expected} sats exceeds the quoted maximum "
@@ -193,9 +208,10 @@ def _verify_send_swap(
         )
     logger.debug(
         "%s swap %s verified: address matches rebuilt swap tree, blinding key "
-        "matches, expected_amount=%s <= cap=%s",
+        "matches, invoice=%s <= expected_amount=%s <= cap=%s",
         label,
         swap_id,
+        invoice_amount,
         expected,
         max_amount,
     )
@@ -399,6 +415,16 @@ class LightningManager:
 
         # Live pair is authoritative; see docs/CONFIG.md.
         self._check_pair_limits(invoice_amount, pair, provider)
+        # Everything that doesn't need the swap response is refused before the swap
+        # exists: a swap created for this invoice makes any retry "already submitted".
+        max_amount = _send_swap_amount_cap(provider.label, invoice_amount, pair)
+        try:
+            chain_tip = self.wallet_manager.get_block_height(network)
+        except Exception as e:
+            raise ValueError(
+                f"Cannot fetch the Liquid chain tip to bound the swap timeout, so no "
+                f"{provider.label} swap was created: {e}"
+            ) from e
 
         refund_privkey, refund_pubkey = generate_keypair()
         logger.debug("Generated refund public key for Boltz swap wallet=%s", wallet_name)
@@ -423,18 +449,11 @@ class LightningManager:
                 "refusing to fund a lockup this wallet could not refund."
             )
         # The provider is untrusted: check the lockup before any funds move.
-        try:
-            chain_tip = self.wallet_manager.get_block_height(network)
-        except Exception as e:
-            raise ValueError(
-                f"Cannot fetch the Liquid chain tip to bound swap {swap_resp.get('id')}'s "
-                f"timeout, so it was not funded: {e}"
-            ) from e
         _verify_send_swap(
             provider.label,
             invoice,
             invoice_amount,
-            pair,
+            max_amount,
             refund_pubkey,
             swap_resp,
             network,

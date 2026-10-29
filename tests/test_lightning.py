@@ -491,7 +491,7 @@ class TestLightningManagerSend:
         mock_boltz.return_value = mock_boltz_client
         mock_boltz_client.get_submarine_pairs.return_value = MOCK_BOLTZ_SUBMARINE_PAIRS
         mock_boltz_client.create_submarine_swap.return_value = MOCK_BOLTZ_SWAP_RESPONSE
-        mock_decode.return_value = 100000
+        mock_decode.return_value = 50000
 
         manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
 
@@ -1411,6 +1411,7 @@ class TestSendSwapVerification:
                 manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
             finally:
                 self.send = mock_send
+                self.client = client
 
     def test_honest_swap_is_funded_once(self, test_wallet):
         self._pay(test_wallet, MOCK_BOLTZ_SWAP_RESPONSE)
@@ -1467,6 +1468,13 @@ class TestSendSwapVerification:
             )
         self.send.assert_not_called()
 
+    def test_amount_at_invoice_passes_and_below_is_refused(self, test_wallet):
+        self._pay(test_wallet, {**MOCK_BOLTZ_SWAP_RESPONSE, "expectedAmount": 50_000})
+        self.send.assert_called_once()
+        with pytest.raises(ValueError, match="below the invoice amount 50000"):
+            self._pay(test_wallet, {**MOCK_BOLTZ_SWAP_RESPONSE, "expectedAmount": 1})
+        self.send.assert_not_called()
+
     @pytest.mark.parametrize("amount", ["50069", 50069.0, True, None])
     def test_non_integer_amount_is_refused(self, test_wallet, amount):
         with pytest.raises(ValueError, match="not funded"):
@@ -1488,6 +1496,7 @@ class TestSendSwapVerification:
         with pytest.raises(ValueError, match="cannot bound expectedAmount"):
             self._pay(test_wallet, MOCK_BOLTZ_SWAP_RESPONSE, pairs)
         self.send.assert_not_called()
+        self.client.create_submarine_swap.assert_not_called()
 
 
     @pytest.mark.parametrize(
@@ -1515,6 +1524,7 @@ class TestSendSwapVerification:
         with pytest.raises(ValueError, match="Cannot fetch the Liquid chain tip"):
             self._pay(test_wallet, MOCK_BOLTZ_SWAP_RESPONSE)
         self.send.assert_not_called()
+        self.client.create_submarine_swap.assert_not_called()
 
     @pytest.mark.parametrize(
         "fees,match",
@@ -1530,6 +1540,7 @@ class TestSendSwapVerification:
         with pytest.raises(ValueError, match=match):
             self._pay(test_wallet, resp, pairs)
         self.send.assert_not_called()
+        self.client.create_submarine_swap.assert_not_called()
 
     def test_fees_exactly_at_ceilings_pass(self, test_wallet):
         base = MOCK_BOLTZ_SUBMARINE_PAIRS["L-BTC"]["BTC"]

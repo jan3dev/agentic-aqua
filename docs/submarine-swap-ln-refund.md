@@ -58,11 +58,13 @@ The same rebuild runs **before funding**: `pay_invoice` refuses (`ValueError`,
 nothing sent) unless the provider's lockup address is the output of the tree
 built from the invoice hash, its claim key and our own refund key, its
 `blindingKey` matches the address's blinding key, and `expectedAmount` is at
-most `invoice + ceil(invoice * percentage / 100) + minerFees` from the live pair.
+least the invoice amount and at most
+`invoice + ceil(invoice * percentage / 100) + minerFees` from the live pair.
 The pair itself is untrusted too, so fixed ceilings apply on top (`percentage` at
 most 0.5, `minerFees` at most 1000 sats), and `timeoutBlockHeight` must lie
 within `MAX_SWAP_TIMEOUT_DELTA_BLOCKS` (20,160, about 14 days) after the current
-Liquid tip; if the tip cannot be fetched the swap is refused.
+Liquid tip. The fee ceilings and the tip fetch run before the swap is created,
+so those refusals leave no swap registered at the provider for the invoice.
 
 **Legacy swaps.** Records written before this feature landed hold only the
 refund key and the timeout. Ask the provider for the swap's `claimPublicKey` and
