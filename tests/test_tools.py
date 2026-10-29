@@ -1374,9 +1374,7 @@ class TestDeleteWallet:
         from aqua.sideswap import SideSwapPeg
         from datetime import UTC, datetime
 
-        lw_import_mnemonic(
-            mnemonic=TEST_MNEMONIC, wallet_name="pegowner", network="testnet"
-        )
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="pegowner", network="testnet")
         # Save a peg owned by this wallet plus one owned by another wallet.
         own_peg = SideSwapPeg(
             order_id="aaa111",
@@ -1387,7 +1385,7 @@ class TestDeleteWallet:
             expected_recv=None,
             wallet_name="pegowner",
             network="testnet",
-            status="pending",
+            status="completed",
             created_at=datetime.now(UTC).isoformat(),
         )
         other_peg = SideSwapPeg(
@@ -1531,9 +1529,7 @@ class TestDeleteWallet:
         assert "offline" in result["balance_error"]
         assert isolated_manager.storage.wallet_exists("nobal")
 
-    def test_confirm_removes_wallet_cache_backup_but_not_lightning_swaps(
-        self, isolated_manager
-    ):
+    def test_confirm_removes_wallet_cache_backup_but_not_lightning_swaps(self, isolated_manager):
         lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="gone", network="testnet")
         storage = isolated_manager.storage
         cache = storage.get_cache_path("gone")
@@ -1552,6 +1548,71 @@ class TestDeleteWallet:
         assert not storage.backup_path("gone").exists()
         assert not (storage.wallets_dir / "gone.lock").exists()
         assert swap.exists()
+
+    def test_pending_swaps_are_previewed_and_block_confirmed_delete(self, isolated_manager):
+        from datetime import UTC, datetime
+
+        from aqua.lightning import LightningSwap
+        from aqua.sideswap import SideSwapPeg
+
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="busy", network="testnet")
+        storage = isolated_manager.storage
+        now = datetime.now(UTC).isoformat()
+
+        def peg(order_id, status, wallet="busy"):
+            storage.save_sideswap_peg(
+                SideSwapPeg(
+                    order_id=order_id,
+                    peg_in=True,
+                    peg_addr="bc1q...",
+                    recv_addr="lq1...",
+                    amount=None,
+                    expected_recv=None,
+                    wallet_name=wallet,
+                    network="testnet",
+                    status=status,
+                    created_at=now,
+                )
+            )
+
+        def ln(swap_id, status, swap_type="send", refund_txid=None):
+            storage.save_lightning_swap(
+                LightningSwap(
+                    swap_id=swap_id,
+                    swap_type=swap_type,
+                    provider="boltz",
+                    invoice="lnbc1",
+                    amount=1000,
+                    wallet_name="busy",
+                    status=status,
+                    network="testnet",
+                    created_at=now,
+                    refund_txid=refund_txid,
+                )
+            )
+
+        peg("peg_open", "detected")
+        peg("peg_done", "completed")
+        peg("peg_other", "pending", wallet="someone_else")
+        ln("ln_inflight", "processing")
+        ln("ln_failed", "failed")
+        ln("ln_refunded", "failed", refund_txid="ab" * 32)
+        ln("ln_done", "completed")
+        ln("ln_receive", "pending", swap_type="receive")
+
+        with patch("aqua.tools.unified_balance", return_value={"liquid": {"balances": []}}):
+            preview = delete_wallet(wallet_name="busy")
+        assert {p["id"] for p in preview["pending_swaps"]} == {
+            "peg_open",
+            "ln_inflight",
+            "ln_failed",
+        }
+        assert "pending swaps" in preview["warning"]
+
+        with pytest.raises(ValueError, match="pending swaps.*peg_open.*Nothing was deleted"):
+            delete_wallet(wallet_name="busy", confirm=True, confirm_token=preview["confirm_token"])
+        assert storage.wallet_exists("busy")
+        assert storage.load_sideswap_peg("peg_open") is not None
 
 
 # ---------------------------------------------------------------------------

@@ -957,6 +957,42 @@ _DELETE_TOKEN_TTL_SECONDS = 300
 _delete_tokens: dict[str, tuple[str, float]] = {}
 
 
+def _pending_swaps(storage, wallet_name: str) -> list[dict[str, Any]]:
+    """Swaps that still need this wallet: in-flight pegs and unrefunded Lightning sends.
+
+    A peg-in still pays out to this wallet, and a Lightning send refund defaults
+    to a fresh address of it. Raw JSON is read so a record of another wallet that
+    no longer parses as a dataclass does not block the delete.
+    """
+
+    def owned(directory):
+        for path in sorted(directory.glob("*.json")):
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue  # owner unknown, as in delete_sideswap_pegs_for_wallet
+            if isinstance(data, dict) and data.get("wallet_name") == wallet_name:
+                yield path.stem, data
+
+    pending = [
+        {
+            "type": "sideswap_peg_in" if data.get("peg_in") else "sideswap_peg_out",
+            "id": record_id,
+            "status": data.get("status"),
+        }
+        for record_id, data in owned(storage.sideswap_pegs_dir)
+        if data.get("status") not in ("completed", "failed")
+    ]
+    pending += [
+        {"type": "lightning_send", "id": record_id, "status": data.get("status")}
+        for record_id, data in owned(storage.lightning_swaps_dir)
+        if data.get("swap_type") == "send"
+        and data.get("status") not in ("completed", "refunded")
+        and not data.get("refund_txid")
+    ]
+    return pending
+
+
 def delete_wallet(
     wallet_name: str, confirm: bool = False, confirm_token: str | None = None
 ) -> dict[str, Any]:
@@ -975,8 +1011,8 @@ def delete_wallet(
     Returns:
         Preview (confirm=False): deleted=False, confirm_required=True, wallet_name,
             balance (unified_balance result) or balance_error, has_seed,
-            backup_file_exists, confirm_token, confirm_token_expires_in_seconds,
-            warning.
+            backup_file_exists, pending_swaps, confirm_token,
+            confirm_token_expires_in_seconds, warning.
         Deleted (confirm=True): deleted=True, wallet_name, sideswap_pegs_removed,
             backup_file_removed.
     """
@@ -999,6 +1035,15 @@ def delete_wallet(
                 "get the balances and a confirm_token, show them to the user, then call "
                 "with confirm=true and that confirm_token. Nothing was deleted."
             )
+        pending = _pending_swaps(manager.storage, wallet_name)
+        if pending:
+            listed = ", ".join(f"{p['type']} {p['id']} ({p['status']})" for p in pending)
+            raise ValueError(
+                f"Wallet '{wallet_name}' has pending swaps that still need it: {listed}. "
+                "Wait for SideSwap pegs to finish (sideswap_peg_status) and for Lightning "
+                "sends to complete or be refunded (lightning_transaction_status, "
+                "lightning_refund) before deleting it. Nothing was deleted."
+            )
         return _delete_wallet_now(wallet_name)
     preview: dict[str, Any] = {
         "deleted": False,
@@ -1006,6 +1051,7 @@ def delete_wallet(
         "wallet_name": wallet_name,
         "has_seed": bool(wallet_data.encrypted_mnemonic) and not wallet_data.watch_only,
         "backup_file_exists": backup.exists(),
+        "pending_swaps": _pending_swaps(manager.storage, wallet_name),
     }
     token = secrets.token_urlsafe(16)
     _delete_tokens[wallet_name] = (token, time.monotonic() + _DELETE_TOKEN_TTL_SECONDS)
@@ -1022,6 +1068,11 @@ def delete_wallet(
         "lost forever. Show these balances to the user, ask for explicit "
         "confirmation, then call delete_wallet again with confirm=true and the confirm_token."
     )
+    if preview["pending_swaps"]:
+        preview["warning"] += (
+            " It has pending swaps (pending_swaps) that still need this wallet: deletion "
+            "is refused until they complete or are refunded."
+        )
     return preview
 
 

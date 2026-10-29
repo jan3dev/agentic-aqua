@@ -2422,6 +2422,8 @@ Please follow this safety workflow:
    returns the balances on BOTH networks, whether a seed backup file exists, a warning and a
    single-use confirm_token
    (if balance_error is set, the balance is unknown: say so)
+   If pending_swaps is not empty, list them and STOP: a confirmed delete is refused until those
+   SideSwap pegs finish and those Lightning sends complete or are refunded
 3. If there are any funds (BTC or L-BTC > 0):
    - WARN me clearly about the remaining funds
    - Show me exactly how much is in each network
