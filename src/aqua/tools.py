@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import re
+import secrets
+import time
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
@@ -251,10 +253,10 @@ def lw_backup_mnemonic(
 
     # wallet_name already passed _wallet_path validation in load_wallet, so it is
     # safe to use as a filename component.
-    backups_dir = storage.base_dir / "backups"
+    path = storage.backup_path(wallet_name)
+    backups_dir = path.parent
     backups_dir.mkdir(exist_ok=True, mode=0o700)
     restrict_permissions(backups_dir, 0o700)
-    path = backups_dir / f"{wallet_name}-mnemonic.txt"
     tmp_path = path.with_suffix(".txt.tmp")
     try:
         fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -950,20 +952,136 @@ def lw_list_assets(network: str = "mainnet") -> dict[str, Any]:
     }
 
 
-def delete_wallet(wallet_name: str) -> dict[str, Any]:
-    """Delete a wallet and all its cached data.
+# ponytail: tokens live in memory only; a server restart means previewing again.
+_DELETE_TOKEN_TTL_SECONDS = 300
+_delete_tokens: dict[str, tuple[str, float]] = {}
+
+
+def _pending_swaps(storage, wallet_name: str) -> list[dict[str, Any]]:
+    """Swaps that still need this wallet: in-flight pegs and unrefunded Lightning sends.
+
+    A peg-in still pays out to this wallet, and a Lightning send refund defaults
+    to a fresh address of it. Raw JSON is read so a record of another wallet that
+    no longer parses as a dataclass does not block the delete.
+    """
+
+    def owned(directory):
+        for path in sorted(directory.glob("*.json")):
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue  # owner unknown, as in delete_sideswap_pegs_for_wallet
+            if isinstance(data, dict) and data.get("wallet_name") == wallet_name:
+                yield path.stem, data
+
+    pending = [
+        {
+            "type": "sideswap_peg_in" if data.get("peg_in") else "sideswap_peg_out",
+            "id": record_id,
+            "status": data.get("status"),
+        }
+        for record_id, data in owned(storage.sideswap_pegs_dir)
+        if data.get("status") not in ("completed", "failed")
+    ]
+    pending += [
+        {"type": "lightning_send", "id": record_id, "status": data.get("status")}
+        for record_id, data in owned(storage.lightning_swaps_dir)
+        if data.get("swap_type") == "send"
+        and data.get("status") not in ("completed", "refunded")
+        and not data.get("refund_txid")
+    ]
+    return pending
+
+
+def delete_wallet(
+    wallet_name: str, confirm: bool = False, confirm_token: str | None = None
+) -> dict[str, Any]:
+    """Permanently delete a wallet, its seed and all its cached data (two-step).
+
+    Irreversible: this removes the only local copy of the seed. Without
+    ``confirm`` nothing is deleted and a preview with the current balances and a
+    single-use ``confirm_token`` is returned; show it to the user, get explicit
+    confirmation, then call again with ``confirm=True`` and that token.
 
     Args:
         wallet_name: Name of the wallet to delete.
+        confirm: Must be True to actually delete. Default False (preview only).
+        confirm_token: Token returned by the preview (required with confirm=True).
 
     Returns:
-        deleted: True if wallet was deleted.
-        wallet_name: Name of the deleted wallet.
+        Preview (confirm=False): deleted=False, confirm_required=True, wallet_name,
+            balance (unified_balance result) or balance_error, has_seed,
+            backup_file_exists, pending_swaps, confirm_token,
+            confirm_token_expires_in_seconds, warning.
+        Deleted (confirm=True): deleted=True, wallet_name, sideswap_pegs_removed,
+            backup_file_removed.
     """
     manager = get_manager()
     wallet_data = manager.storage.load_wallet(wallet_name)
     if wallet_data is None:
         raise ValueError(f"Wallet '{wallet_name}' not found")
+
+    backup = manager.storage.backup_path(wallet_name)
+    if confirm:
+        stored = _delete_tokens.pop(wallet_name, None)  # any attempt consumes it
+        if (
+            stored is None
+            or time.monotonic() > stored[1]
+            or not confirm_token
+            or not secrets.compare_digest(stored[0], confirm_token)
+        ):
+            raise ValueError(
+                "delete_wallet needs a fresh preview first: call it without confirm to "
+                "get the balances and a confirm_token, show them to the user, then call "
+                "with confirm=true and that confirm_token. Nothing was deleted."
+            )
+        pending = _pending_swaps(manager.storage, wallet_name)
+        if pending:
+            listed = ", ".join(f"{p['type']} {p['id']} ({p['status']})" for p in pending)
+            raise ValueError(
+                f"Wallet '{wallet_name}' has pending swaps that still need it: {listed}. "
+                "Wait for SideSwap pegs to finish (sideswap_peg_status) and for Lightning "
+                "sends to complete or be refunded (lightning_transaction_status, "
+                "lightning_refund) before deleting it. Nothing was deleted."
+            )
+        return _delete_wallet_now(wallet_name)
+    preview: dict[str, Any] = {
+        "deleted": False,
+        "confirm_required": True,
+        "wallet_name": wallet_name,
+        "has_seed": bool(wallet_data.encrypted_mnemonic) and not wallet_data.watch_only,
+        "backup_file_exists": backup.exists(),
+        "pending_swaps": _pending_swaps(manager.storage, wallet_name),
+    }
+    token = secrets.token_urlsafe(16)
+    _delete_tokens[wallet_name] = (token, time.monotonic() + _DELETE_TOKEN_TTL_SECONDS)
+    preview["confirm_token"] = token
+    preview["confirm_token_expires_in_seconds"] = _DELETE_TOKEN_TTL_SECONDS
+    try:
+        preview["balance"] = unified_balance(wallet_name)
+    except Exception as e:
+        preview["balance"] = None
+        preview["balance_error"] = f"Balance unknown, could not be fetched: {e}"
+    preview["warning"] = (
+        "Deleting this wallet permanently removes its seed from this computer. "
+        "If you have not backed up the seed, the funds in this wallet will be "
+        "lost forever. Show these balances to the user, ask for explicit "
+        "confirmation, then call delete_wallet again with confirm=true and the confirm_token."
+    )
+    if preview["pending_swaps"]:
+        preview["warning"] += (
+            " It has pending swaps (pending_swaps) that still need this wallet: deletion "
+            "is refused until they complete or are refunded."
+        )
+    return preview
+
+
+def _delete_wallet_now(wallet_name: str) -> dict[str, Any]:
+    """Delete the wallet unconditionally (callers own the confirmation)."""
+    manager = get_manager()
+    if manager.storage.load_wallet(wallet_name) is None:
+        raise ValueError(f"Wallet '{wallet_name}' not found")
+    backup = manager.storage.backup_path(wallet_name)
 
     # Clear Liquid (LWK) manager caches
     manager._signers.pop(wallet_name, None)
@@ -981,10 +1099,14 @@ def delete_wallet(wallet_name: str) -> dict[str, Any]:
     pegs_removed = manager.storage.delete_sideswap_pegs_for_wallet(wallet_name)
 
     manager.storage.delete_wallet(wallet_name)
+    # Plaintext seed backup from lw_backup_mnemonic: another copy of the seed.
+    backup_removed = backup.exists()
+    backup.unlink(missing_ok=True)
     return {
         "deleted": True,
         "wallet_name": wallet_name,
         "sideswap_pegs_removed": pegs_removed,
+        "backup_file_removed": backup_removed,
     }
 
 

@@ -1,6 +1,7 @@
 """Tests for all MCP tool functions exposed by the liquid wallet server."""
 
 import json
+import time
 import tempfile
 import urllib.error
 from pathlib import Path
@@ -1353,6 +1354,13 @@ class TestToolRegistry:
 # ---------------------------------------------------------------------------
 
 
+def _confirmed_delete(wallet_name):
+    """Preview, then confirm with the returned token (the MCP flow)."""
+    with patch("aqua.tools.unified_balance", return_value={"liquid": {"balances": []}}):
+        token = delete_wallet(wallet_name=wallet_name)["confirm_token"]
+    return delete_wallet(wallet_name=wallet_name, confirm=True, confirm_token=token)
+
+
 class TestDeleteWallet:
     """Tests for the delete_wallet tool."""
 
@@ -1366,9 +1374,7 @@ class TestDeleteWallet:
         from aqua.sideswap import SideSwapPeg
         from datetime import UTC, datetime
 
-        lw_import_mnemonic(
-            mnemonic=TEST_MNEMONIC, wallet_name="pegowner", network="testnet"
-        )
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="pegowner", network="testnet")
         # Save a peg owned by this wallet plus one owned by another wallet.
         own_peg = SideSwapPeg(
             order_id="aaa111",
@@ -1379,7 +1385,7 @@ class TestDeleteWallet:
             expected_recv=None,
             wallet_name="pegowner",
             network="testnet",
-            status="pending",
+            status="completed",
             created_at=datetime.now(UTC).isoformat(),
         )
         other_peg = SideSwapPeg(
@@ -1397,7 +1403,7 @@ class TestDeleteWallet:
         isolated_manager.storage.save_sideswap_peg(own_peg)
         isolated_manager.storage.save_sideswap_peg(other_peg)
 
-        result = delete_wallet(wallet_name="pegowner")
+        result = _confirmed_delete("pegowner")
         assert result["sideswap_pegs_removed"] == 1
         assert isolated_manager.storage.load_sideswap_peg("aaa111") is None
         # Other wallet's peg untouched.
@@ -1408,7 +1414,7 @@ class TestDeleteWallet:
         lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="todelete", network="testnet")
         assert "todelete" in lw_list_wallets()["wallets"]
 
-        result = delete_wallet(wallet_name="todelete")
+        result = _confirmed_delete("todelete")
         assert result["deleted"] is True
         assert result["wallet_name"] == "todelete"
         assert result["sideswap_pegs_removed"] == 0
@@ -1422,7 +1428,7 @@ class TestDeleteWallet:
         manager._signers["cached"] = "fake_signer"
         manager._wollets["cached"] = "fake_wollet"
 
-        delete_wallet(wallet_name="cached")
+        _confirmed_delete("cached")
         assert "cached" not in manager._signers
         assert "cached" not in manager._wollets
 
@@ -1437,7 +1443,7 @@ class TestDeleteWallet:
         btc._persisters["btccached"] = "fake_persister"
         btc._networks["btccached"] = "testnet"
 
-        delete_wallet(wallet_name="btccached")
+        _confirmed_delete("btccached")
         assert "btccached" not in btc._wallets
         assert "btccached" not in btc._persisters
         assert "btccached" not in btc._networks
@@ -1445,9 +1451,168 @@ class TestDeleteWallet:
     def test_delete_returns_success(self, isolated_manager):
         """Returns the expected success dict."""
         lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="success", network="testnet")
-        result = delete_wallet(wallet_name="success")
+        result = _confirmed_delete("success")
         assert result["deleted"] is True
         assert result["wallet_name"] == "success"
+
+    def test_without_confirm_deletes_nothing_and_previews(self, isolated_manager):
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="prev", network="testnet")
+        storage = isolated_manager.storage
+        storage.backup_path("prev").parent.mkdir(exist_ok=True)
+        storage.backup_path("prev").write_text("seed words\n")
+        fake = {"wallet_name": "prev", "bitcoin": None, "liquid": {"balances": []}}
+        with patch("aqua.tools.unified_balance", return_value=fake):
+            result = delete_wallet(wallet_name="prev")
+        assert result["deleted"] is False
+        assert result["confirm_required"] is True
+        assert result["balance"] == fake
+        assert result["has_seed"] is True
+        assert result["backup_file_exists"] is True
+        assert "confirm=true" in result["warning"]
+        assert result["confirm_token"] and result["confirm_token_expires_in_seconds"] == 300
+        assert storage.wallet_exists("prev")
+        assert storage.backup_path("prev").exists()
+
+    def _preview_token(self, name):
+        with patch("aqua.tools.unified_balance", return_value={}):
+            return delete_wallet(wallet_name=name)["confirm_token"]
+
+    def test_confirm_without_preview_is_refused(self, isolated_manager):
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="blind", network="testnet")
+        with pytest.raises(ValueError, match="fresh preview"):
+            delete_wallet(wallet_name="blind", confirm=True)
+        with pytest.raises(ValueError, match="fresh preview"):
+            delete_wallet(wallet_name="blind", confirm=True, confirm_token="guess")
+        assert isolated_manager.storage.wallet_exists("blind")
+
+    def test_wrong_token_is_refused_and_consumes_the_real_one(self, isolated_manager):
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="wrong", network="testnet")
+        token = self._preview_token("wrong")
+        with pytest.raises(ValueError, match="fresh preview"):
+            delete_wallet(wallet_name="wrong", confirm=True, confirm_token="nope")
+        assert isolated_manager.storage.wallet_exists("wrong")
+        with pytest.raises(ValueError, match="fresh preview"):
+            delete_wallet(wallet_name="wrong", confirm=True, confirm_token=token)
+        assert isolated_manager.storage.wallet_exists("wrong")
+
+    def test_expired_token_is_refused(self, isolated_manager):
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="late", network="testnet")
+        token = self._preview_token("late")
+        with patch("aqua.tools.time.monotonic", return_value=time.monotonic() + 301):
+            with pytest.raises(ValueError, match="fresh preview"):
+                delete_wallet(wallet_name="late", confirm=True, confirm_token=token)
+        assert isolated_manager.storage.wallet_exists("late")
+
+    def test_token_is_single_use(self, isolated_manager):
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="once", network="testnet")
+        token = self._preview_token("once")
+        assert delete_wallet(wallet_name="once", confirm=True, confirm_token=token)["deleted"]
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="once", network="testnet")
+        with pytest.raises(ValueError, match="fresh preview"):
+            delete_wallet(wallet_name="once", confirm=True, confirm_token=token)
+        assert isolated_manager.storage.wallet_exists("once")
+
+    def test_token_for_one_wallet_does_not_delete_another(self, isolated_manager):
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="wa", network="testnet")
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="wb", network="testnet")
+        token_a = self._preview_token("wa")
+        with pytest.raises(ValueError, match="fresh preview"):
+            delete_wallet(wallet_name="wb", confirm=True, confirm_token=token_a)
+        assert isolated_manager.storage.wallet_exists("wa")
+        assert isolated_manager.storage.wallet_exists("wb")
+
+    def test_preview_balance_failure_is_reported_not_hidden(self, isolated_manager):
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="nobal", network="testnet")
+        with patch("aqua.tools.unified_balance", side_effect=RuntimeError("offline")):
+            result = delete_wallet(wallet_name="nobal")
+        assert result["deleted"] is False
+        assert "offline" in result["balance_error"]
+        assert isolated_manager.storage.wallet_exists("nobal")
+
+    def test_confirm_removes_wallet_cache_backup_but_not_lightning_swaps(self, isolated_manager):
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="gone", network="testnet")
+        storage = isolated_manager.storage
+        cache = storage.get_cache_path("gone")
+        (cache / "x.db").touch()
+        storage.backup_path("gone").parent.mkdir(exist_ok=True)
+        storage.backup_path("gone").write_text("seed words\n")
+        storage.lightning_swaps_dir.mkdir(exist_ok=True)
+        swap = storage.lightning_swaps_dir / "swap1.json"
+        swap.write_text("{}")
+
+        result = _confirmed_delete("gone")
+        assert result["deleted"] is True
+        assert result["backup_file_removed"] is True
+        assert not storage.wallet_exists("gone")
+        assert not cache.exists()
+        assert not storage.backup_path("gone").exists()
+        assert not (storage.wallets_dir / "gone.lock").exists()
+        assert swap.exists()
+
+    def test_pending_swaps_are_previewed_and_block_confirmed_delete(self, isolated_manager):
+        from datetime import UTC, datetime
+
+        from aqua.lightning import LightningSwap
+        from aqua.sideswap import SideSwapPeg
+
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="busy", network="testnet")
+        storage = isolated_manager.storage
+        now = datetime.now(UTC).isoformat()
+
+        def peg(order_id, status, wallet="busy"):
+            storage.save_sideswap_peg(
+                SideSwapPeg(
+                    order_id=order_id,
+                    peg_in=True,
+                    peg_addr="bc1q...",
+                    recv_addr="lq1...",
+                    amount=None,
+                    expected_recv=None,
+                    wallet_name=wallet,
+                    network="testnet",
+                    status=status,
+                    created_at=now,
+                )
+            )
+
+        def ln(swap_id, status, swap_type="send", refund_txid=None):
+            storage.save_lightning_swap(
+                LightningSwap(
+                    swap_id=swap_id,
+                    swap_type=swap_type,
+                    provider="boltz",
+                    invoice="lnbc1",
+                    amount=1000,
+                    wallet_name="busy",
+                    status=status,
+                    network="testnet",
+                    created_at=now,
+                    refund_txid=refund_txid,
+                )
+            )
+
+        peg("peg_open", "detected")
+        peg("peg_done", "completed")
+        peg("peg_other", "pending", wallet="someone_else")
+        ln("ln_inflight", "processing")
+        ln("ln_failed", "failed")
+        ln("ln_refunded", "failed", refund_txid="ab" * 32)
+        ln("ln_done", "completed")
+        ln("ln_receive", "pending", swap_type="receive")
+
+        with patch("aqua.tools.unified_balance", return_value={"liquid": {"balances": []}}):
+            preview = delete_wallet(wallet_name="busy")
+        assert {p["id"] for p in preview["pending_swaps"]} == {
+            "peg_open",
+            "ln_inflight",
+            "ln_failed",
+        }
+        assert "pending swaps" in preview["warning"]
+
+        with pytest.raises(ValueError, match="pending swaps.*peg_open.*Nothing was deleted"):
+            delete_wallet(wallet_name="busy", confirm=True, confirm_token=preview["confirm_token"])
+        assert storage.wallet_exists("busy")
+        assert storage.load_sideswap_peg("peg_open") is not None
 
 
 # ---------------------------------------------------------------------------
