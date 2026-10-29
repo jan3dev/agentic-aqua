@@ -7,8 +7,13 @@ from unittest.mock import MagicMock, patch
 from datetime import datetime, UTC
 
 import pytest
+import wallycore as wally
+from coincurve import PrivateKey
 
+from aqua.boltz_refund import build_swap_tree
+from aqua.bolt11 import decode_bolt11_payment_hash
 from aqua.lightning import (
+    MAX_SWAP_TIMEOUT_DELTA_BLOCKS,
     LightningSwap,
     LightningManager,
 )
@@ -25,7 +30,12 @@ from aqua.wallet import WalletManager, Balance
 
 from tests.conftest import TEST_MNEMONIC
 
-VALID_INVOICE_MAINNET = "lnbc500u1ptest_valid_invoice"
+# BOLT11 spec test vector (valid checksum); payment hash 0001...0102.
+VALID_INVOICE_MAINNET = (
+    "lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xys"
+    "xxatsyp3k7enxv4jsxqzpuaztrnwngzn3kdzw5hydlzf03qdgm2hdq27cqv3agm2awhz5se903vrua"
+    "tfhq77w3ls4evs3ch9zw97j25emudupq63nyw24cg27h2rspfj9srp"
+)
 VALID_INVOICE_TESTNET = "lntb500u1ptest_valid_invoice"
 
 MOCK_ANKARA_CREATE_RESPONSE = {
@@ -52,17 +62,42 @@ MOCK_BOLTZ_SUBMARINE_PAIRS = {
     }
 }
 
+REFUND_PRIVKEY = "11" * 32
+REFUND_PUBKEY = PrivateKey(bytes.fromhex(REFUND_PRIVKEY)).public_key.format().hex()
+REFUND_KEYPAIR = (REFUND_PRIVKEY, REFUND_PUBKEY)
+CLAIM_PUBKEY = PrivateKey(bytes.fromhex("22" * 32)).public_key.format().hex()
+BLINDING_KEY = "33" * 32
+TIMEOUT_HEIGHT = 2500000
+
+
+def _lockup_address(refund_pubkey=REFUND_PUBKEY, blinding_key=BLINDING_KEY):
+    """A real confidential mainnet address over the honest swap tree's output."""
+    tree = build_swap_tree(
+        bytes.fromhex(decode_bolt11_payment_hash(VALID_INVOICE_MAINNET)),
+        bytes.fromhex(CLAIM_PUBKEY),
+        bytes.fromhex(refund_pubkey),
+        TIMEOUT_HEIGHT,
+    )
+    unconfidential = wally.addr_segwit_from_bytes(tree.scriptpubkey, "ex", 0)
+    return wally.confidential_addr_from_addr_segwit(
+        unconfidential,
+        "ex",
+        "lq",
+        PrivateKey(bytes.fromhex(blinding_key)).public_key.format(),
+    )
+
+
 MOCK_BOLTZ_SWAP_RESPONSE = {
     "id": "boltz_swap_123",
-    "address": "lq1qqexampleaddress",
+    "address": _lockup_address(),
     "expectedAmount": 50069,
-    "claimPublicKey": "03" + "ab" * 32,
-    "blindingKey": "cc" * 32,
+    "claimPublicKey": CLAIM_PUBKEY,
+    "blindingKey": BLINDING_KEY,
     "swapTree": {
         "claimLeaf": {"version": 192, "output": "a914..."},
         "refundLeaf": {"version": 192, "output": "b914..."},
     },
-    "timeoutBlockHeight": 2500000,
+    "timeoutBlockHeight": TIMEOUT_HEIGHT,
 }
 
 
@@ -93,6 +128,15 @@ def isolated_managers():
         tools_module._manager = None
         tools_module._btc_manager = None
         tools_module._lightning_manager = None
+
+
+@pytest.fixture(autouse=True)
+def chain_tip():
+    """Liquid tip inside the honest swap's timeout window."""
+    with patch(
+        "aqua.wallet.WalletManager.get_block_height", return_value=TIMEOUT_HEIGHT - 1_000
+    ) as m:
+        yield m
 
 
 @pytest.fixture
@@ -287,7 +331,7 @@ class TestLightningManagerSend:
     ):
         """Happy path: valid invoice, creates swap and sends L-BTC."""
         mock_send.return_value = "lockup_txid_123"
-        mock_keygen.return_value = ("privkey", "pubkey")
+        mock_keygen.return_value = REFUND_KEYPAIR
 
         manager = get_lightning_manager()
 
@@ -304,7 +348,7 @@ class TestLightningManagerSend:
         assert swap.provider == "indra"
         assert swap.status == "processing"
         assert swap.lockup_txid == "lockup_txid_123"
-        assert swap.refund_private_key == "privkey"
+        assert swap.refund_private_key == REFUND_PRIVKEY
 
         loaded = isolated_managers.storage.load_lightning_swap(swap.swap_id)
         assert loaded is not None
@@ -357,7 +401,7 @@ class TestLightningManagerSend:
         self, mock_boltz, mock_decode, mock_get_balance, mock_keygen, test_wallet
     ):
         """Insufficient L-BTC balance raises ValueError using expected_amount (post-Boltz)."""
-        mock_keygen.return_value = ("privkey", "pubkey")
+        mock_keygen.return_value = REFUND_KEYPAIR
         mock_decode.return_value = 50000
 
         mock_boltz_client = MagicMock()
@@ -439,7 +483,7 @@ class TestLightningManagerSend:
             return "txid"
 
         mock_send.side_effect = mock_send_impl
-        mock_keygen.return_value = ("privkey", "pubkey")
+        mock_keygen.return_value = REFUND_KEYPAIR
 
         manager = get_lightning_manager()
 
@@ -447,7 +491,7 @@ class TestLightningManagerSend:
         mock_boltz.return_value = mock_boltz_client
         mock_boltz_client.get_submarine_pairs.return_value = MOCK_BOLTZ_SUBMARINE_PAIRS
         mock_boltz_client.create_submarine_swap.return_value = MOCK_BOLTZ_SWAP_RESPONSE
-        mock_decode.return_value = 100000
+        mock_decode.return_value = 50000
 
         manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
 
@@ -480,7 +524,7 @@ class TestLightningManagerSend:
     ):
         """Uppercase BOLT11 invoices are accepted and lowercased before reaching Boltz."""
         mock_send.return_value = "lockup_txid_123"
-        mock_keygen.return_value = ("privkey", "pubkey")
+        mock_keygen.return_value = REFUND_KEYPAIR
 
         manager = get_lightning_manager()
 
@@ -518,7 +562,7 @@ class TestLightningManagerSendLNAddress:
                 )
             ],
         ), patch("aqua.indra.IndraClient") as mock_boltz, patch(
-            "aqua.lightning.generate_keypair", return_value=("privkey", "pubkey")
+            "aqua.lightning.generate_keypair", return_value=REFUND_KEYPAIR
         ), patch("aqua.wallet.WalletManager.send", return_value="lockup_txid"):
             mock_resolve.return_value = VALID_INVOICE_MAINNET
             mock_client = MagicMock()
@@ -576,7 +620,7 @@ class TestLightningManagerSendLNAddress:
         ), patch(
             "aqua.lightning.decode_bolt11_amount_sats", return_value=50_000
         ), patch("aqua.indra.IndraClient") as mock_boltz, patch(
-            "aqua.lightning.generate_keypair", return_value=("privkey", "pubkey")
+            "aqua.lightning.generate_keypair", return_value=REFUND_KEYPAIR
         ), patch("aqua.wallet.WalletManager.send", return_value="lockup_txid"):
             mock_client = MagicMock()
             mock_boltz.return_value = mock_client
@@ -1204,7 +1248,7 @@ class TestLightningProviderSelection:
         ), patch("aqua.indra.IndraClient") as mock_indra, patch(
             "aqua.boltz.BoltzClient"
         ) as mock_boltz, patch(
-            "aqua.lightning.generate_keypair", return_value=("privkey", "pubkey")
+            "aqua.lightning.generate_keypair", return_value=REFUND_KEYPAIR
         ), patch("aqua.wallet.WalletManager.send", return_value="lockup_txid"):
             mock_client = MagicMock()
             mock_indra.return_value = mock_client
@@ -1231,7 +1275,7 @@ class TestLightningProviderSelection:
         ), patch("aqua.boltz.BoltzClient") as mock_boltz, patch(
             "aqua.indra.IndraClient"
         ) as mock_indra, patch(
-            "aqua.lightning.generate_keypair", return_value=("privkey", "pubkey")
+            "aqua.lightning.generate_keypair", return_value=REFUND_KEYPAIR
         ), patch("aqua.wallet.WalletManager.send", return_value="lockup_txid"):
             mock_client = MagicMock()
             mock_boltz.return_value = mock_client
@@ -1255,7 +1299,7 @@ class TestLightningProviderSelection:
         ), patch(
             "aqua.lightning.decode_bolt11_amount_sats", return_value=50_000
         ), patch("aqua.boltz.BoltzClient") as mock_boltz, patch(
-            "aqua.lightning.generate_keypair", return_value=("privkey", "pubkey")
+            "aqua.lightning.generate_keypair", return_value=REFUND_KEYPAIR
         ), patch("aqua.wallet.WalletManager.send", return_value="lockup_txid"):
             mock_client = MagicMock()
             mock_boltz.return_value = mock_client
@@ -1304,7 +1348,7 @@ class TestLightningProviderSelection:
         ), patch(
             "aqua.lightning.decode_bolt11_amount_sats", return_value=50_000
         ), patch("aqua.indra.IndraClient") as mock_indra, patch(
-            "aqua.lightning.generate_keypair", return_value=("privkey", "pubkey")
+            "aqua.lightning.generate_keypair", return_value=REFUND_KEYPAIR
         ):
             mock_client = MagicMock()
             mock_indra.return_value = mock_client
@@ -1330,7 +1374,7 @@ class TestLightningProviderSelection:
         ), patch(
             "aqua.lightning.decode_bolt11_amount_sats", return_value=2_000
         ), patch("aqua.indra.IndraClient") as mock_indra, patch(
-            "aqua.lightning.generate_keypair", return_value=("privkey", "pubkey")
+            "aqua.lightning.generate_keypair", return_value=REFUND_KEYPAIR
         ):
             mock_client = MagicMock()
             mock_indra.return_value = mock_client
@@ -1340,6 +1384,172 @@ class TestLightningProviderSelection:
                 manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
 
             mock_client.create_submarine_swap.assert_not_called()
+
+
+class TestSendSwapVerification:
+    """pay_invoice must verify the provider's swap before funding it."""
+
+    def _pay(self, test_wallet, swap_resp, pairs=MOCK_BOLTZ_SUBMARINE_PAIRS):
+        balance = [
+            Balance(asset_id="p", asset_name="L-BTC", ticker="L-BTC", amount=200_000)
+        ]
+        manager = get_lightning_manager()
+        with patch.object(
+            type(get_manager()), "get_balance", return_value=balance
+        ), patch(
+            "aqua.lightning.decode_bolt11_amount_sats", return_value=50_000
+        ), patch("aqua.indra.IndraClient") as mock_indra, patch(
+            "aqua.lightning.generate_keypair", return_value=REFUND_KEYPAIR
+        ), patch(
+            "aqua.wallet.WalletManager.send", return_value="lockup_txid"
+        ) as mock_send:
+            client = MagicMock()
+            mock_indra.return_value = client
+            client.get_submarine_pairs.return_value = pairs
+            client.create_submarine_swap.return_value = swap_resp
+            try:
+                manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
+            finally:
+                self.send = mock_send
+                self.client = client
+
+    def test_honest_swap_is_funded_once(self, test_wallet):
+        self._pay(test_wallet, MOCK_BOLTZ_SWAP_RESPONSE)
+        self.send.assert_called_once_with(
+            "default",
+            MOCK_BOLTZ_SWAP_RESPONSE["address"],
+            50069,
+            password=None,
+        )
+
+    def test_hostile_address_is_refused(self, test_wallet):
+        other = _lockup_address(
+            refund_pubkey=PrivateKey(bytes.fromhex("44" * 32)).public_key.format().hex()
+        )
+        resp = {**MOCK_BOLTZ_SWAP_RESPONSE, "address": other}
+        with pytest.raises(ValueError, match="not funded.*does not match"):
+            self._pay(test_wallet, resp)
+        self.send.assert_not_called()
+
+    def test_wrong_blinding_key_is_refused(self, test_wallet):
+        resp = {**MOCK_BOLTZ_SWAP_RESPONSE, "blindingKey": "55" * 32}
+        with pytest.raises(ValueError, match="blindingKey does not match"):
+            self._pay(test_wallet, resp)
+        self.send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("claimPublicKey", "zz"),
+            ("claimPublicKey", "03" + "ab" * 10),
+            ("timeoutBlockHeight", "2500000"),
+            ("address", "not-an-address"),
+        ],
+    )
+    def test_malformed_fields_are_refused(self, test_wallet, field, value):
+        resp = {**MOCK_BOLTZ_SWAP_RESPONSE, field: value}
+        with pytest.raises(ValueError, match="not funded"):
+            self._pay(test_wallet, resp)
+        self.send.assert_not_called()
+
+    def test_missing_field_is_refused(self, test_wallet):
+        resp = {k: v for k, v in MOCK_BOLTZ_SWAP_RESPONSE.items() if k != "address"}
+        with pytest.raises(ValueError, match="not funded"):
+            self._pay(test_wallet, resp)
+        self.send.assert_not_called()
+
+    def test_amount_at_cap_passes_and_above_is_refused(self, test_wallet):
+        # cap = 50000 + ceil(50000 * 0.1 / 100) + 19
+        self._pay(test_wallet, {**MOCK_BOLTZ_SWAP_RESPONSE, "expectedAmount": 50069})
+        self.send.assert_called_once()
+        with pytest.raises(ValueError, match="exceeds the quoted maximum 50069"):
+            self._pay(
+                test_wallet, {**MOCK_BOLTZ_SWAP_RESPONSE, "expectedAmount": 50070}
+            )
+        self.send.assert_not_called()
+
+    def test_amount_at_invoice_passes_and_below_is_refused(self, test_wallet):
+        self._pay(test_wallet, {**MOCK_BOLTZ_SWAP_RESPONSE, "expectedAmount": 50_000})
+        self.send.assert_called_once()
+        with pytest.raises(ValueError, match="below the invoice amount 50000"):
+            self._pay(test_wallet, {**MOCK_BOLTZ_SWAP_RESPONSE, "expectedAmount": 1})
+        self.send.assert_not_called()
+
+    @pytest.mark.parametrize("amount", ["50069", 50069.0, True, None])
+    def test_non_integer_amount_is_refused(self, test_wallet, amount):
+        with pytest.raises(ValueError, match="not funded"):
+            self._pay(
+                test_wallet, {**MOCK_BOLTZ_SWAP_RESPONSE, "expectedAmount": amount}
+            )
+        self.send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "fees",
+        [None, {}, {"percentage": 0.1}, {"minerFees": 19}, {"percentage": "x", "minerFees": 19}],
+    )
+    def test_unusable_pair_fees_are_refused(self, test_wallet, fees):
+        base = MOCK_BOLTZ_SUBMARINE_PAIRS["L-BTC"]["BTC"]
+        pair = {k: v for k, v in base.items() if k != "fees"}
+        if fees is not None:
+            pair["fees"] = fees
+        pairs = {"L-BTC": {"BTC": pair}}
+        with pytest.raises(ValueError, match="cannot bound expectedAmount"):
+            self._pay(test_wallet, MOCK_BOLTZ_SWAP_RESPONSE, pairs)
+        self.send.assert_not_called()
+        self.client.create_submarine_swap.assert_not_called()
+
+
+    @pytest.mark.parametrize(
+        "timeout",
+        [
+            TIMEOUT_HEIGHT - 1_000 + MAX_SWAP_TIMEOUT_DELTA_BLOCKS + 1,
+            TIMEOUT_HEIGHT - 1_000,
+            TIMEOUT_HEIGHT - 1_001,
+            500_000_000,
+            2**32,
+        ],
+    )
+    def test_timeout_outside_window_is_refused(self, test_wallet, timeout):
+        with pytest.raises(ValueError, match="outside the accepted window"):
+            self._pay(test_wallet, {**MOCK_BOLTZ_SWAP_RESPONSE, "timeoutBlockHeight": timeout})
+        self.send.assert_not_called()
+
+    def test_timeout_at_window_edge_passes(self, test_wallet, chain_tip):
+        chain_tip.return_value = TIMEOUT_HEIGHT - MAX_SWAP_TIMEOUT_DELTA_BLOCKS
+        self._pay(test_wallet, MOCK_BOLTZ_SWAP_RESPONSE)
+        self.send.assert_called_once()
+
+    def test_tip_fetch_failure_is_refused(self, test_wallet, chain_tip):
+        chain_tip.side_effect = RuntimeError("esplora down")
+        with pytest.raises(ValueError, match="Cannot fetch the Liquid chain tip"):
+            self._pay(test_wallet, MOCK_BOLTZ_SWAP_RESPONSE)
+        self.send.assert_not_called()
+        self.client.create_submarine_swap.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "fees,match",
+        [
+            ({"percentage": 0.51, "minerFees": 19}, "0.5% ceiling"),
+            ({"percentage": 0.1, "minerFees": 1_001}, "1000 sats ceiling"),
+        ],
+    )
+    def test_fees_above_fixed_ceiling_are_refused(self, test_wallet, fees, match):
+        base = MOCK_BOLTZ_SUBMARINE_PAIRS["L-BTC"]["BTC"]
+        pairs = {"L-BTC": {"BTC": {**base, "fees": fees}}}
+        resp = {**MOCK_BOLTZ_SWAP_RESPONSE, "expectedAmount": 50_000}
+        with pytest.raises(ValueError, match=match):
+            self._pay(test_wallet, resp, pairs)
+        self.send.assert_not_called()
+        self.client.create_submarine_swap.assert_not_called()
+
+    def test_fees_exactly_at_ceilings_pass(self, test_wallet):
+        base = MOCK_BOLTZ_SUBMARINE_PAIRS["L-BTC"]["BTC"]
+        fees = {"percentage": 0.5, "minerFees": 1_000}
+        pairs = {"L-BTC": {"BTC": {**base, "fees": fees}}}
+        # cap = 50000 + ceil(50000 * 0.5 / 100) + 1000
+        resp = {**MOCK_BOLTZ_SWAP_RESPONSE, "expectedAmount": 51_250}
+        self._pay(test_wallet, resp, pairs)
+        self.send.assert_called_once()
 
 
 class TestSwapStatusMapping:
@@ -1461,7 +1671,7 @@ class TestRefundFieldPersistence:
         self, mock_balance, mock_send, mock_indra, mock_decode, mock_keypair, test_wallet
     ):
         mock_decode.return_value = 50000
-        mock_keypair.return_value = ("privkey_hex", "pubkey_hex")
+        mock_keypair.return_value = REFUND_KEYPAIR
         mock_balance.return_value = [
             Balance(
                 asset_id="policy_asset",
@@ -1498,7 +1708,7 @@ class TestRefundFieldPersistence:
     ):
         """No blindingKey means no refund; the lockup must not be funded."""
         mock_decode.return_value = 50000
-        mock_keypair.return_value = ("privkey_hex", "pubkey_hex")
+        mock_keypair.return_value = REFUND_KEYPAIR
         mock_balance.return_value = [
             Balance(asset_id="policy_asset", asset_name="L-BTC", ticker="L-BTC", amount=100000)
         ]

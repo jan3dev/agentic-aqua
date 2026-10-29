@@ -3,7 +3,10 @@
 import logging
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from decimal import ROUND_CEILING, Decimal
 from typing import Optional
+
+from coincurve import PrivateKey
 
 from .ankara import AnkaraClient
 from .bolt11 import decode_bolt11_amount_sats, decode_bolt11_payment_hash
@@ -11,7 +14,11 @@ from .boltz import (
     BoltzSwapAlreadyExistsError,
     generate_keypair,
 )
-from .boltz_refund import refund_submarine_swap
+from .boltz_refund import (
+    build_swap_tree,
+    decode_confidential_address,
+    refund_submarine_swap,
+)
 from .lightning_providers import PROVIDERS, resolve_send_provider
 from .lnurl import is_lightning_address, resolve_lightning_address
 
@@ -44,6 +51,13 @@ _CLAIM_DETAIL_STATUSES = frozenset(
 # Ankara swap amount limits (satoshis)
 ANKARA_MIN_SATS = 100
 ANKARA_MAX_SATS = 25_000_000
+
+# Provider-independent ceilings on a send swap, so a hostile provider cannot
+# inflate both its quote and the amount we fund (current quotes: 0.1%, ~20 sats).
+MAX_SWAP_FEE_PERCENTAGE = Decimal("0.5")
+MAX_SWAP_MINER_FEES_SATS = 1_000
+# Latest accepted refund timeout past the tip: ~14 days of 1-minute Liquid blocks.
+MAX_SWAP_TIMEOUT_DELTA_BLOCKS = 20_160
 
 
 @dataclass
@@ -94,6 +108,113 @@ class LightningSwap:
         ]:
             data.setdefault(field_name, None)
         return cls(**data)
+
+
+def _send_swap_amount_cap(label: str, invoice_amount: int, pair: dict) -> int:
+    """Highest expectedAmount the live pair allows; checked before any swap is created.
+
+    The pair is untrusted, so fixed ceilings apply on top. Raises ValueError.
+    """
+    fees = pair.get("fees")
+    try:
+        percentage = Decimal(str(fees["percentage"]))
+        miner_fees = fees["minerFees"]
+        if isinstance(miner_fees, bool) or not isinstance(miner_fees, int):
+            raise TypeError("minerFees is not an integer")
+        if percentage < 0 or miner_fees < 0:
+            raise ValueError("negative fee")
+        if percentage > MAX_SWAP_FEE_PERCENTAGE:
+            raise ValueError(
+                f"fee percentage {percentage} exceeds the {MAX_SWAP_FEE_PERCENTAGE}% ceiling"
+            )
+        if miner_fees > MAX_SWAP_MINER_FEES_SATS:
+            raise ValueError(
+                f"minerFees {miner_fees} exceeds the {MAX_SWAP_MINER_FEES_SATS} sats ceiling"
+            )
+    except (KeyError, TypeError, ValueError, ArithmeticError) as e:
+        raise ValueError(
+            f"No {label} swap was created: cannot bound expectedAmount, "
+            f"the pair fees are unusable ({e})"
+        ) from e
+    percentage_fee = int(
+        (Decimal(invoice_amount) * percentage / 100).to_integral_value(ROUND_CEILING)
+    )
+    return invoice_amount + percentage_fee + miner_fees
+
+
+def _verify_send_swap(
+    label: str,
+    invoice: str,
+    invoice_amount: int,
+    max_amount: int,
+    refund_pubkey: str,
+    swap_resp: dict,
+    network: str,
+    chain_tip: int,
+) -> None:
+    """Refuse a send swap whose lockup address, blinding key, timeout or amount is not ours.
+
+    The address must be the taproot output of the swap tree rebuilt from the
+    invoice hash, the provider's claim key and OUR refund key, so a provider
+    cannot redirect the funds. expectedAmount must cover the invoice (an
+    underfunded lockup is never claimed and stays locked until the timeout) and
+    stay within ``max_amount``. Raises ValueError; nothing has been funded.
+    """
+    swap_id = swap_resp.get("id")
+    refusal = f"{label} swap {swap_id} failed verification, so it was not funded: "
+    try:
+        timeout = swap_resp["timeoutBlockHeight"]
+        if isinstance(timeout, bool) or not isinstance(timeout, int):
+            raise TypeError("timeoutBlockHeight is not an integer")
+        if not chain_tip < timeout <= chain_tip + MAX_SWAP_TIMEOUT_DELTA_BLOCKS:
+            raise ValueError(
+                f"timeoutBlockHeight {timeout} is outside the accepted window "
+                f"({chain_tip} < timeout <= {chain_tip + MAX_SWAP_TIMEOUT_DELTA_BLOCKS})"
+            )
+        tree = build_swap_tree(
+            bytes.fromhex(decode_bolt11_payment_hash(invoice)),
+            bytes.fromhex(swap_resp["claimPublicKey"]),
+            bytes.fromhex(refund_pubkey),
+            timeout,
+        )
+        blinding_pubkey, spk = decode_confidential_address(
+            swap_resp["address"], network
+        )
+        blinding_key = PrivateKey(bytes.fromhex(swap_resp["blindingKey"]))
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"{refusal}malformed swap response ({e})") from e
+    if spk != tree.scriptpubkey:
+        raise ValueError(
+            f"{refusal}lockup address does not match the swap script rebuilt "
+            "from this wallet's refund key"
+        )
+    if blinding_key.public_key.format(compressed=True) != blinding_pubkey:
+        raise ValueError(
+            f"{refusal}blindingKey does not match the lockup address blinding key"
+        )
+
+    expected = swap_resp.get("expectedAmount")
+    if isinstance(expected, bool) or not isinstance(expected, int):
+        raise ValueError(f"{refusal}expectedAmount is not an integer")
+    if expected < invoice_amount:
+        raise ValueError(
+            f"{refusal}expectedAmount {expected} sats is below the invoice amount "
+            f"{invoice_amount} sats"
+        )
+    if expected > max_amount:
+        raise ValueError(
+            f"{refusal}expectedAmount {expected} sats exceeds the quoted maximum "
+            f"{max_amount} sats (invoice {invoice_amount} + fees)"
+        )
+    logger.debug(
+        "%s swap %s verified: address matches rebuilt swap tree, blinding key "
+        "matches, invoice=%s <= expected_amount=%s <= cap=%s",
+        label,
+        swap_id,
+        invoice_amount,
+        expected,
+        max_amount,
+    )
 
 
 class LightningManager:
@@ -294,6 +415,16 @@ class LightningManager:
 
         # Live pair is authoritative; see docs/CONFIG.md.
         self._check_pair_limits(invoice_amount, pair, provider)
+        # Everything that doesn't need the swap response is refused before the swap
+        # exists: a swap created for this invoice makes any retry "already submitted".
+        max_amount = _send_swap_amount_cap(provider.label, invoice_amount, pair)
+        try:
+            chain_tip = self.wallet_manager.get_block_height(network)
+        except Exception as e:
+            raise ValueError(
+                f"Cannot fetch the Liquid chain tip to bound the swap timeout, so no "
+                f"{provider.label} swap was created: {e}"
+            ) from e
 
         refund_privkey, refund_pubkey = generate_keypair()
         logger.debug("Generated refund public key for Boltz swap wallet=%s", wallet_name)
@@ -312,12 +443,23 @@ class LightningManager:
                 "trying to pay it twice in this same execution; the issue is that "
                 f"{provider.label} already knows it from a previous attempt."
             ) from e
-        expected_amount = swap_resp["expectedAmount"]
         if not swap_resp.get("blindingKey"):
             raise ValueError(
                 f"{provider.label} returned no blindingKey for swap {swap_resp.get('id')}; "
                 "refusing to fund a lockup this wallet could not refund."
             )
+        # The provider is untrusted: check the lockup before any funds move.
+        _verify_send_swap(
+            provider.label,
+            invoice,
+            invoice_amount,
+            max_amount,
+            refund_pubkey,
+            swap_resp,
+            network,
+            chain_tip,
+        )
+        expected_amount = swap_resp["expectedAmount"]
         logger.debug(
             "%s swap created id=%s expected_amount=%s timeout_block_height=%s",
             provider.label,

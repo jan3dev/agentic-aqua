@@ -358,6 +358,10 @@ def _decode_confidential_address(address: str, network: str) -> tuple[bytes, byt
     return blinding_pubkey, spk
 
 
+# Public alias: lightning.py verifies a provider's lockup address before funding it.
+decode_confidential_address = _decode_confidential_address
+
+
 def build_refund_transaction(
     utxo: LockupUtxo,
     destination_address: str,
