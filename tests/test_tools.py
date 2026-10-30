@@ -57,11 +57,13 @@ def isolated_manager():
         tools_module._btc_manager = None  # so get_btc_manager() uses same storage
         tools_module._lightning_manager = None
         tools_module._jan3_manager = None
+        tools_module._pix_manager = None
         yield manager
         tools_module._manager = None
         tools_module._btc_manager = None
         tools_module._lightning_manager = None
         tools_module._jan3_manager = None
+        tools_module._pix_manager = None
 
 
 # ---------------------------------------------------------------------------
@@ -1288,6 +1290,11 @@ class TestToolRegistry:
             "lightning_transaction_status",
             "lightning_refund",
             "lightning_decode",
+            "eulen_kyc_session",
+            "eulen_kyc_confirm",
+            "pix_receive",
+            "pix_list",
+            "pix_status",
             "qr_generate",
             "qr_decode",
             "delete_wallet",

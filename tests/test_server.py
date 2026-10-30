@@ -50,6 +50,7 @@ ALL_PROMPTS = [
     ("export_descriptor", {"wallet_name": "test"}),
     ("delete_wallet", {"wallet_name": "test"}),
     ("pay_lightning", {"wallet_name": "test"}),
+    ("receive_via_pix", {"email": "person@example.com", "wallet_name": "test"}),
 ]
 
 

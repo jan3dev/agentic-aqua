@@ -7,6 +7,10 @@ Pytest suite. One file per `src/aqua/` module — `test_<module>.py`. Smoke test
 `tests/smoke/` are end-to-end with real network and are skipped by default; run them
 explicitly when validating a release.
 
+`test_pix.py` covers the Ankara-only PIX→DePix boundary, JAN3 Bearer auth,
+hosted-KYC contracts, local deposit persistence, and CLI smoke paths. It must
+never require or mock an Eulen partner token.
+
 ## Running
 
 ```bash

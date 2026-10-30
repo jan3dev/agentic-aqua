@@ -646,6 +646,175 @@ TOOL_SCHEMAS = {
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
+    "eulen_kyc_session": {
+        "description": (
+            "Create or reuse a Noviuz Hosted KYC session through Ankara for a logged-in "
+            "JAN3 account. Returns session_id and verification_url: give the URL to "
+            "the user unchanged to open in their default browser, and treat both as "
+            "credentials. Calling again within 30 minutes with the same parameters "
+            "returns the same session. Returns status='already_verified' when the "
+            "account already passed KYC. No CPF, name, e-mail, Pix data, documents, "
+            "status assertion, or EUID is accepted from the client."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "description": "JAN3 account email with a stored login session",
+                },
+                "verification_methods": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["otp", "pix"]},
+                    "minItems": 1,
+                    "default": ["otp"],
+                    "description": (
+                        "otp = CPF + e-mail code (free); pix = CPF + a Pix payment "
+                        "delivered as DePix to the user's wallet. With both, the user "
+                        "picks on the Noviuz page."
+                    ),
+                },
+                "amount_cents": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10000000,
+                    "description": (
+                        "Required with 'pix', rejected otherwise. Gross BRL cents "
+                        "(100 = R$1.00) paid by the user and sent back as DePix."
+                    ),
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "default": "default",
+                    "description": (
+                        "Liquid mainnet wallet that receives the DePix for 'pix'"
+                    ),
+                },
+            },
+            "required": ["email"],
+        },
+    },
+    "eulen_kyc_confirm": {
+        "description": (
+            "Ask Ankara to reconcile a Noviuz Hosted KYC session. Pass only the opaque "
+            "session_id returned by eulen_kyc_session. Ankara obtains the authoritative "
+            "status and EUID server-to-server. Poll every 15-20 seconds while "
+            "session_status is 'created'; under_review is NOT verified. Returns "
+            "is_final, is_success, poll_after_seconds and next_step."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "description": "JAN3 account email that owns the KYC session",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Opaque session id returned by eulen_kyc_session",
+                },
+            },
+            "required": ["email", "session_id"],
+        },
+    },
+    "pix_receive": {
+        "description": (
+            "Create a PIX charge through Ankara that pays DePix to a local Liquid wallet. "
+            "Requires JAN3 login and approved hosted KYC. amount_cents is the gross PIX "
+            "amount in BRL cents (100 = R$1.00). Returns PIX Copia e Cola, QR image data, "
+            "Ankara's dynamic fee breakdown, and swap_id for pix_status."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "description": "Logged-in JAN3 account email with approved Eulen KYC",
+                },
+                "amount_cents": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Gross PIX amount in BRL cents; 100 means R$1.00",
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "default": "default",
+                    "description": "Mainnet Liquid wallet that will receive DePix",
+                },
+            },
+            "required": ["email", "amount_cents"],
+        },
+    },
+    "pix_list": {
+        "description": (
+            "List PIX → DePix deposits from Ankara's authoritative database and refresh "
+            "their local cache entries. All filters are optional and combined. To answer "
+            "requests such as 'today' or 'last week', convert the requested period to "
+            "inclusive UTC dates in YYYY-MM-DD format and pass date_from/date_to."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "description": "JAN3 account email that owns the deposits",
+                },
+                "deposit_id": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Return only this Ankara deposit id",
+                },
+                "date_from": {
+                    "type": "string",
+                    "format": "date",
+                    "description": "Include deposits created on or after this UTC date",
+                },
+                "date_to": {
+                    "type": "string",
+                    "format": "date",
+                    "description": "Include deposits created on or before this UTC date",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "pending",
+                        "pending_pix2fa",
+                        "verified_pix2fa",
+                        "under_review",
+                        "delayed",
+                        "depix_sent",
+                        "canceled",
+                        "error",
+                        "refunded",
+                        "expired",
+                    ],
+                    "description": "Return only deposits with this status",
+                },
+            },
+            "required": ["email"],
+        },
+    },
+    "pix_status": {
+        "description": (
+            "Get a PIX → DePix deposit through Ankara, hydrating the local cache when "
+            "needed. The supplied JAN3 account must own the deposit. Terminal success "
+            "is depix_sent."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "swap_id": {
+                    "type": "string",
+                    "description": "Ankara deposit id returned by pix_receive",
+                },
+                "email": {
+                    "type": "string",
+                    "description": "JAN3 account email that owns the deposit",
+                },
+            },
+            "required": ["swap_id", "email"],
+        },
+    },
     "changelly_quote": {
         "description": (
             "Get a fixed-rate Changelly quote for a USDt-Liquid ↔ USDt-on-X swap. "
@@ -1837,6 +2006,33 @@ LIGHTNING (send only by default):
   the swap_id to recover it. refund_info.refundable in the status tells you whether a
   swap is still awaiting one.
 
+PIX → DEPIX (Brazilian on-ramp via Ankara):
+- Requires a stored JAN3 login and completed Noviuz Hosted KYC.
+- Call eulen_kyc_session with verification_methods ["otp"] (free, default) or
+  ["pix"] / ["pix", "otp"] plus amount_cents and wallet_name. Give the returned
+  verification_url to the user exactly as received to open in their default
+  browser (never a webview). Do not echo session_id or verification_url beyond
+  what the user needs. Never request CPF, e-mail, Pix data, name, documents,
+  status, or EUID in chat.
+- status='already_verified' means KYC is done: go straight to pix_receive.
+- Poll eulen_kyc_confirm every 15-20 seconds while session_status='created'.
+  under_review is pending, NOT verified (stop fast polling, check later).
+  rejected / expired / not_found: offer a new session. identity_conflict (or
+  errors EULEN_KYC_EUID_ALREADY_BOUND / EULEN_KYC_EUID_MISMATCH): contact
+  support. EULEN_KYC_MISSING_EUID, NOVIUZ_API_ERROR, EULEN_KYC_MINT_API_ERROR:
+  retry later. EULEN_KYC_PROVIDER_DISABLED: try later. On 429 wait
+  retry_after_seconds before retrying.
+- Only an Ankara result of session_status=approved and
+  verification_status=VERIFIED permits pix_receive.
+- amount_cents is gross BRL cents (100 = R$1.00), never a float or reais.
+- pix_receive returns dynamic Ankara fee/net fields and PIX Copia e Cola data.
+- Use pix_list with the owning email and inclusive UTC date_from/date_to filters
+  to answer deposit-history requests such as "today" or "last week".
+- Use pix_status with the owning JAN3 account email until depix_sent or a
+  terminal failure. pending_pix2fa is a deposit step, not identity KYC; this
+  initial surface only reports it.
+- All API calls go through ANKARA_API_URL. Never ask for an Eulen API token.
+
 CHANGELLY (custodial USDt cross-chain swaps via AQUA's Ankara proxy):
 - Use changelly_send when the user wants to send USDt-Liquid OUT to USDt on
   another chain (Ethereum, Tron, BSC, Solana, Polygon).
@@ -2056,6 +2252,14 @@ WALLET DELETION:
                 name="pay_lightning",
                 description="Pay a Lightning invoice using Liquid Bitcoin (via a submarine swap)",
                 arguments=[
+                    PromptArgument(name="wallet_name", description="Wallet name", required=False),
+                ],
+            ),
+            Prompt(
+                name="receive_via_pix",
+                description="Complete hosted KYC and receive DePix by paying PIX",
+                arguments=[
+                    PromptArgument(name="email", description="JAN3 account email", required=True),
                     PromptArgument(name="wallet_name", description="Wallet name", required=False),
                 ],
             ),
@@ -2576,6 +2780,45 @@ Please:
    - Preimage (proof of payment)
    - Explorer link for lockup transaction
 9. If the swap fails, run lightning_refund with the swap_id to recover the locked L-BTC""",
+                        ),
+                    )
+                ]
+            )
+
+        elif name == "receive_via_pix":
+            email = arguments.get("email", "") if arguments else ""
+            return GetPromptResult(
+                messages=[
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text=f"""I want to receive DePix in wallet '{wallet_name}' by paying PIX, using JAN3 account '{email}'.
+
+Please:
+1. Verify I have a stored JAN3 session; otherwise guide jan3_login → jan3_verify.
+2. Call eulen_kyc_session(email='{email}') with verification_methods ['otp']
+   unless I ask to verify with a Pix payment (then ['pix'] with amount_cents
+   and wallet_name='{wallet_name}'). Do not ask for CPF, e-mail, Pix data,
+   name, ID documents, EUID, or a claimed KYC status. If it returns
+   status='already_verified', skip to step 5.
+3. Give me verification_url exactly as returned to open in my default
+   browser. Do not invent or alter the URL.
+4. Call eulen_kyc_confirm with only email and session_id every 15-20 seconds
+   while session_status='created'. Treat under_review as not verified. Stop on
+   rejected, expired, not_found or identity_conflict and follow next_step.
+   Continue only when Ankara returns session_status='approved' and
+   verification_status='VERIFIED'.
+5. Ask how many reais I want to pay and convert exactly to integer BRL cents.
+6. Confirm the gross amount, then call pix_receive(email='{email}',
+   amount_cents=..., wallet_name='{wallet_name}').
+7. Show the dynamic fee/net amount, qr_copy_paste, and local qr_code_path.
+8. After I pay, call pix_status(swap_id=..., email='{email}') on request until
+   depix_sent or a terminal failure. pending_pix2fa is a deposit step, not KYC,
+   and is not implemented in this initial surface.
+9. On success show blockchain_txid when Ankara provides it.
+
+All network operations must use Ankara. Never request or configure an Eulen API token.""",
                         ),
                     )
                 ]

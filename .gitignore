@@ -25,6 +25,7 @@ venv/
 ENV/
 env/
 .venv/
+.uv-bin/
 .github/worktree/
 
 # IDE
@@ -33,6 +34,7 @@ env/
 *.swp
 *.swo
 *~
+pyrightconfig.json
 
 # Testing
 .pytest_cache/
